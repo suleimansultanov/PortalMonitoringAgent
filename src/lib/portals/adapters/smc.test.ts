@@ -50,9 +50,23 @@ test("rooms, area and commune come out of the structured title", () => {
 test("agency arrives with a postal address and phone", () => {
   const l = parseFixture();
   assert.equal(l.agencyName, "BARNES SAINT-TROPEZ");
-  assert.equal(l.agencyPostalCode, null); // address is a bare string here
   assert.match(l.agencyAddress ?? "", /9 avenue du 8 mai 1945/);
   assert.equal(l.agencyPhone, "0494433247");
+});
+
+test("the postcode is dug out of a prose address — agency identity depends on it", () => {
+  const l = parseFixture();
+  // Without this every agency with a string address shares a NULL postcode and
+  // they all merge into one.
+  assert.equal(l.agencyPostalCode, "83990");
+  assert.equal(l.agencyCity, "Saint-Tropez");
+});
+
+test("the agency block is found even though it is buried in an ItemList", () => {
+  const l = parseFixture();
+  // SMC nests it: ItemList → itemListElement[] → item → RealEstateAgent.
+  // Flattening only @graph misses it entirely.
+  assert.ok(l.agencyPhone, "agency details must survive the nesting");
 });
 
 test("agency mandate reference is picked up — the cross-portal key", () => {

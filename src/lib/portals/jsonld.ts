@@ -40,19 +40,41 @@ export function extractJsonLd(html: string): JsonLdNode[] {
   return out;
 }
 
+/**
+ * Containers whose children are real nodes, not properties of the parent.
+ *
+ * `@graph` is the documented one. `itemListElement` and `item` are how SMC
+ * buries the agency block — `ItemList → itemListElement[] → item →
+ * RealEstateAgent` — and without descending into them the agency's postal
+ * address and phone are simply invisible. That cost a failing test to find,
+ * which is the cheapest place to find it.
+ */
 function pushFlattened(node: unknown, out: JsonLdNode[]): void {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
     for (const n of node) pushFlattened(n, out);
     return;
   }
+
   const obj = node as JsonLdNode;
+
   if (Array.isArray(obj["@graph"])) {
+    // A @graph wrapper carries nothing of its own beyond its children.
     for (const n of obj["@graph"] as unknown[]) pushFlattened(n, out);
-    // A @graph wrapper carries no data of its own beyond its children.
     return;
   }
+
+  // The wrapper itself is still worth keeping — an ItemList may carry a url or
+  // a count someone wants — so this pushes rather than returns.
   out.push(obj);
+
+  if (Array.isArray(obj.itemListElement)) {
+    for (const n of obj.itemListElement as unknown[]) pushFlattened(n, out);
+  }
+  // ListItem wraps its payload in `item`.
+  if (obj.item && typeof obj.item === "object") {
+    pushFlattened(obj.item, out);
+  }
 }
 
 /** `@type` can be a string or an array. Normalise to a lowercase set. */
@@ -132,7 +154,15 @@ export function firstOffer(node: JsonLdNode): JsonLdNode | null {
   return o as JsonLdNode;
 }
 
-/** `address` is sometimes a PostalAddress object, sometimes a bare string. */
+/**
+ * `address` is sometimes a PostalAddress object, sometimes a bare string.
+ *
+ * When it is a string the postcode is dug out of it rather than left null, and
+ * that is not cosmetic: agency identity is `(normalised name, postcode)`. Every
+ * agency whose address arrived as prose would otherwise share a NULL postcode
+ * and collide with every other one — turning "BARNES Saint-Tropez" and "BARNES
+ * Cannes" into a single agency, and every count built on them into nonsense.
+ */
 export function readAddress(v: unknown): {
   full: string | null;
   street: string | null;
@@ -140,7 +170,24 @@ export function readAddress(v: unknown): {
   postalCode: string | null;
 } {
   if (typeof v === "string") {
-    return { full: v.trim() || null, street: null, locality: null, postalCode: null };
+    const full = v.trim() || null;
+    if (!full) return { full: null, street: null, locality: null, postalCode: null };
+
+    // French postcodes are five digits. Anchored on word boundaries so a house
+    // number or a floor area cannot be mistaken for one.
+    const m = full.match(/\b(\d{5})\b/);
+    if (!m) return { full, street: null, locality: null, postalCode: null };
+
+    const postalCode = m[1];
+    const after = full.slice((m.index ?? 0) + postalCode.length).replace(/^[,\s]+/, "").trim();
+    const before = full.slice(0, m.index ?? 0).replace(/[,\s]+$/, "").trim();
+
+    return {
+      full,
+      street: before || null,
+      locality: after || null,
+      postalCode,
+    };
   }
   if (v && typeof v === "object") {
     const a = v as Record<string, unknown>;
