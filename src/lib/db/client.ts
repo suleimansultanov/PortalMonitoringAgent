@@ -1,0 +1,79 @@
+import "server-only";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import * as schema from "./schema";
+
+/**
+ * Postgres pool. Ported from the Vault project along with the lessons that are
+ * baked into these numbers — see the comments on the timeouts, they were each
+ * paid for by an outage.
+ */
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __pma_pg_pool: Pool | undefined;
+}
+
+function getPool(): Pool {
+  if (globalThis.__pma_pg_pool) return globalThis.__pma_pg_pool;
+
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set. Add it to .env.local.");
+
+  const pool = new Pool({
+    connectionString: url,
+    max: 10,
+    // Drop our idle connections before the Supabase pooler reaps them on its
+    // side, so we never hand out a socket that is already dead.
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+    keepAlive: true,
+    /**
+     * The critical guard for serverless. When a thawed function grabs a pooled
+     * socket the pooler closed while we were frozen, a query otherwise hangs
+     * forever — the function then runs until it is SIGKILLed at maxDuration,
+     * skipping every catch and cleanup path. That is how jobs end up wedged in
+     * "running" with no error anywhere. With a timeout the query rejects and
+     * withDbRetry re-runs it on a fresh connection.
+     */
+    query_timeout: 10_000,
+    statement_timeout: 10_000,
+    // Supabase's pooler terminates SSL at a proxy that presents no verifiable
+    // chain. Disabling verification still encrypts; it only skips the chain
+    // check, which is the standard setup for PgBouncer in front of Supabase.
+    ...(process.env.NODE_ENV === "production" && { ssl: { rejectUnauthorized: false } }),
+  });
+
+  if (process.env.NODE_ENV !== "production") globalThis.__pma_pg_pool = pool;
+  return pool;
+}
+
+export const db = drizzle(getPool(), { schema });
+export { schema };
+
+/** True for errors that mean "this pooled connection is dead", not "this query is wrong". */
+function isDeadConnectionError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code ?? "";
+  if (["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND"].includes(code)) return true;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /timeout|terminat|connection|socket|server closed|read econn/.test(msg);
+}
+
+/**
+ * Retry only connection-level failures. Logical errors — unique violations,
+ * constraint failures — propagate immediately, because retrying those just
+ * fails again more slowly and hides the real problem.
+ */
+export async function withDbRetry<T>(op: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await op();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts - 1 || !isDeadConnectionError(err)) throw err;
+      console.warn(`[db] retrying after dead-connection error (attempt ${i + 1}):`, (err as Error)?.message);
+    }
+  }
+  throw lastErr;
+}

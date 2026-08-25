@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+
+.env
+.env.local
+.env*.local
+
+*.tsbuildinfo
+next-env.d.ts
+
+.vercel
+
+# Saved portal pages used as parser fixtures are committed on purpose —
+# see src/lib/portals/__fixtures__/. Anything else scraped is not.
+/tmp/
+*.tmp.ts

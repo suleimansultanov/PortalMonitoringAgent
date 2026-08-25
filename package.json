@@ -1,0 +1,46 @@
+{
+  "name": "portal-monitoring-agent",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbo",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/lib/db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
+    "@aws-sdk/s3-request-presigner": "^3.700.0",
+    "bcryptjs": "^2.4.3",
+    "cheerio": "^1.0.0",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.45.2",
+    "inngest": "^3.54.2",
+    "lucide-react": "^0.460.0",
+    "next": "^15.1.0",
+    "next-auth": "5.0.0-beta.25",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@next/env": "^15.1.0",
+    "@tailwindcss/postcss": "^4.0.0-beta.4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.9.3",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "drizzle-kit": "^0.28.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.0.0-beta.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
