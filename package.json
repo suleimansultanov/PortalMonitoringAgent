@@ -11,6 +11,16 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/lib/db/migrate.ts",
     "db:seed": "tsx src/lib/portals/seed.ts",
+    "db:info": "tsx src/lib/db/info.ts",
+    "db:reset-data": "tsx src/lib/db/resetData.ts",
+    "seed:buyers": "tsx src/lib/matching/seedBuyers.ts",
+    "match": "tsx src/lib/matching/run.ts",
+    "collect": "tsx src/lib/portals/cli.ts",
+    "probe": "tsx src/lib/portals/probe.ts",
+    "quality": "tsx src/lib/portals/quality.ts",
+    "report": "tsx src/lib/reports/generate.ts",
+    "reparse": "tsx src/lib/portals/reparse.ts",
+    "fixture": "tsx src/lib/portals/fixture.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
@@ -27,8 +37,11 @@
     "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "server-only": "^0.0.1",
+    "server-only": "file:./scripts/server-only-stub",
     "zod": "^3.23.8"
+  },
+  "overrides": {
+    "server-only": "file:./scripts/server-only-stub"
   },
   "devDependencies": {
     "@next/env": "^15.1.0",

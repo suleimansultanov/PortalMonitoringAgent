@@ -142,6 +142,8 @@ export async function ingestListing(
     url,
     title: parsed.title,
     description: parsed.description,
+    imageUrl: parsed.imageUrl,
+    imageUrls: parsed.imageUrls,
     priceEur: parsed.priceEur,
     pricePerM2,
     areaM2: parsed.areaM2 === null ? null : String(parsed.areaM2),

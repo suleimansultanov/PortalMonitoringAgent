@@ -29,6 +29,27 @@ export type RawListing = {
   description: string | null;
 
   /**
+   * The listing's main photograph, as the portal publishes it in `og:image`.
+   *
+   * We store the URL and hotlink it, rather than copying the file. Copying
+   * would mean redistributing the agency's photography, which is theirs; a
+   * link is what the portal publishes for exactly this purpose. It also means
+   * a delisted property's image disappears on their schedule, not ours.
+   */
+  imageUrl: string | null;
+
+  /**
+   * The rest of the gallery, in the order the portal presents it.
+   *
+   * Scoped to THIS listing's gallery container, never scraped off the whole
+   * page: a Superimmo detail page carries up to a hundred image URLs, and most
+   * of them belong to the "similar properties" strip at the bottom. Taking them
+   * all would put a neighbour's kitchen in this villa's gallery — wrong in a way
+   * that looks completely fine until an agent shows a client.
+   */
+  imageUrls: string[];
+
+  /**
    * Euros, from structured markup. Adapters must not read the rendered price:
    * at least one portal displays a converted USD figure over EUR source data,
    * which turns every exchange-rate move into a fake price change.
@@ -128,6 +149,8 @@ export function emptyListing(externalId: string, url: string): RawListing {
     url,
     title: null,
     description: null,
+    imageUrl: null,
+    imageUrls: [],
     priceEur: null,
     areaM2: null,
     landM2: null,

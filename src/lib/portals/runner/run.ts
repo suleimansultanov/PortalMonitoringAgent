@@ -7,6 +7,19 @@ import { getAdapter } from "../registry";
 import type { DiscoveredListing } from "../types";
 import { diffListings, shouldAbort } from "./diff";
 import { createFetcher, BlockedError } from "./fetcher";
+
+/**
+ * A refusal, as opposed to a rate limit.
+ *
+ * Matching on the message rather than the error class because the ingest step
+ * flattens exceptions into a status and a string before this sees them. Kept as
+ * a named function so the distinction has somewhere to be explained.
+ */
+function isRefusal(error: string | null | undefined): boolean {
+  if (!error) return false;
+  if (/rate limited/i.test(error)) return false;
+  return /blocked/i.test(error);
+}
 import { delistListings, ingestListing } from "./ingest";
 
 /**
@@ -32,6 +45,15 @@ export type RunOptions = {
   mode?: "scheduled" | "manual" | "backfill";
   /** Cap for a first pass or a smoke test. */
   limit?: number;
+  /**
+   * Run even when the source is switched off.
+   *
+   * The `enabled` flag exists to stop the SCHEDULER touching a source — while
+   * its commune slugs are half-configured, while a portal is being renegotiated.
+   * It was never meant to overrule a person who typed the source name into a
+   * command, which is the only way a smoke test ever happens.
+   */
+  force?: boolean;
 };
 
 export type RunSummary = {
@@ -44,6 +66,13 @@ export type RunSummary = {
   failed: number;
   abortedReason?: string;
   error?: string;
+  /**
+   * A handful of the actual failures, kept so a run that reports "failed 20"
+   * can be diagnosed without re-running it. A count alone tells you something
+   * broke; it does not tell you whether the portal refused us, the URL was
+   * malformed, or the parser choked — and those need completely different fixes.
+   */
+  failureSamples?: { externalId: string; url: string; error: string }[];
 };
 
 export async function runSource(opts: RunOptions): Promise<RunSummary> {
@@ -54,7 +83,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     .limit(1);
 
   if (!source) throw new Error(`No portal_sources row with key "${opts.sourceKey}"`);
-  if (!source.enabled) {
+  if (!source.enabled && !opts.force) {
     return {
       runId: "",
       status: "disabled",
@@ -190,6 +219,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     const toFetch = [...diff.added, ...diff.refresh];
     let ingested = 0;
     let failed = 0;
+    /** Counted separately from `failed`: throttling is not a parser problem. */
+    let rateLimited = 0;
+    const failureSamples: { externalId: string; url: string; error: string }[] = [];
 
     for (let i = 0; i < toFetch.length; i += CHUNK) {
       const chunk = toFetch.slice(i, i + CHUNK);
@@ -208,15 +240,53 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
           target,
         );
 
-        if (outcome.status === "ingested" || outcome.status === "unchanged") ingested += 1;
-        else failed += 1;
+        if (outcome.status === "ingested" || outcome.status === "unchanged") {
+          ingested += 1;
+        } else {
+          failed += 1;
+          if (failureSamples.length < 5) {
+            failureSamples.push({
+              externalId,
+              url: target.url,
+              error: `${outcome.status}: ${outcome.error ?? "no detail"}`,
+            });
+          }
+        }
 
-        if (outcome.status === "fetch_failed" && /blocked/i.test(outcome.error ?? "")) {
-          // Being blocked mid-ingest means the rest of this pass is unreliable.
-          // Stop rather than accumulate failures against a portal telling us no.
-          console.warn(`[run:${source.key}] blocked during ingest, stopping pass`);
+        /**
+         * "Blocked" ends the pass. "Rate limited" does not.
+         *
+         * A 403 or a CAPTCHA is the portal refusing us, and carrying on means
+         * hammering somewhere we are not welcome. A 429 is the portal saying we
+         * are asking too fast — the fetcher has already slowed the pacing down
+         * for everything that follows, and the right move is to lose this one
+         * listing and keep going.
+         *
+         * Conflating them cost a real run: 60 listings discovered, ONE ingested,
+         * because a single stubborn URL aborted everything queued behind it.
+         */
+        if (outcome.status === "fetch_failed" && isRefusal(outcome.error)) {
+          console.warn(`[run:${source.key}] refused during ingest, stopping pass`);
           i = toFetch.length;
           break;
+        }
+
+        if (outcome.status === "fetch_failed" && /rate limited/i.test(outcome.error ?? "")) {
+          rateLimited += 1;
+          /**
+           * If nearly everything is being throttled, the portal is telling us
+           * its answer about volume and there is no point grinding through
+           * hundreds of one-minute waits to hear it again.
+           */
+          if (rateLimited >= 10 && rateLimited > ingested) {
+            console.warn(
+              `[run:${source.key}] rate limited on ${rateLimited} listings and only ` +
+                `${ingested} through — stopping. This portal will not serve a crawl ` +
+                `at this size; it needs a raised limit or an overnight schedule.`,
+            );
+            i = toFetch.length;
+            break;
+          }
         }
       }
 
@@ -257,6 +327,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       refreshed: diff.refresh.length,
       delisted,
       failed,
+      failureSamples: failureSamples.length > 0 ? failureSamples : undefined,
     };
   } catch (err) {
     const message = (err as Error).message;

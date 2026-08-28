@@ -1,7 +1,35 @@
 import "server-only";
+import { createRequire } from "node:module";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "./schema";
+
+/**
+ * Load `.env.local` when running outside Next.js.
+ *
+ * Next loads it for the app; nothing loads it for `db:seed`, `collect` or any
+ * other script, so those died on import with "DATABASE_URL is not set" while
+ * the variable sat in a file two directories up. Doing it here rather than in
+ * each entry point means it cannot be forgotten by whoever writes the next
+ * script.
+ *
+ * Skipped entirely when the variable is already present, so production — where
+ * the platform supplies it and `@next/env` is a dev dependency that may not be
+ * installed — never reaches the require.
+ */
+function ensureEnvLoaded(): void {
+  if (process.env.DATABASE_URL) return;
+  try {
+    const require_ = createRequire(import.meta.url);
+    const { loadEnvConfig } = require_("@next/env") as {
+      loadEnvConfig: (dir: string) => void;
+    };
+    loadEnvConfig(process.cwd());
+  } catch {
+    // Not available. The caller's own error message is clearer than anything
+    // we could add here.
+  }
+}
 
 /**
  * Postgres pool. Ported from the Vault project along with the lessons that are
@@ -16,6 +44,8 @@ declare global {
 
 function getPool(): Pool {
   if (globalThis.__pma_pg_pool) return globalThis.__pma_pg_pool;
+
+  ensureEnvLoaded();
 
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set. Add it to .env.local.");
@@ -48,7 +78,31 @@ function getPool(): Pool {
   return pool;
 }
 
-export const db = drizzle(getPool(), { schema });
+/**
+ * Lazy on purpose.
+ *
+ * This used to be `drizzle(getPool(), …)` evaluated at module load, which meant
+ * merely importing anything that touched the database opened a connection — and
+ * threw if the environment was not ready yet. Import order became load-bearing:
+ * put `import { db }` above the line that loads `.env.local` and the script
+ * died, with an error pointing at the database rather than at the ordering.
+ *
+ * With the pool created on first use, importing is free and the connection is
+ * opened by whoever actually needs it, by which time the environment is up.
+ */
+let instance: ReturnType<typeof drizzle<typeof schema>> | null = null;
+
+function getDb(): ReturnType<typeof drizzle<typeof schema>> {
+  if (!instance) instance = drizzle(getPool(), { schema });
+  return instance;
+}
+
+export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getDb(), prop, receiver);
+  },
+});
+
 export { schema };
 
 /** True for errors that mean "this pooled connection is dead", not "this query is wrong". */

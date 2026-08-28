@@ -235,6 +235,10 @@ export const properties = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title"),
     description: text("description"),
+    /** Hotlinked from the portal, never copied — the photography is the agency's. */
+    imageUrl: text("image_url"),
+    /** The rest of the gallery, in the portal's own order. */
+    imageUrls: text("image_urls").array().notNull().default([]),
     priceEur: bigint("price_eur", { mode: "number" }),
     areaM2: numeric("area_m2"),
     landM2: numeric("land_m2"),
@@ -291,6 +295,8 @@ export const portalListings = pgTable(
 
     title: text("title"),
     description: text("description"),
+    imageUrl: text("image_url"),
+    imageUrls: text("image_urls").array().notNull().default([]),
 
     /**
      * Always euros, always taken from the portal's structured markup — never
@@ -391,6 +397,223 @@ export const portalListingEvents = pgTable(
     listingIdx: index("portal_listing_events_listing_idx").on(t.listingId, t.occurredAt),
     propertyIdx: index("portal_listing_events_property_idx").on(t.propertyId, t.occurredAt),
     typeIdx: index("portal_listing_events_type_idx").on(t.type, t.occurredAt),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Buyers and matches — the client side of the product
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a buyer is looking for, in OUR shape.
+ *
+ * Deliberately defined before we know how Med-Estates stores this in GoHighLevel,
+ * because the CRM's shape decides how these columns get FILLED, not what they
+ * should be. If their custom fields line up, filling is a mapping; if the
+ * criteria are prose in a notes field, filling needs an extraction step. Either
+ * way the matcher, the API and the screens are written against this table and do
+ * not change.
+ *
+ * `criteriaSource` records which of those happened for each row, because a
+ * budget somebody typed into a field and a budget a model guessed from
+ * "around 3M, flexible if they love it" deserve different amounts of trust, and
+ * the second kind needs to be reviewable rather than silently authoritative.
+ */
+export const buyers = pgTable(
+  "buyers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+
+    /**
+     * TEST DATA FLAG.
+     *
+     * True for the invented buyers seeded so the matcher and the Matches screen
+     * could be built before the real ones arrive from GHL. Every query that
+     * feeds a number a human might act on must either exclude these or label
+     * them — an invented buyer that reaches a real agent as a real lead is worse
+     * than an empty screen.
+     *
+     * `npm run seed:buyers -- --clear` removes exactly these rows and nothing
+     * else, which is why it is a column and not a naming convention.
+     */
+    isTestData: boolean("is_test_data").notNull().default(false),
+
+    name: text("name").notNull(),
+    email: text("email"),
+    phone: text("phone"),
+    /** The buyer's id in the client's CRM, so a record can be traced back. */
+    crmContactId: text("crm_contact_id"),
+    /** Which agent owns the relationship. Free text until GHL tells us better. */
+    agent: text("agent"),
+
+    /** Euros. Either end may be null — plenty of buyers state only a ceiling. */
+    budgetMinEur: bigint("budget_min_eur", { mode: "number" }),
+    budgetMaxEur: bigint("budget_max_eur", { mode: "number" }),
+
+    /** INSEE codes, same vocabulary as `clients.communeInsee`. Empty = anywhere. */
+    communeInsee: text("commune_insee").array().notNull().default([]),
+
+    bedroomsMin: integer("bedrooms_min"),
+    roomsMin: integer("rooms_min"),
+    areaMinM2: integer("area_min_m2"),
+    landMinM2: integer("land_min_m2"),
+
+    /** 'Maison' | 'Appartement' | 'Terrain' … as the portals spell them. */
+    propertyTypes: text("property_types").array().notNull().default([]),
+
+    /**
+     * Two lists, not one, and the distinction is the whole point of the screen.
+     *
+     * A missing must-have disqualifies. A missing nice-to-have lowers the score
+     * and gets said out loud — "no pool, but everything else fits" is a call an
+     * agent might still make, and collapsing both into one list takes that
+     * judgement away from them.
+     */
+    mustHave: text("must_have").array().notNull().default([]),
+    niceToHave: text("nice_to_have").array().notNull().default([]),
+
+    /** The original CRM text, kept verbatim so an extraction can be checked. */
+    notesRaw: text("notes_raw"),
+    /** 'fields' | 'extracted' | 'manual' — how much to trust the columns above. */
+    criteriaSource: text("criteria_source").notNull().default("manual"),
+
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index("buyers_client_idx").on(t.clientId, t.active),
+    testIdx: index("buyers_test_idx").on(t.isTestData),
+    crmUnique: uniqueIndex("buyers_crm_unique").on(t.clientId, t.crmContactId),
+  }),
+);
+
+/**
+ * One row per (buyer, property) the matcher proposed.
+ *
+ * Keyed on the property rather than the listing: the same villa on four portals
+ * is one thing to show an agent, and proposing it four times is how a useful
+ * feature becomes noise people switch off.
+ */
+export const buyerMatches = pgTable(
+  "buyer_matches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    buyerId: uuid("buyer_id")
+      .notNull()
+      .references(() => buyers.id, { onDelete: "cascade" }),
+    propertyId: uuid("property_id")
+      .notNull()
+      .references(() => properties.id, { onDelete: "cascade" }),
+
+    /** 0–100. Never shown on its own — see `reasons`. */
+    score: integer("score").notNull(),
+
+    /**
+     * Why it matched, and why it did not, in a form the screen can render as
+     * sentences: `[{ field: 'budget', ok: true, detail: '4.99M within 4–6M' }]`.
+     *
+     * An agent will not act on a number they cannot check. A score with no
+     * explanation gets ignored the first time it is wrong, and after that the
+     * feature is dead however good the arithmetic is.
+     */
+    reasons: jsonb("reasons").$type<Record<string, unknown>[]>().notNull().default([]),
+
+    /** 'new' | 'seen' | 'sent' | 'dismissed' */
+    status: text("status").notNull().default("new"),
+    /** Kept when dismissed: the best signal we will ever get about the scoring. */
+    dismissedReason: text("dismissed_reason"),
+
+    /** The generated outreach draft, if one was produced. */
+    draftMessage: text("draft_message"),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pairUnique: uniqueIndex("buyer_matches_pair_unique").on(t.buyerId, t.propertyId),
+    buyerIdx: index("buyer_matches_buyer_idx").on(t.buyerId, t.status, t.score),
+    statusIdx: index("buyer_matches_status_idx").on(t.status, t.createdAt),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Market reports — frozen snapshots, not live queries
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row per period per client: the market as it stood, kept.
+ *
+ * WHY STORE IT RATHER THAN COMPUTE IT
+ *
+ * The Reports screen was recomputing everything from current data, which meant
+ * it could only ever answer "what does the market look like today". Asking "what
+ * did June look like" had no answer at all — the rows that were active in June
+ * have since changed price, been delisted, or come back.
+ *
+ * Some of that IS reconstructable from `portal_listing_events`, which is
+ * append-only for exactly this reason. But not all of it: a property first seen
+ * in July tells us nothing about June, and our own coverage changed underneath —
+ * a commune that shows fewer listings in June than July is more likely to mean
+ * "we had not crawled it yet" than "the market was thinner".
+ *
+ * So a report is FROZEN at generation, with the coverage it was generated under
+ * recorded alongside. A number that was right when written stays right, and a
+ * comparison between two months carries the caveat that makes it honest.
+ */
+export const marketReports = pgTable(
+  "market_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+
+    /** 'monthly' | 'weekly' | 'adhoc' */
+    kind: text("kind").notNull().default("monthly"),
+    /** First day of the period. The natural key together with client and kind. */
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+    /** Human label: "August 2026". Stored so the list needs no date formatting. */
+    label: text("label").notNull(),
+
+    /** Headline figures, so a list of reports renders without opening each. */
+    activeCount: integer("active_count").notNull().default(0),
+    newCount: integer("new_count").notNull().default(0),
+    delistedCount: integer("delisted_count").notNull().default(0),
+    priceCutCount: integer("price_cut_count").notNull().default(0),
+    medianPriceEur: bigint("median_price_eur", { mode: "number" }),
+    medianPricePerM2: integer("median_price_per_m2"),
+    medianDaysOnMarket: integer("median_days_on_market"),
+
+    /** Per-commune and per-agency tables, frozen as generated. */
+    communes: jsonb("communes").$type<Record<string, unknown>[]>().notNull().default([]),
+    agencies: jsonb("agencies").$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Notable movements: the price cuts and delistings worth reading. */
+    movements: jsonb("movements").$type<Record<string, unknown>[]>().notNull().default([]),
+
+    /**
+     * What the numbers could NOT see, recorded at generation time.
+     *
+     * How many communes had been crawled, which sources were enabled. Without
+     * this, comparing two months silently compares two different coverages, and
+     * "the market grew 40%" turns out to mean "we switched a portal on".
+     */
+    coverage: jsonb("coverage").$type<Record<string, unknown>>().notNull().default({}),
+    warnings: text("warnings").array().notNull().default([]),
+
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    periodUnique: uniqueIndex("market_reports_period_unique").on(
+      t.clientId,
+      t.kind,
+      t.periodStart,
+    ),
+    clientIdx: index("market_reports_client_idx").on(t.clientId, t.periodStart),
   }),
 );
 

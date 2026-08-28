@@ -1,0 +1,94 @@
+name: Collect portals
+
+# Why here and not on the app platform: a first full crawl runs tens of minutes
+# at one request per second, and serverless functions are capped at five. This
+# job may take six hours. It also means the collector needs no step-splitting,
+# no replay semantics and no always-on HTTP route — it is a script on a timer.
+#
+# ⚠ IP ADDRESSES. GitHub's runners come from large shared datacentre ranges.
+# Fine while every source we collect from is openly crawlable. The moment AVIV,
+# Figaro, ZPG or SMC agree to allowlist us, this has to move to a host with a
+# fixed address — a small Hetzner box runs the same command with the same cron.
+# Do not ask a portal to allowlist GitHub's ranges; they will say no, and they
+# will be right to.
+
+on:
+  schedule:
+    # 03:00 UTC — 04:00 in Paris in winter, 05:00 in summer. Well outside the
+    # hours when a French property portal has real visitors.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Source key, or 'all'"
+        required: false
+        default: "all"
+      limit:
+        description: "Listings per source. Leave blank for a full crawl; set 20 for a smoke test."
+        required: false
+      communes:
+        description: "Comma-separated INSEE codes. Blank means every subscribed commune."
+        required: false
+
+concurrency:
+  # Never two crawls of the same portals at once. The diff and the unique index
+  # would both hold, but we would be doubling our request rate at sites that
+  # allowed us in on the understanding we would be reasonable.
+  group: collect-portals
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    # Generous, because the first full crawl is long and being killed halfway
+    # leaves a run row open and a partial picture of the market.
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply migrations
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Collect
+        run: |
+          ARGS="--source=${{ inputs.source || 'all' }}"
+          if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit=${{ inputs.limit }}"; fi
+          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
+          echo "npm run collect -- $ARGS"
+          npm run collect -- $ARGS
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          # Identifies us to the portals that let us in. Keep it honest and
+          # reachable — several agreed on the basis of knowing who we are.
+          CRAWLER_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+
+      - name: Keep the pages when S3 is not configured
+        # Without S3 the collector writes to .pages/ on the runner, which is
+        # destroyed with the job. Uploading them means a smoke test still leaves
+        # something to re-parse against — which is the entire reason raw pages
+        # are stored in the first place.
+        if: always() && env.S3_BUCKET == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-${{ github.run_id }}
+          path: .pages/
+          retention-days: 7
+          if-no-files-found: ignore
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}

@@ -1,5 +1,9 @@
 import type { PortalAdapter } from "./types";
 import { smcAdapter } from "./adapters/smc";
+import { etreproprioAdapter } from "./adapters/etreproprio";
+import { luxuryEstateAdapter } from "./adapters/luxuryestate";
+import { superimmoAdapter } from "./adapters/superimmo";
+import { greenAcresAdapter } from "./adapters/greenacres";
 
 /**
  * Adapter registry.
@@ -18,12 +22,12 @@ import { smcAdapter } from "./adapters/smc";
 
 const ADAPTERS: PortalAdapter[] = [
   smcAdapter,
-  // luxuryEstateAdapter,
-  // etreproprioAdapter,
+  etreproprioAdapter,
+  luxuryEstateAdapter,
+  superimmoAdapter,
+  greenAcresAdapter,
   // jamesEditionAdapter,
   // figaroProprietesAdapter,
-  // greenAcresAdapter,
-  // superimmoAdapter,
   // avivAdapter,
   // figaroImmobilierAdapter,
   // zooplaAdapter,

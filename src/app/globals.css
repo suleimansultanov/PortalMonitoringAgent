@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+/**
+ * Dark, quiet, and stingy with colour.
+ *
+ * This screen sits open next to portal tabs all day. Colour is spent only where
+ * it carries meaning — a price cut, a test-data badge, a warning — so that when
+ * something IS coloured it is worth looking at. The accent is the Lead Estate
+ * wine red from the mockups; everything else is a step on one grey ramp.
+ */
+@theme {
+  --color-canvas: #0b0b0d;
+  --color-surface: #131316;
+  --color-raised: #1a1a1f;
+  --color-line: #26262c;
+  --color-line-soft: #1e1e23;
+
+  --color-ink: #f2f2f4;
+  --color-muted: #8a8a94;
+  --color-faint: #5c5c66;
+
+  --color-accent: #8c2f4a;
+  --color-accent-soft: #b8506e;
+  --color-up: #4a9d6e;
+  --color-down: #c9556b;
+  --color-warn: #c08a3e;
+  --color-test: #9b6bd6;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+
+/* Serif for page titles only — it is the one flourish the mockups allow, and
+   it separates "this is a heading" from "this is data" without a colour. */
+.display {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Tabular figures wherever numbers are compared down a column. Proportional
+   digits make a price column impossible to scan. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A placeholder for a listing with no photograph. Not a grey box: an obviously
+   deliberate pattern, so nobody mistakes a missing image for a broken one. */
+.no-photo {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-raised),
+    var(--color-raised) 10px,
+    var(--color-surface) 10px,
+    var(--color-surface) 20px
+  );
+}

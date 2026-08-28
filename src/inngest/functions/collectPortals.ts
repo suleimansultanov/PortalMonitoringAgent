@@ -1,6 +1,7 @@
 import { inngest } from "../client";
 import { getBoolSetting, setSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { activeSources, communesForSource, runSource } from "@/lib/portals/runner/run";
+import { resolveCommuneIdentities } from "@/lib/portals/matching/resolve";
 import { db } from "@/lib/db/client";
 import { portalSources } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
@@ -14,17 +15,26 @@ import { eq } from "drizzle-orm";
  * in parallel while no single portal ever sees two of our requests at once.
  */
 
-/** 04:00 Europe/Paris in winter, 06:00 in summer. Well outside anyone's peak. */
-const DAILY_CRON = "0 3 * * *";
-
+/**
+ * NO CRON HERE. THE SCHEDULE LIVES IN GITHUB ACTIONS.
+ *
+ * `.github/workflows/collect.yml` owns the daily run, because a full crawl
+ * takes tens of minutes at one request per second and serverless functions are
+ * capped at five.
+ *
+ * These functions remain for triggering a collection by hand — from an admin
+ * screen, or in response to something else happening. Adding a cron trigger
+ * back would mean two schedules pointing at the same portals, and we would be
+ * crawling twice nightly without anyone noticing until a portal complained.
+ */
 export const schedulePortalCollection = inngest.createFunction(
   {
     id: "portals/schedule-collection",
-    name: "Portals — daily schedule",
+    name: "Portals — manual dispatch",
     concurrency: 1,
     retries: 1,
   },
-  [{ cron: DAILY_CRON }, { event: "portals/collect-requested" }],
+  [{ event: "portals/collect-requested" }],
   async ({ event, step }) => {
     // Opt-in. This reaches out to third parties and writes to their logs, so it
     // stays dormant until someone switches it on.
@@ -111,6 +121,29 @@ export const collectOneSource = inngest.createFunction(
     const summary = await step.run("collect", () =>
       runSource({ sourceKey, communeInsee: communes, mode: "scheduled" }),
     );
+
+    /**
+     * Re-cluster the communes this pass touched.
+     *
+     * Deliberately after collection rather than during it: a new listing can
+     * reveal that two properties we had as separate are one, because the portal
+     * that arrived third is often the one carrying the mandate reference tying
+     * the first two together. Resolving incrementally per listing would miss
+     * that and leave the split in place until something else happened to
+     * disturb it.
+     *
+     * Skipped when the pass aborted — clustering a half-collected commune
+     * produces splits that then have to be undone.
+     */
+    if (summary.status === "done") {
+      await step.run("resolve-identities", async () => {
+        const results = [];
+        for (const insee of communes) {
+          results.push(await resolveCommuneIdentities(insee));
+        }
+        return results;
+      });
+    }
 
     return { sourceKey, ...summary };
   },

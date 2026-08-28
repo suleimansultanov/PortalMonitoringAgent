@@ -15,5 +15,13 @@ next-env.d.ts
 
 # Saved portal pages used as parser fixtures are committed on purpose —
 # see src/lib/portals/__fixtures__/. Anything else scraped is not.
+#
+# `.pages/` is the local stand-in for S3: every page the collector fetched, kept
+# so parsers can be re-run without asking the portal again. One commune is
+# 131 MB and the whole gulf is about a gigabyte, so it must never reach git —
+# and beyond size, it is a mirror of somebody else's copyrighted listings and
+# their agencies' photography. Fine to hold on a working machine for re-parsing;
+# not something to publish in a repository.
+.pages/
 /tmp/
 *.tmp.ts

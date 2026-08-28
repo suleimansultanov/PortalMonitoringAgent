@@ -8,22 +8,30 @@ import {
   type RawListing,
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
+import { communeSlugMatcher, walkSitemap } from "../runner/sitemap";
 
 /**
  * SMC France — Maisons et Appartements + Résidences Immobilier.
  *
  * One adapter, two brands. They share an engine (identical internal paths,
  * `/routines/`, `/views/sitemapBuild.php`) and Maisons et Appartements links to
- * Résidences from its own menu as its "Biens de prestige" section. Same markup,
- * same URL grammar, different hostname.
+ * Résidences from its own menu as its "Biens de prestige" section.
  *
- * Chosen as the first adapter because its markup is the richest of any portal
- * on the list and, more importantly, because it has been read and verified
- * rather than assumed.
+ * DISCOVERY GOES THROUGH THE SITEMAP.
+ * Measured 2026-08-26: their search pages return 403 to our client while
+ * individual listings are served without complaint. That shape is deliberate —
+ * search pages are what scrapers hammer, so those carry the protection, while
+ * listing pages stay open because the site wants them indexed and shared.
+ * Their sitemap index is split by French department, so the Var is one shard
+ * out of ninety-five: a single gzipped file in place of forty paginated
+ * requests, lighter on them as well as on us.
  */
 
 /** `.../annonce-vente-maison-ramatuelle-4241469.html` → `4241469` */
 const ID_FROM_URL = /-(\d+)\.html(?:$|[?#])/;
+
+/** Their listing URL grammar, used to tell listings from everything else in the sitemap. */
+const LISTING_URL = /annonce-vente-[a-z]+-[a-z0-9-]+-\d+\.html/;
 
 /**
  * The `name` field is a structured string:
@@ -35,56 +43,30 @@ const ID_FROM_URL = /-(\d+)\.html(?:$|[?#])/;
 const NAME_ROOMS = /(\d+)\s*pièces?/i;
 const NAME_AREA = /([\d\s.,]+)\s*m²/i;
 
+type CommuneEntry = { insee: string; slug: string; id: string; label?: string };
+
 export const smcAdapter: PortalAdapter = {
   key: "smc",
   name: "Maisons et Appartements / Résidences Immobilier",
-  hosts: ["maisonsetappartements.fr", "www.maisonsetappartements.fr", "residences-immobilier.com", "www.residences-immobilier.com"],
-  discoveryMode: "index",
+  hosts: [
+    "maisonsetappartements.fr",
+    "www.maisonsetappartements.fr",
+    "residences-immobilier.com",
+    "www.residences-immobilier.com",
+  ],
+  discoveryMode: "sitemap",
   /** robots.txt sets no delay; one second is the neighbourly default. */
   defaultCrawlDelayMs: 1000,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
-    const slugs = (ctx.config.communeSlugs ?? {}) as Record<string, { slug: string; id: string }>;
-    const host = (ctx.config.host as string) ?? "https://www.maisonsetappartements.fr";
-    const maxPages = (ctx.config.maxPages as number) ?? 30;
-
-    for (const insee of ctx.communeInsee) {
-      const entry = slugs[insee];
-      if (!entry) {
-        // Loud, because a missing slug is a whole commune silently absent from
-        // the product — the kind of gap that shows up as "the market is quiet".
-        console.warn(`[smc] no commune slug configured for INSEE ${insee} — skipping`);
-        continue;
-      }
-
-      const seen = new Set<string>();
-      for (let page = 1; page <= maxPages; page++) {
-        const suffix = page === 1 ? "" : `_${page}`;
-        const url = `${host}/fr/83/biens/vente/selection-biens-${entry.slug}-${entry.id}${suffix}.html`;
-
-        let html: string;
-        try {
-          html = await ctx.fetch(url);
-        } catch (err) {
-          console.warn(`[smc] index fetch failed ${url}:`, (err as Error).message);
-          break;
-        }
-
-        const found = listingUrlsOnPage(html, host);
-        // Stop on the first page that adds nothing. Their pagination happily
-        // serves the last page forever past the end, so counting pages is not
-        // enough — you have to notice you are going in circles.
-        const fresh = found.filter((u) => !seen.has(u));
-        if (fresh.length === 0) break;
-
-        for (const u of fresh) {
-          seen.add(u);
-          const id = u.match(ID_FROM_URL)?.[1];
-          if (!id) continue;
-          yield { externalId: id, url: u, communeHint: entry.slug };
-        }
-      }
+    const sitemapRoot = ctx.config.sitemap as string | undefined;
+    if (sitemapRoot) {
+      yield* discoverViaSitemap(ctx, sitemapRoot);
+      return;
     }
+    // Kept as a fallback for the day they open their search pages again, or for
+    // a portal on this engine that never closed them.
+    yield* discoverViaIndex(ctx);
   },
 
   parse(html: string, url: string): ParseResult {
@@ -95,9 +77,7 @@ export const smcAdapter: PortalAdapter = {
 
     const nodes = extractJsonLd(html);
     const product = nodesOfType(nodes, "Product")[0] ?? null;
-    if (!product) {
-      return { status: "failed", error: "no Product node in JSON-LD" };
-    }
+    if (!product) return { status: "failed", error: "no Product node in JSON-LD" };
 
     const listing = emptyListing(externalId, url);
     listing.raw = { product, agent: nodesOfType(nodes, "RealEstateAgent")[0] ?? null };
@@ -128,6 +108,8 @@ export const smcAdapter: PortalAdapter = {
 
     // The agency block: postal address and phone, published in the same format
     // across portals, which is what makes agency identity resolvable at all.
+    // Buried in ItemList → itemListElement → item, which is why the JSON-LD
+    // flattener has to descend into those.
     const agent = nodesOfType(nodes, "RealEstateAgent")[0];
     if (agent) {
       const addr = readAddress(agent.address);
@@ -158,6 +140,124 @@ export const smcAdapter: PortalAdapter = {
       : { status: "partial", listing, missing };
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Discovery
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function* discoverViaSitemap(
+  ctx: DiscoverContext,
+  root: string,
+): AsyncIterable<DiscoveredListing> {
+  const communes = (ctx.config.communes ?? []) as CommuneEntry[];
+  const wanted = communes.filter((c) => ctx.communeInsee.includes(c.insee));
+
+  warnUncovered(ctx, communes);
+
+  /**
+   * Both spellings. Their index pages use `st-tropez` and `ste-maxime`, but a
+   * listing URL may carry the unabbreviated form. Matching only the spelling we
+   * happen to have seen would drop a commune silently — which is the failure
+   * this whole adapter keeps working to avoid.
+   */
+  const slugs = new Set<string>();
+  for (const c of wanted) {
+    slugs.add(c.slug);
+    slugs.add(c.slug.replace(/^st-/, "saint-").replace(/^ste-/, "sainte-"));
+  }
+
+  const matchesCommune = communeSlugMatcher([...slugs]);
+  /** `smcSitemapAnnouncement-fr-83_1.xml.gz` — 83 is the Var. */
+  const department = (ctx.config.department as string) ?? "83";
+  const shard = new RegExp(`-fr-${department}[_-]`, "i");
+
+  let found = 0;
+  for await (const entry of walkSitemap({
+    fetch: ctx.fetch,
+    root,
+    keepSitemap: (s) => shard.test(s.loc),
+    keepUrl: (u) => LISTING_URL.test(u.loc) && matchesCommune(u),
+  })) {
+    const id = entry.loc.match(ID_FROM_URL)?.[1];
+    if (!id) continue;
+    found += 1;
+    yield { externalId: id, url: entry.loc };
+  }
+
+  if (found === 0) {
+    /**
+     * Loud, and worth distinguishing from "the market is quiet". If the shard
+     * was readable and still produced nothing, either the department filter is
+     * wrong or their URL grammar changed.
+     *
+     * Also worth watching: the sitemap index carries a `lastmod` of 2026-03-05
+     * on every shard — five months stale at the time of writing. Either the
+     * dates are not maintained or the sitemaps themselves are, and the second
+     * would mean new listings never appear here. The first real run answers it.
+     */
+    console.warn(
+      `[smc] sitemap yielded no listings for ${wanted.length} communes — ` +
+        `check the department filter (${department}) and their URL pattern`,
+    );
+  }
+}
+
+async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
+  /**
+   * A list, not a map keyed by INSEE. SMC publishes district pages — Port
+   * Grimaud and Marines de Cogolin have their own — and a district shares its
+   * parent commune's INSEE code. Keyed by INSEE one of each pair would
+   * overwrite the other and half a commune's stock would go uncollected.
+   */
+  const communes = (ctx.config.communes ?? []) as CommuneEntry[];
+  const host = (ctx.config.host as string) ?? "https://www.maisonsetappartements.fr";
+  const maxPages = (ctx.config.maxPages as number) ?? 30;
+
+  warnUncovered(ctx, communes);
+
+  for (const entry of communes.filter((c) => ctx.communeInsee.includes(c.insee))) {
+    const seen = new Set<string>();
+    for (let page = 1; page <= maxPages; page++) {
+      const suffix = page === 1 ? "" : `_${page}`;
+      const url = `${host}/fr/83/biens/vente/selection-biens-${entry.slug}-${entry.id}${suffix}.html`;
+
+      let html: string;
+      try {
+        html = await ctx.fetch(url);
+      } catch (err) {
+        console.warn(`[smc] index fetch failed ${url}:`, (err as Error).message);
+        break;
+      }
+
+      const found = listingUrlsOnPage(html, host);
+      // Stop on the first page that adds nothing. Their pagination happily
+      // serves the last page forever past the end, so counting pages is not
+      // enough — you have to notice you are going in circles.
+      const fresh = found.filter((u) => !seen.has(u));
+      if (fresh.length === 0) break;
+
+      for (const u of fresh) {
+        seen.add(u);
+        const id = u.match(ID_FROM_URL)?.[1];
+        if (!id) continue;
+        yield { externalId: id, url: u, communeHint: entry.slug };
+      }
+    }
+  }
+}
+
+function warnUncovered(ctx: DiscoverContext, communes: CommuneEntry[]): void {
+  for (const insee of ctx.communeInsee) {
+    if (communes.some((c) => c.insee === insee)) continue;
+    // Loud, because a missing entry is a whole commune silently absent from the
+    // product — the kind of gap that reads as "the market is quiet".
+    console.warn(`[smc] no commune configured for INSEE ${insee} — skipping`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Field extraction
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** Pull commune, type, rooms and area out of the structured title string. */
 function applyNameFields(listing: RawListing): void {
@@ -200,8 +300,7 @@ function listingUrlsOnPage(html: string, host: string): string[] {
   const urls = new Set<string>();
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
-    if (!href) return;
-    if (!/annonce-vente-[a-z]+-[a-z0-9-]+-\d+\.html/.test(href)) return;
+    if (!href || !LISTING_URL.test(href)) return;
     urls.add(href.startsWith("http") ? href : new URL(href, host).toString());
   });
   return [...urls];
