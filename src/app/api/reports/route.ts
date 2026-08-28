@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { dbErrorMessage } from "@/lib/db/errors";
 import { agencyStats, communeStats, overview } from "@/lib/api/queries";
 
 /**
@@ -56,7 +57,7 @@ export async function GET() {
 
     return NextResponse.json({ overview: head, communes, agencies, warnings });
   } catch (err) {
-    console.error("[api/reports]", err);
+    console.error("[api/reports]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
 }

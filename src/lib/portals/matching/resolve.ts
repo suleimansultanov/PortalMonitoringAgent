@@ -3,7 +3,14 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
-import { candidatePairs, cluster, scoreMatch, type Candidate, type MatchSignals } from "./score";
+import {
+  candidatePairs,
+  cluster,
+  incoherentMembers,
+  scoreMatch,
+  type Candidate,
+  type MatchSignals,
+} from "./score";
 
 /**
  * Turning listings into properties.
@@ -118,6 +125,43 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     const list = groups.get(key);
     if (list) list.push(row);
     else groups.set(key, [row]);
+  }
+
+  /**
+   * Break apart clusters that are not internally plausible.
+   *
+   * Union-find is transitive, so one wrong edge welds two blobs together and
+   * every further wrong edge doubles the damage. This ran for real: a single
+   * "property" in Sainte-Maxime held 47 listings priced from €739k to €7.8M,
+   * chained through dozens of accidental text matches.
+   *
+   * The pair rules have been tightened, but a check on the RESULT is a
+   * different kind of guard — it does not depend on getting the scoring right,
+   * which is exactly why it is worth having.
+   */
+  let evicted = 0;
+  for (const [key, group] of [...groups]) {
+    if (group.length < 2) continue;
+    const outliers = incoherentMembers(
+      group.map((g) => ({ id: g.id, priceEur: g.priceEur })),
+    );
+    if (outliers.length === 0) continue;
+
+    const keep = group.filter((g) => !outliers.includes(g.id));
+    groups.set(key, keep);
+    // Each evicted listing becomes a property of its own. Wrongly separating
+    // two listings is a duplicate on a screen; wrongly merging them hides a
+    // property from the client entirely.
+    for (const row of group.filter((g) => outliers.includes(g.id))) {
+      groups.set(row.id, [row]);
+      evicted += 1;
+    }
+  }
+  if (evicted > 0) {
+    console.warn(
+      `[resolve] ${communeInsee}: ${evicted} listing(s) split out of incoherent clusters ` +
+        `(price spread too wide to be one property)`,
+    );
   }
 
   let merged = 0;

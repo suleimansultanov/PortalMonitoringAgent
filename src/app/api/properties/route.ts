@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { dbErrorMessage } from "@/lib/db/errors";
 import { z } from "zod";
 import { listProperties } from "@/lib/api/queries";
 
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest) {
         "started watching will appear newer than they are.",
     });
   } catch (err) {
-    console.error("[api/properties]", err);
+    console.error("[api/properties]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
 }

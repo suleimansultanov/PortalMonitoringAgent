@@ -359,6 +359,49 @@ export async function communesForSource(sourceId: string): Promise<string[]> {
   return rows.rows.map((r) => r.commune_insee);
 }
 
+/**
+ * The N communes this source has gone longest without collecting.
+ *
+ * WHY THIS EXISTS
+ *
+ * Superimmo serves roughly one listing every two minutes, so a first crawl of
+ * twelve communes is 66 hours. That is not a single run — it is two communes a
+ * night for a week. Without this, somebody has to remember which communes are
+ * already done and hand-edit `--communes=` every evening, which is exactly the
+ * sort of bookkeeping that gets skipped once and then silently leaves a commune
+ * uncollected for a month.
+ *
+ * With it the nightly command never changes: `--stale=2` takes whichever two
+ * are furthest behind, so the backfill works through the list on its own and,
+ * once caught up, naturally becomes a round-robin refresh.
+ *
+ * Never-collected communes sort first — `NULLS FIRST` on the last run — because
+ * having nothing at all for a commune is worse than having something slightly
+ * stale.
+ */
+export async function stalestCommunes(sourceId: string, count: number): Promise<string[]> {
+  const subscribed = await communesForSource(sourceId);
+  if (subscribed.length === 0) return [];
+
+  const rows = await db.execute<{ commune_insee: string; last_run: Date | null }>(sql`
+    SELECT c.commune_insee,
+           MAX(r.started_at) AS last_run
+    FROM unnest(${subscribed}::text[]) AS c(commune_insee)
+    LEFT JOIN portal_runs r
+      ON r.source_id = ${sourceId}
+      AND c.commune_insee = ANY(r.commune_insee)
+      -- Only completed passes count. A run that aborted partway through says
+      -- nothing about whether the commune was actually collected, and treating
+      -- it as done would skip the commune for another full cycle.
+      AND r.status = 'done'
+    GROUP BY c.commune_insee
+    ORDER BY last_run ASC NULLS FIRST, c.commune_insee
+    LIMIT ${count}
+  `);
+
+  return rows.rows.map((r) => r.commune_insee);
+}
+
 /** Sources with at least one active subscriber, for the daily cron to walk. */
 export async function activeSources(): Promise<{ id: string; key: string }[]> {
   const rows = await db

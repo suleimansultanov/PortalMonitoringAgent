@@ -1,4 +1,4 @@
-import { containment, similarity } from "./text";
+import { containment, similarity, shingles } from "./text";
 
 /**
  * Deciding whether two listings are one property.
@@ -32,6 +32,12 @@ export type MatchSignals = {
   areaClose?: boolean;
   roomsEqual?: boolean;
   communeConflict?: boolean;
+  /** Shingles on the shorter side — the divisor containment is computed over. */
+  textShingles?: number;
+  /** Too little prose for similarity to mean anything. See MIN_SHINGLES. */
+  textTooShort?: boolean;
+  /** Prices too far apart to be one property, whatever the text says. */
+  priceConflict?: boolean;
 };
 
 export type MatchVerdict = {
@@ -46,6 +52,25 @@ const AREA_TOLERANCE = 0.03;
 const TEXT_FLOOR = 0.45;
 /** Above this, the same prose is the same listing. */
 const TEXT_STRONG = 0.75;
+
+/**
+ * A text has to be long enough for its similarity to mean anything.
+ *
+ * Containment is |A∩B| / min(|A|,|B|). With three shingles on each side, two
+ * listings that happen to share a stock phrase — "villa vue mer proche plage" —
+ * score a perfect 1.0. That is not evidence; it is an artefact of the divisor.
+ *
+ * THIS IS NOT HYPOTHETICAL. Green-Acres was parsed from `og:description`, a
+ * social-sharing teaser with a median length of 49 characters, and the result
+ * on a full commune was a single "property" holding 47 listings priced from
+ * €739k to €7.8M, chained together transitively through dozens of accidental
+ * perfect matches.
+ *
+ * Twelve shingles is roughly sixteen words — a real sentence of description,
+ * not a headline. Below that the text signal is discarded entirely rather than
+ * merely discounted, because a fabricated 1.0 is worse than no signal at all.
+ */
+const MIN_SHINGLES = 12;
 
 export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   const signals: MatchSignals = {};
@@ -81,6 +106,19 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
    * disagreement. Jaccard is still recorded — it is the better description of
    * how alike two full texts are, and worth having when reviewing a merge.
    */
+  /**
+   * Both texts must be substantial before their similarity counts.
+   *
+   * Checked on the SHORTER side, because containment divides by it — that is
+   * precisely where a tiny text manufactures a perfect score.
+   */
+  const shortest = Math.min(shingles(textA).size, shingles(textB).size);
+  signals.textShingles = shortest;
+  if (shortest < MIN_SHINGLES) {
+    signals.textTooShort = true;
+    return { same: false, confidence: 0, signals };
+  }
+
   const cont = containment(textA, textB);
   const jac = similarity(textA, textB);
   signals.textContainment = round(cont);
@@ -122,11 +160,34 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   const confidence = clamp(cont + support);
 
   /**
-   * Strong prose alone is enough. Below that, something else has to agree —
-   * which is what keeps two neighbouring villas sharing an agency's stock
-   * paragraph from merging into one.
+   * Prose is never enough ON ITS OWN. Something measurable has to agree.
+   *
+   * The previous rule let a containment of 0.75 merge with no corroboration at
+   * all, on the theory that identical prose means an identical listing. That
+   * holds when the prose is the agency's own paragraph and fails completely
+   * when it is a headline — and it is not the parser's job to guarantee the
+   * matcher gets good input.
+   *
+   * "Agreeing" means price or floor area, not merely the absence of a
+   * disagreement: two listings with no price on either side corroborate
+   * nothing. A hard veto on strong conflicts sits below.
    */
-  const same = cont >= TEXT_STRONG ? confidence >= 0.7 : confidence >= 0.8;
+  const corroborated = signals.priceEqual === true || signals.areaClose === true;
+
+  /**
+   * A large price gap vetoes outright, however similar the text.
+   *
+   * Softer than it sounds: an agency updating one portal and forgetting another
+   * moves a price by a few percent, and that still merges. A factor of two is
+   * not a stale listing — it is a different house sharing a template.
+   */
+  if (signals.priceDelta !== undefined && signals.priceDelta > 0.35) {
+    signals.priceConflict = true;
+    return { same: false, confidence: 0, signals };
+  }
+
+  const same =
+    corroborated && (cont >= TEXT_STRONG ? confidence >= 0.7 : confidence >= 0.8);
 
   return { same, confidence: round(confidence), signals };
 }
@@ -208,6 +269,48 @@ export function cluster(
   const out = new Map<string, string>();
   for (const id of ids) out.set(id, find(id));
   return out;
+}
+
+/**
+ * A cluster has to be internally plausible, not merely pairwise-plausible.
+ *
+ * Union-find is transitive by design: A–B and B–C makes {A,B,C} even though A
+ * and C were never compared favourably. That is correct when the links are
+ * strong and catastrophic when one is wrong — a single bad edge welds two
+ * blobs together, and each new bad edge doubles the damage.
+ *
+ * This is the last line of defence, and it is deliberately blunt: whatever the
+ * pairwise scores said, a group whose prices span more than this is not one
+ * house. It ran for real — 47 listings from €739k to €7.8M in one "property" —
+ * and no amount of tuning the pair rules removes the need for a check on the
+ * result.
+ *
+ * Returns the ids that must be split back out, keeping the largest coherent
+ * subgroup around the median price. Splitting to singletons would be safer
+ * still, but would also discard the genuine merges caught in the same net.
+ */
+const CLUSTER_PRICE_SPAN = 0.35;
+
+export function incoherentMembers(
+  members: { id: string; priceEur: number | null }[],
+): string[] {
+  const priced = members.filter((m) => m.priceEur !== null) as {
+    id: string;
+    priceEur: number;
+  }[];
+  if (priced.length < 2) return [];
+
+  const sorted = priced.map((m) => m.priceEur).sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (median <= 0) return [];
+
+  const span = (sorted[sorted.length - 1] - sorted[0]) / sorted[sorted.length - 1];
+  if (span <= CLUSTER_PRICE_SPAN) return [];
+
+  // Keep what sits near the median; evict the rest to be properties of their own.
+  return priced
+    .filter((m) => Math.abs(m.priceEur - median) / Math.max(m.priceEur, median) > CLUSTER_PRICE_SPAN)
+    .map((m) => m.id);
 }
 
 function round(n: number): number {

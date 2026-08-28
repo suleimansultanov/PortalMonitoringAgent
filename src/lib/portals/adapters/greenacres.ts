@@ -146,7 +146,26 @@ export const greenAcresAdapter: PortalAdapter = {
     // is decorated with the agency name and the commune, and og: is what they
     // hand to every other consumer of the page.
     listing.title = meta($, "og:title");
-    listing.description = meta($, "og:description");
+
+    /**
+     * The real description, from the "À propos" block — NOT `og:description`.
+     *
+     * `og:description` is a social-sharing teaser: median 49 characters, max
+     * 108. The full agency text is ~500 and sits under `.main-description-*`.
+     *
+     * This mattered far more than it looks. Deduplication compares descriptions
+     * as 5-word shingles, and 49 characters yields three or four of them — so
+     * two unrelated villas both saying "Villa vue mer, proche plage" scored a
+     * perfect containment and merged. On a full commune that cascaded through
+     * transitive clustering into a single "property" holding 47 listings priced
+     * from €739k to €7.8M.
+     *
+     * The matcher is now guarded against short text independently (see
+     * score.ts), but the honest fix is to read the text the page actually has.
+     */
+    listing.description =
+      firstText($, ".main-description-content, .main-description, [class*='description-content']") ??
+      meta($, "og:description");
     listing.imageUrl = meta($, "og:image");
 
     /**

@@ -9,7 +9,7 @@ import {
 } from "@/lib/db/schema";
 import { storageDescription } from "@/lib/s3/pages";
 import { COLLECTION_INSEE } from "./communes";
-import { communesForSource, runSource } from "./runner/run";
+import { communesForSource, runSource, stalestCommunes } from "./runner/run";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { listAdapters } from "./registry";
 
@@ -26,7 +26,14 @@ import { listAdapters } from "./registry";
  * exceed.
  */
 
-type Args = { source: string; limit?: number; communes?: string[]; skipResolve: boolean };
+type Args = {
+  source: string;
+  limit?: number;
+  communes?: string[];
+  /** Take the N communes this source has gone longest without collecting. */
+  stale?: number;
+  skipResolve: boolean;
+};
 
 function parseArgs(argv: string[]): Args {
   const get = (name: string): string | undefined =>
@@ -34,11 +41,13 @@ function parseArgs(argv: string[]): Args {
 
   const limitRaw = get("limit");
   const communesRaw = get("communes");
+  const staleRaw = get("stale");
 
   return {
     source: get("source") ?? "all",
     limit: limitRaw ? Number(limitRaw) : undefined,
     communes: communesRaw ? communesRaw.split(",").map((c) => c.trim()) : undefined,
+    stale: staleRaw ? Number(staleRaw) : undefined,
     skipResolve: argv.includes("--skip-resolve"),
   };
 }
@@ -62,13 +71,25 @@ export async function collect(args: Args): Promise<void> {
   }
 
   for (const source of targets) {
-    const communes = args.communes ?? (await communesForSource(source.id));
+    /**
+     * Explicit list wins; then `--stale=N`; then everything subscribed.
+     *
+     * `--stale` is what makes a week-long backfill runnable as the SAME command
+     * every night — see stalestCommunes(). Slow portals need it; fast ones can
+     * take the whole list in one go.
+     */
+    const communes =
+      args.communes ??
+      (args.stale ? await stalestCommunes(source.id, args.stale) : await communesForSource(source.id));
     if (communes.length === 0) {
       console.log(`\n${source.key}: no client subscribes to it — skipping`);
       continue;
     }
 
-    console.log(`\n── ${source.key} ── ${communes.length} communes`);
+    console.log(
+      `\n── ${source.key} ── ${communes.length} communes` +
+        (args.stale ? ` (the ${communes.length} least recently collected)` : ""),
+    );
     if (!source.enabled) {
       // Run anyway when asked directly. The enabled flag guards the scheduler,
       // not a human who typed the command.

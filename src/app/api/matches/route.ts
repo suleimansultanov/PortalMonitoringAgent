@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { dbErrorMessage } from "@/lib/db/errors";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -44,7 +45,7 @@ export async function GET(req: NextRequest) {
       testDataIncluded: parsed.data.includeTestData,
     });
   } catch (err) {
-    console.error("[api/matches]", err);
+    console.error("[api/matches]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
 }
@@ -92,7 +93,7 @@ export async function PATCH(req: NextRequest) {
     if (!updated) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json(updated);
   } catch (err) {
-    console.error("[api/matches PATCH]", err);
+    console.error("[api/matches PATCH]", dbErrorMessage(err));
     return NextResponse.json({ error: "update failed" }, { status: 500 });
   }
 }

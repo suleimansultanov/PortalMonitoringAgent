@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scoreMatch, cluster, candidatePairs, type Candidate } from "./score";
+import {
+  scoreMatch,
+  cluster,
+  candidatePairs,
+  incoherentMembers,
+  type Candidate,
+} from "./score";
 import { containment, normaliseForCompare } from "./text";
 
 /**
@@ -117,5 +123,104 @@ test("blocking compares within a commune and across the unplaced", () => {
   assert.ok(
     !pairs.some(([x, y]) => (x.id === "1" && y.id === "3") || (x.id === "3" && y.id === "1")),
     "two different communes are never compared",
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: the 47-listing blob
+//
+// A full commune produced one "property" holding 47 listings priced from €739k
+// to €7.8M. Cause: Green-Acres descriptions were parsed from og:description —
+// median 49 characters — so containment divided by three or four shingles and
+// returned a perfect 1.0 for any two listings sharing a stock phrase. Transitive
+// clustering then welded the accidents together.
+//
+// Three guards now stand against it, and each is tested separately because each
+// would have been enough on its own.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Real BARNES prose — long enough for the text signal to be legitimate. */
+const LONG_TEXT = BARNES;
+
+/** Build a candidate from the file's base fixture. */
+function candidate(over: Partial<Candidate> & { id: string }): Candidate {
+  return { ...base, agencyRef: null, ...over };
+}
+
+const SHORT_A = "Villa vue mer proche plage Ramatuelle";
+const SHORT_B = "Villa vue mer proche plage Sainte-Maxime";
+
+test("a headline-length description cannot drive a merge", () => {
+  const a = candidate({ id: "a", description: SHORT_A, priceEur: 739_000, areaM2: 90 });
+  const b = candidate({ id: "b", description: SHORT_B, priceEur: 739_000, areaM2: 90 });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false, "39 characters is not evidence of anything");
+  assert.equal(v.signals.textTooShort, true);
+});
+
+test("identical prose alone does not merge — something measurable must agree", () => {
+  // Two neighbouring villas sharing an agency's stock paragraph, no price or
+  // area on either side to corroborate.
+  const prose = LONG_TEXT;
+  const a = candidate({ id: "a", description: prose, priceEur: null, areaM2: null });
+  const b = candidate({ id: "b", description: prose, priceEur: null, areaM2: null });
+
+  assert.equal(scoreMatch(a, b).same, false);
+});
+
+test("identical prose plus an agreeing price does merge", () => {
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 2_000_000, areaM2: 200 });
+  const b = candidate({ id: "b", description: LONG_TEXT, priceEur: 2_000_000, areaM2: 200 });
+
+  assert.equal(scoreMatch(a, b).same, true);
+});
+
+test("a price gap of more than a third vetoes, however similar the text", () => {
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 739_000, areaM2: 200 });
+  const b = candidate({ id: "b", description: LONG_TEXT, priceEur: 7_800_000, areaM2: 200 });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.priceConflict, true);
+});
+
+test("a stale price on one portal still merges — that is the normal case", () => {
+  // An agency updated one portal and forgot the other. 4% apart.
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 2_000_000, areaM2: 200 });
+  const b = candidate({ id: "b", description: LONG_TEXT, priceEur: 1_920_000, areaM2: 200 });
+
+  assert.equal(scoreMatch(a, b).same, true, "area agrees, price is merely stale");
+});
+
+test("an incoherent cluster is broken apart after the fact", () => {
+  // The last line of defence: whatever the pair scores said, this is not one
+  // house. Independent of the scoring, which is the point of having it.
+  const outliers = incoherentMembers([
+    { id: "a", priceEur: 739_000 },
+    { id: "b", priceEur: 780_000 },
+    { id: "c", priceEur: 7_800_000 },
+  ]);
+  assert.deepEqual(outliers, ["c"]);
+});
+
+test("a coherent cluster is left alone", () => {
+  assert.deepEqual(
+    incoherentMembers([
+      { id: "a", priceEur: 2_000_000 },
+      { id: "b", priceEur: 1_950_000 },
+      { id: "c", priceEur: 2_050_000 },
+    ]),
+    [],
+  );
+});
+
+test("a cluster with no prices is not split — unknown is not a conflict", () => {
+  assert.deepEqual(
+    incoherentMembers([
+      { id: "a", priceEur: null },
+      { id: "b", priceEur: null },
+    ]),
+    [],
   );
 });
