@@ -1,0 +1,59 @@
+<!-- Captured with the real collector on 2026-08-29
+     https://www.maisonsetappartements.fr/robots.txt
+     Trim by hand before committing: keep everything the parser reads,
+     drop contact forms, country lists and share widgets. A fixture nobody
+     can read in a diff stops being a regression net. -->
+User-agent: *
+Disallow: /units_tests/
+Disallow: /routines/
+Disallow: /sql/
+Disallow: /logs_erreurs/
+Disallow: /views/Error.class.php
+Disallow: /views/sitemapBuild.php
+Disallow: /views/RefAgencProp.php$
+Disallow: /views/agencyListingProperties.php$
+Disallow: /go-pear.php
+Disallow: /301.php
+Disallow: /403.php
+Disallow: /rss*.xml
+Disallow: /plan-du-site.asp
+Disallow: /infos_legales.asp
+Disallow: /liste-departements.asp
+Disallow: /resultat-google.asp
+Disallow: /default.asp
+Disallow: /plan-du-site-rss.asp
+Disallow: /MaSelection.asp
+Disallow: /liens.asp
+Disallow: /rechercher.asp
+Disallow: /liensBoutons.asp
+Disallow: /fiche_agence.asp
+Disallow: /fiche-carte.asp
+Disallow: /traiteclic.asp
+Disallow: /fr/fr/*.html
+Disallow: /rss-liste-actu.asp
+Disallow: /le-magazine-immobilier-*_2.html
+Disallow: /immobilier-mandelieu-la-napoule-06_1292_*.html
+Disallow: /page_agence.asp?IdAgence=1292&IdAnnonce=55786&Reference=1941N
+Disallow: /smartphone/*
+Disallow: /fr/*-search_property
+Disallow: /web_agence-www*html$
+Disallow: /web_promoteur-www*html$
+Disallow: /php5-fcgi/*
+Disallow: /recup_villes.asp
+Disallow: /sitemap_mag.asp
+Disallow: /fic
+Disallow: /fiche_annonce.asp
+Disallow: /sommaire.asp
+Disallow: /alerte-email.asp
+Disallow: /Default.asp
+Disallow: /en/le_lien
+Disallow: /*.htm$
+Disallow: /fiche_annonce.asp
+Disallow: /abonnement.asp
+Disallow: /asp/new_carte.asp
+Disallow: real-estate---italie-*.html$
+Disallow: /immoneufEN.swf
+Disallow: /real-estate---italie-239.html
+Disallow: /real-estate--_4359_1.html
+
+Sitemap: https://www.maisonsetappartements.fr/sitemap.xml

@@ -6,7 +6,8 @@ import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing } from "../types";
 import { diffListings, shouldAbort } from "./diff";
-import { createFetcher, BlockedError } from "./fetcher";
+import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
+import { createBrowserSession, type BrowserSession } from "./browser";
 
 /**
  * A refusal, as opposed to a rate limit.
@@ -107,7 +108,32 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     .returning({ id: portalRuns.id });
 
   const runId = run.id;
-  const fetcher = createFetcher({ delayMs: source.crawlDelayMs });
+
+  /**
+   * Which client this source is collected with.
+   *
+   * Per source, from its own config, never a global switch — see the note at
+   * the top of `browser.ts` for when a browser is legitimate here and when it
+   * is not. The default stays HTTP: most portals serve it, and Playwright is
+   * several hundred megabytes of dependency to load into a run that is only
+   * going to read XML.
+   *
+   * One browser for the whole pass, closed in `finally` — including when the
+   * pass throws. A Chromium left running after a failed nightly is the sort of
+   * thing that is noticed a week later, as a machine out of memory.
+   */
+  const useBrowser = (source.config as Record<string, unknown> | null)?.fetchMode === "browser";
+  let browserSession: BrowserSession | null = null;
+
+  if (useBrowser) {
+    browserSession = await createBrowserSession({
+      delayMs: source.crawlDelayMs,
+      userAgent: USER_AGENT,
+    });
+    console.log(`[run:${source.key}] fetching through a browser (fetchMode: browser)`);
+  }
+
+  const fetcher = browserSession?.fetch ?? createFetcher({ delayMs: source.crawlDelayMs });
 
   try {
     // ── 1. Discover ───────────────────────────────────────────────────────
@@ -364,6 +390,13 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       .set({ status: "error", error: message.slice(0, 2000), completedAt: new Date() })
       .where(eq(portalRuns.id, runId));
     throw err;
+  } finally {
+    if (browserSession) {
+      await browserSession.close().catch((err) => {
+        // Never let a failing teardown mask the run's own outcome.
+        console.warn(`[run:${source.key}] browser did not close cleanly:`, (err as Error)?.message);
+      });
+    }
   }
 }
 

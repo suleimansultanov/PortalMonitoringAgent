@@ -1,0 +1,48 @@
+<!-- Captured with the real collector on 2026-08-29
+     https://www.etreproprio.com/robots.txt
+     Trim by hand before committing: keep everything the parser reads,
+     drop contact forms, country lists and share widgets. A fixture nobody
+     can read in a diff stops being a regression net. -->
+User-agent: *
+Content-Signal: search=yes,ai-train=no
+Allow: /
+
+User-agent: wotbox
+Disallow: /
+User-agent: MJ12bot
+Disallow: /
+User-agent: dotbot
+Disallow: /
+user-agent: sitebot
+disallow: /
+
+User-agent: SemrushBot
+Disallow: /
+User-agent: SemrushBot-SA
+Disallow: /
+User-agent: SemrushBot-BA
+Disallow: /
+User-agent: SemrushBot-SI
+Disallow: /
+User-agent: SemrushBot-SWA
+Disallow: /
+User-agent: SemrushBot-CT
+Disallow: /
+User-agent: SemrushBot-BM
+Disallow: /
+
+User-Agent: *
+Disallow : /*?tag=*
+Disallow : /?m=*
+Disallow : /?p=*
+Disallow : /*?type=
+Disallow : /*?em_x=
+Disallow : /*?cp=
+Disallow : /*height=
+Disallow : /*?fr
+Disallow : /*?fp
+Disallow : /*?trv
+Disallow : /company
+Disallow : /immobilier-recherche
+
+Disallow : /annonce-immobiliere-gratuite-pro/passerelle-*

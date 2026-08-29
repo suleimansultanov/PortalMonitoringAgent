@@ -20,6 +20,17 @@ import type { PoliteFetch } from "../types";
  * that only strips types (`node --experimental-strip-types`) refuses to load
  * the file. Two extra lines buys the ability to run this anywhere.
  */
+/**
+ * Who we say we are, on every path.
+ *
+ * One constant because the browser path must introduce itself identically — a
+ * client that identifies itself can be allowlisted, contacted or asked to slow
+ * down, and two different strings would mean a portal allowlisting one of them
+ * and still refusing the other.
+ */
+export const USER_AGENT =
+  "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)";
+
 export class BlockedError extends Error {
   url: string;
   signal: string;
@@ -157,7 +168,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
      * placeholder, not a value to ship.
      */
     userAgent = process.env.CRAWLER_USER_AGENT ??
-      "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)",
+      USER_AGENT,
     attempts = 3,
     timeoutMs = 20_000,
     now = () => Date.now(),

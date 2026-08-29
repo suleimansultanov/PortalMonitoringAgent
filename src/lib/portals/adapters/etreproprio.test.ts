@@ -67,3 +67,54 @@ test("a page with no Product node fails loudly rather than returning an empty li
   const res = etreproprioAdapter.parse("<html><body>rien</body></html>", URL_);
   assert.equal(res.status, "failed");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The commune, from real listing URLs saved by the collector on 2026-08-29.
+// The original pattern read their SEARCH url form and never matched a detail
+// page, so every listing arrived with no commune — and a listing with no
+// commune gets no property row and appears on no screen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HTML = fs.readFileSync(FIXTURE, "utf8");
+
+function communeOf(url: string): string | null {
+  const res = etreproprioAdapter.parse(HTML, url);
+  assert.ok("listing" in res, `parse returned no listing for ${url}`);
+  return res.listing.communeRaw;
+}
+
+test("the commune is read off a real listing URL, where it is the last segment", () => {
+  assert.equal(
+    communeOf(
+      "https://www.etreproprio.com/immobilier-24697579-vente-superbe-propriete-de-standing-neuve-a-vendre-a-ramatuelle-ramatuelle",
+    ),
+    "Ramatuelle",
+  );
+  assert.equal(
+    communeOf("https://www.etreproprio.com/immobilier-25038707-vente-maison-178-m-a-ramatuelle-ramatuelle"),
+    "Ramatuelle",
+  );
+});
+
+test("their own office address is never mistaken for the property's", () => {
+  // Every page carries addressLocality "Labège", postalCode 31670 — Etreproprio's
+  // office near Toulouse. Structured, prominent, and four hundred miles wrong.
+  const res = etreproprioAdapter.parse(
+    HTML,
+    "https://www.etreproprio.com/immobilier-25038707-vente-maison-178-m-a-ramatuelle-ramatuelle",
+  );
+  assert.ok("listing" in res);
+  assert.notEqual(res.listing.communeRaw, "Labège");
+  assert.equal(res.listing.postalCode, null);
+});
+
+test("the longest matching slug wins, so a commune is not read as part of another", () => {
+  assert.equal(
+    communeOf("https://www.etreproprio.com/immobilier-1-vente-villa-a-la-croix-valmer"),
+    "La Croix-Valmer",
+  );
+});
+
+test("a URL carrying no commune we watch leaves it null rather than guessing", () => {
+  assert.equal(communeOf("https://www.etreproprio.com/immobilier-9-vente-maison-a-lyon"), null);
+});

@@ -71,12 +71,23 @@ function sourceSeeds(): SourceSeed[] {
       crawlDelayMs: 1000,
       permissionNote:
         "robots.txt: Allow: / with /immobilier-recherche disallowed — we walk the " +
-        "per-commune index pages, not the search. Checked 2026-08-25.",
+        "per-commune index pages, not the search. Checked 2026-08-25. " +
+        "Re-measured 2026-08-29: those same commune pages answer 403 to the HTTP " +
+        "client, /sitemap.xml answers 403 and robots.txt advertises no sitemap, so " +
+        "the only route left to what robots.txt permits is a browser. " +
+        "Their robots.txt also carries Content-Signal: search=yes, ai-train=no — " +
+        "this corpus must never be used to train a model.",
       config: {
         host: "https://www.etreproprio.com",
         communeSlugs: ETREPROPRIO_SLUGS,
         types: ["maison", "appartement", "terrain"],
         maxPages: 20,
+        /**
+         * Their protection refuses our HTTP client on the very pages robots.txt
+         * allows. Read with a browser that says who it is — see `browser.ts` for
+         * where that line is drawn, and note that no disguise is used.
+         */
+        fetchMode: "browser",
       },
     },
     {
@@ -137,11 +148,16 @@ function sourceSeeds(): SourceSeed[] {
       crawlDelayMs: 1000,
       permissionNote:
         "robots.txt permits listing and detail pages; only maps and service endpoints " +
-        "are disallowed. They also publish a per-property sitemap. Checked 2026-08-25.",
+        "are disallowed. They also publish a per-property sitemap. Checked 2026-08-25. " +
+        "Re-measured 2026-08-29: the commune index is served to the HTTP client, but " +
+        "detail pages answer 405 — including a URL taken from a page we had already " +
+        "saved, so it is a refusal rather than a dead link. Browser mode is for the " +
+        "detail pages; discovery would work either way.",
       config: {
         host: "https://www.luxuryestate.com",
         communePaths: luxuryEstatePathsByInsee(),
         maxPages: 30,
+        fetchMode: "browser",
       },
     },
   ];

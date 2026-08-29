@@ -8,6 +8,8 @@ import {
   type RawListing,
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
+import { ETREPROPRIO_SLUGS } from "../communePaths";
+import { GULF_OF_SAINT_TROPEZ } from "../communes";
 
 /**
  * Etreproprio.
@@ -170,16 +172,55 @@ function applyDomFields(html: string, listing: RawListing): void {
 }
 
 /**
- * The commune comes out of the URL rather than the page.
+ * The commune comes out of the URL rather than the page — and it has to.
  *
- * Etreproprio embeds the INSEE code in its own paths — `...-v83119/maison` —
- * which is more reliable than anything printed on the listing, because agencies
- * routinely write "Saint-Tropez" for a property in Ramatuelle.
+ * Their JSON-LD carries `addressLocality: "Labège", postalCode: "31670"` on
+ * every listing: that is Etreproprio's own office near Toulouse, not the
+ * property. Reading it because it looks structured would move the whole Gulf of
+ * Saint-Tropez to the Haute-Garonne, plausibly and silently.
+ *
+ * TWO URL SHAPES, AND ONLY ONE OF THEM WAS HANDLED
+ *
+ * Their search pages carry the INSEE code — `/immobilier-vente-ramatuelle-v83101/maison`
+ * — and the original pattern read that. But a listing URL looks like
+ * `/immobilier-24697579-vente-superbe-propriete-...-ramatuelle`: no INSEE, and
+ * the commune is the last segment rather than the first. The pattern therefore
+ * never matched a single detail page, and every listing arrived with no commune
+ * at all — which means no property row, which means invisible on every screen.
+ *
+ * The trailing slug is matched against the ones we configured rather than taken
+ * positionally, and the longest match wins, so "la-croix-valmer" is not read as
+ * "valmer". The canonical label is then handed to `resolveCommune`, which is
+ * built from exactly those labels — no second spelling to keep in step.
  */
 function applyCommuneFromUrl(url: string, listing: RawListing): void {
-  const m = url.match(/immobilier-vente-([a-z0-9-]+)-v(\d{5})/);
-  if (!m) return;
-  listing.communeRaw = m[1].replace(/-/g, " ");
+  // Search-page form, kept in case discovery ever yields one.
+  const indexed = url.match(/immobilier-vente-([a-z0-9-]+)-v(\d{5})/);
+  if (indexed) {
+    listing.communeRaw = indexed[1].replace(/-/g, " ");
+    listing.postalCode = null;
+    return;
+  }
+
+  let path: string;
+  try {
+    path = new URL(url).pathname.replace(/\/+$/, "");
+  } catch {
+    return;
+  }
+
+  let bestSlug: string | null = null;
+  for (const slug of Object.values(ETREPROPRIO_SLUGS)) {
+    if (path.endsWith(`-${slug}`) && (bestSlug === null || slug.length > bestSlug.length)) {
+      bestSlug = slug;
+    }
+  }
+  if (!bestSlug) return;
+
+  const insee = Object.keys(ETREPROPRIO_SLUGS).find((i) => ETREPROPRIO_SLUGS[i] === bestSlug);
+  const entry = insee ? GULF_OF_SAINT_TROPEZ.find((c) => c.insee === insee) : undefined;
+
+  listing.communeRaw = entry?.label ?? bestSlug.replace(/-/g, " ");
   listing.postalCode = null;
 }
 

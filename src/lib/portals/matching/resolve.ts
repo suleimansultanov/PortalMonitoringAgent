@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
@@ -37,6 +37,42 @@ export type ResolveSummary = {
   properties: number;
   merged: number;
 };
+
+/**
+ * Which existing property row a group may reuse.
+ *
+ * Reusing one keeps bookmarked links alive across a nightly re-resolve. But a
+ * row can only speak for one property, so once a group has taken it the next
+ * group has to start a new one — otherwise a split silently collapses back into
+ * a merge.
+ */
+export function chooseExistingId(
+  memberPropertyIds: (string | null)[],
+  claimed: Set<string>,
+  ownedByThisCommune?: Set<string>,
+): string | null {
+  for (const id of memberPropertyIds) {
+    if (!id) continue;
+    if (claimed.has(id)) continue;
+    /**
+     * A row from another commune is not ours to take.
+     *
+     * Resolution runs one commune at a time, and `claimed` only guards against
+     * two groups colliding INSIDE a pass. Two groups in two different communes
+     * never meet, so both would find the same old property id on their listings
+     * and both would reuse it — quietly putting a plot in Sainte-Maxime and a
+     * plot in Roquebrune-sur-Argens under one property, at €350k and €1.05M.
+     * Neither pass can even notice: from inside each one the group is perfectly
+     * coherent, and the price guard has nothing to object to.
+     *
+     * Ownership is the fix because it needs no shared state between passes: a
+     * property row belongs to the commune written on it.
+     */
+    if (ownedByThisCommune && !ownedByThisCommune.has(id)) continue;
+    return id;
+  }
+  return null;
+}
 
 export async function resolveCommuneIdentities(communeInsee: string): Promise<ResolveSummary> {
   const threshold = await getNumberSetting(
@@ -166,7 +202,40 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
 
   let merged = 0;
 
-  for (const [, group] of groups) {
+  /**
+   * Property rows already taken by a group in THIS pass.
+   *
+   * Without it, splitting never lands. When an old over-merged cluster is
+   * broken into three, all three groups still contain a listing pointing at the
+   * same old property row — each one reuses it, each overwrites the last, and
+   * every listing ends up back under a single property. The matcher decides
+   * correctly and the writer quietly undoes the decision.
+   *
+   * That is what kept the count at 2412 while `resolve` reported 2814 clusters:
+   * four hundred splits were computed and then discarded one line before they
+   * would have been saved.
+   */
+  const claimed = new Set<string>();
+
+  /**
+   * The property rows this commune already owns. Anything else on a listing is
+   * a leftover from a merge made before the commune was known, or from an
+   * earlier over-merge across commune boundaries — and must not be reused here.
+   */
+  const ownRows = await db
+    .select({ id: properties.id })
+    .from(properties)
+    .where(eq(properties.communeInsee, communeInsee));
+  const ownedByThisCommune = new Set(ownRows.map((r) => r.id));
+
+  /**
+   * Biggest group first, so when a cluster splits the dominant half keeps the
+   * existing id and the offshoots get new ones. Any bookmarked link then still
+   * lands on the property most of the listings belong to.
+   */
+  const ordered = [...groups.values()].sort((a, b) => b.length - a.length);
+
+  for (const group of ordered) {
     if (group.length > 1) merged += group.length - 1;
 
     /**
@@ -174,7 +243,12 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
      * Without this, a nightly re-resolve would orphan yesterday's property rows
      * and every id the client app had bookmarked would go stale.
      */
-    const existingId = group.find((g) => g.propertyId)?.propertyId ?? null;
+    const existingId = chooseExistingId(
+      group.map((g) => g.propertyId ?? null),
+      claimed,
+      ownedByThisCommune,
+    );
+    if (existingId) claimed.add(existingId);
     const best = pickRepresentative(group);
 
     const values = {
@@ -244,6 +318,33 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
         })
         .where(eq(portalListings.id, row.id));
     }
+  }
+
+  /**
+   * Properties left with nothing behind them.
+   *
+   * A row whose listings have all moved to another property, or all been
+   * delisted, stays `active` and keeps appearing as a card with no portal link
+   * on it. Twenty-three of these had accumulated. Marked rather than deleted:
+   * the id may be bookmarked, and a property that returns should come back as
+   * itself rather than as a new one.
+   */
+  const orphaned = await db.execute<{ n: number }>(sql`
+    UPDATE ${properties} p
+       SET status = 'delisted', updated_at = now()
+     WHERE p.commune_insee = ${communeInsee}
+       AND p.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM ${portalListings} l
+          WHERE l.property_id = p.id AND l.status = 'active'
+       )
+  `);
+  const orphanCount = Number((orphaned as { rowCount?: number }).rowCount ?? 0);
+  if (orphanCount > 0) {
+    console.warn(
+      `[resolve] ${communeInsee}: ${orphanCount} propert${orphanCount === 1 ? "y" : "ies"} ` +
+        `had no active listing left and were delisted`,
+    );
   }
 
   return {
