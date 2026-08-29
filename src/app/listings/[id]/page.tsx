@@ -63,6 +63,43 @@ export default async function PropertyPage({
 
   const { property: p, listings, events, agency, description } = detail;
 
+  /**
+   * What each portal published about this property, beyond the fields we lift into
+   * columns. Read straight out of `raw`, which is where the adapters put the
+   * characteristics block whole.
+   */
+  const characteristics = listings
+    .map((l) => {
+      const raw = (l.raw ?? {}) as {
+        characteristics?: Record<string, string>;
+        flags?: string[];
+        dpe?: string | null;
+        ges?: string | null;
+        energyKwhM2Year?: number | null;
+        ghgCo2M2Year?: number | null;
+      };
+
+      const rows: [string, string][] = Object.entries(raw.characteristics ?? {});
+
+      // The energy certificate is worth naming in full rather than leaving as
+      // a bare letter: "DPE" means nothing to a buyer who has not met one.
+      if (raw.dpe) {
+        rows.unshift([
+          "Energy rating (DPE)",
+          raw.energyKwhM2Year ? `${raw.dpe} — ${raw.energyKwhM2Year} kWh/m²·yr` : raw.dpe,
+        ]);
+      }
+      if (raw.ges) {
+        rows.push([
+          "Emissions (GES)",
+          raw.ghgCo2M2Year ? `${raw.ges} — ${raw.ghgCo2M2Year} kg CO₂/m²·yr` : raw.ges,
+        ]);
+      }
+
+      return { source: l.id, sourceName: l.sourceName, rows, flags: raw.flags ?? [] };
+    })
+    .filter((c) => c.rows.length > 0 || c.flags.length > 0);
+
   // Do the portals agree on the price? A disagreement is a finding, not noise.
   const prices = listings.map((l) => l.priceEur).filter((x): x is number => x !== null);
   const spread =
@@ -176,6 +213,57 @@ export default async function PropertyPage({
           </div>
 
           {warnings.length > 0 && <Warnings items={warnings} />}
+
+          {characteristics.length > 0 && (
+            <Card
+              title="Characteristics"
+              aside={
+                <span className="text-[11px] text-[var(--color-muted)]">
+                  as each portal prints them
+                </span>
+              }
+            >
+              <div className="divide-y divide-[var(--color-line-soft)]">
+                {characteristics.map((c) => (
+                  <div key={c.source} className="px-5 py-4">
+                    {/*
+                      Named even when there is only one portal. Two portals
+                      routinely disagree about area, room count or DPE, and a
+                      merged table would hide which one to believe — the
+                      disagreement is a finding, the same as a price spread.
+                    */}
+                    <div className="mb-3 text-[10px] uppercase tracking-[0.14em] text-[var(--color-faint)]">
+                      {c.sourceName}
+                    </div>
+
+                    {c.rows.length > 0 && (
+                      <dl className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+                        {c.rows.map(([label, value]) => (
+                          <div key={label} className="flex justify-between gap-4 text-[12px]">
+                            <dt className="text-[var(--color-muted)]">{label}</dt>
+                            <dd className="text-right">{value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+
+                    {c.flags.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {c.flags.map((f) => (
+                          <span
+                            key={f}
+                            className="rounded border border-[var(--color-line)] px-1.5 py-0.5 text-[10px] text-[var(--color-muted)]"
+                          >
+                            {f}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {description && (
             <Card title="As the agency describes it">

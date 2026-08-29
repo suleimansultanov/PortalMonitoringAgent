@@ -276,3 +276,37 @@ test("a repeated page stops the crawl instead of looping", async () => {
   });
   assert.equal(urls.length, 24);
 });
+
+test("the whole characteristics list is kept, not just the four typed fields", () => {
+  // The icon list carries more than area, land, rooms and bedrooms, and the
+  // rest was being dropped on the floor.
+  const raw = parsedDetail().listing.raw as { characteristics?: Record<string, string> };
+
+  assert.equal(raw.characteristics?.["Type de bien"], "Villa");
+  assert.equal(raw.characteristics?.["Surface"], "599 m²");
+  assert.equal(raw.characteristics?.["Terrain"], "2 730 m²");
+  assert.equal(raw.characteristics?.["Pièces"], "8");
+  assert.equal(raw.characteristics?.["Chambres"], "7");
+});
+
+test("DPE and GES are read from the marked letter, not from the text", () => {
+  /**
+   * All seven letters are in the markup whatever the rating — only one carries
+   * `active`. Reading the text would return "A" for every property on the site.
+   */
+  const raw = parsedDetail().listing.raw as { dpe?: string | null; ges?: string | null };
+  assert.equal(raw.dpe, "A");
+  assert.equal(raw.ges, "A");
+});
+
+test("the unlabelled amenities are kept too — there are more of them than of the labelled ones", () => {
+  /**
+   * Green-Acres prints two lists: labelled pairs (Surface, Terrain, Pièces) and
+   * then a longer run of bare amenities. The second list is where most of what
+   * a buyer actually asks about lives, and none of it was being stored.
+   */
+  const raw = parsedDetail().listing.raw as { flags?: string[] };
+  for (const flag of ["Piscine", "Cave", "Alarme", "Climatisation", "Gardien", "Digicode"]) {
+    assert.ok(raw.flags?.includes(flag), `missing amenity: ${flag}`);
+  }
+});

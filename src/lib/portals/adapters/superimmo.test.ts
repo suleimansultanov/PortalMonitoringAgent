@@ -81,3 +81,70 @@ test("a page with no body fails rather than returning an empty listing", () => {
   const res = superimmoAdapter.parse("<html><body></body></html>", URL_);
   assert.equal(res.status, "failed");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The characteristics block, the energy certificate and the coordinates.
+//
+// A second fixture, trimmed from a page the collector saved on 2026-08-26. The
+// original detail fixture predates this markup, and a parser proved against an
+// older capture proves nothing about what the site serves today.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CHARACTERISTICS_FIXTURE = path.join(
+  HERE,
+  "../__fixtures__/superimmo-characteristics.html",
+);
+const CHARACTERISTICS_URL =
+  "https://www.superimmo.com/annonces/achat-maison-300m-saint-tropez-83990-x102eqg";
+
+function parseCharacteristics() {
+  const html = fs.readFileSync(CHARACTERISTICS_FIXTURE, "utf8");
+  const res = superimmoAdapter.parse(html, CHARACTERISTICS_URL);
+  assert.ok("listing" in res, `parse returned no listing: ${"error" in res ? res.error : ""}`);
+  return res.listing;
+}
+
+test("coordinates are read from the map container", () => {
+  // They were in the markup from the first run and nobody took them. Two
+  // listings twenty metres apart are the same villa — a far steadier signal
+  // than prose agencies copy between neighbouring properties.
+  const l = parseCharacteristics();
+  assert.equal(l.lat, 43.2153);
+  assert.equal(l.lon, 6.61228);
+});
+
+test("the whole characteristics block is kept, labelled and unlabelled alike", () => {
+  const raw = parseCharacteristics().raw as {
+    characteristics?: Record<string, string>;
+    flags?: string[];
+  };
+
+  assert.equal(raw.characteristics?.["Prix de vente"], "4 400 000 €");
+  for (const flag of ["Piscine", "Vue sur campagne", "Climatisation", "Cheminée"]) {
+    assert.ok(raw.flags?.includes(flag), `missing flag: ${flag}`);
+  }
+});
+
+test("the energy certificate comes out as a letter and a figure", () => {
+  const raw = parseCharacteristics().raw as {
+    dpe?: string | null;
+    ges?: string | null;
+    energyKwhM2Year?: number | null;
+    ghgCo2M2Year?: number | null;
+  };
+
+  assert.equal(raw.dpe, "C");
+  assert.equal(raw.ges, "C");
+  assert.equal(raw.energyKwhM2Year, 151);
+
+  // The two graphs put their figure in different elements, so reading only the
+  // first one silently loses emissions.
+  assert.equal(raw.ghgCo2M2Year, 28);
+});
+
+test("only the leading number is taken out of an emissions figure", () => {
+  // "28 kgeqCO2/m²/an" stripped of non-digits is 282 — wrong, and plausible
+  // enough to survive a review.
+  const raw = parseCharacteristics().raw as { ghgCo2M2Year?: number | null };
+  assert.notEqual(raw.ghgCo2M2Year, 282);
+});

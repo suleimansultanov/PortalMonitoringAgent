@@ -8,6 +8,7 @@ import {
   type RawListing,
 } from "../types";
 import { num } from "../jsonld";
+import { collectCharacteristics, isEmpty } from "../attributes";
 
 /**
  * Green-Acres.
@@ -269,8 +270,47 @@ export const greenAcresAdapter: PortalAdapter = {
      */
     listing.agencyRef = labelled($, "Référence");
 
+    /**
+     * "Toutes les caractéristiques" — the icon list, whole.
+     *
+     * Each entry is a label and a value in the same block; the typed fields
+     * above already take four of them, and the rest were being dropped. Taken
+     * wholesale so an entry nobody anticipated still arrives.
+     */
+    const pairs: string[] = [];
+    $("ul.main-characteristics li .description").each((_, el) => {
+      const parts = $(el)
+        .find("p")
+        .map((_i, p) => $(p).text().replace(/\s+/g, " ").trim())
+        .get()
+        .filter(Boolean);
+      if (parts.length >= 2) pairs.push(`${parts[0]} : ${parts.slice(1).join(", ")}`);
+      else if (parts.length === 1) pairs.push(parts[0]);
+    });
+    const characteristics = collectCharacteristics(pairs);
+
+    /**
+     * DPE and GES, read from which letter carries `active`.
+     *
+     * The scale is drawn as seven divs and only the current one is marked, so
+     * the letter has to come from the class rather than from the text — every
+     * letter is present in the markup whatever the rating.
+     */
+    const activeLetter = (rowClass: string): string | null => {
+      // Scoped to the row, not to a line class: the energy scale is `.dpe-line`
+      // and the emissions scale is `.ges-line`, and assuming one of them
+      // returned an empty string for the other — silently, as a missing rating.
+      const letter = $(`.${rowClass} .letter.active`).first().text().trim().toUpperCase();
+      return /^[A-G]$/.test(letter) ? letter : null;
+    };
+
     listing.raw = {
       priceOnRequest: onRequest,
+      dpe: activeLetter("dpe-row"),
+      ges: activeLetter("ges-row"),
+      ...(isEmpty(characteristics)
+        ? {}
+        : { characteristics: characteristics.attributes, flags: characteristics.flags }),
       fees: labelled($, "Honoraires"),
       /**
        * Their internal city id, from the same inline object. Kept because it is

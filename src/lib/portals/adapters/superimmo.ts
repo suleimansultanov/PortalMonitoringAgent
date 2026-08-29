@@ -8,6 +8,7 @@ import {
   type RawListing,
 } from "../types";
 import { num } from "../jsonld";
+import { collectCharacteristics, isEmpty } from "../attributes";
 
 /**
  * Superimmo.
@@ -204,7 +205,92 @@ export const superimmoAdapter: PortalAdapter = {
     });
     listing.imageUrls = [...photos];
 
-    listing.raw = { dpe: match(text, /Étiquette climat-énergie\s*:\s*([A-G])/i) };
+    /**
+     * Coordinates. They were sitting in the markup unread.
+     *
+     * Worth more than the map they draw: two listings twenty metres apart with
+     * a similar area are the same villa, and geometry lies far less often than
+     * the prose agencies copy between neighbouring properties.
+     */
+    const map = $("#map-canvas").first();
+    const lat = Number(map.attr("data-latitude"));
+    const lon = Number(map.attr("data-longitude"));
+    if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
+      listing.lat = lat;
+      listing.lon = lon;
+    }
+
+    /**
+     * The characteristics tables, whole.
+     *
+     * Cells come in two shapes — "Orientation : Sud" and a bare "Piscine" — and
+     * which of them a listing carries is up to the agency. Taking the block
+     * wholesale means a label nobody anticipated still arrives.
+     */
+    const cells: string[] = [];
+    $("section.content-table td").each((_, el) => {
+      cells.push($(el).text());
+    });
+    const characteristics = collectCharacteristics(cells);
+
+    /**
+     * The energy certificate. In France this is not decoration: the class moves
+     * the price, and letting a G is banned outright.
+     *
+     * The letter sits in the subtitle; consumption and emissions are the
+     * highlighted figure inside each of the two graphs, which are told apart by
+     * their heading rather than their order.
+     */
+    const dpeClass =
+      $("span.subtitle")
+        .filter((_, el) => /climat-énergie/i.test($(el).text()))
+        .find(".bold")
+        .first()
+        .text()
+        .trim()
+        .toUpperCase() || match(text, /Étiquette climat-énergie\s*:\s*([A-G])/i);
+
+    /**
+     * The two graphs put their figure in different places — consumption in
+     * `.current-label`, emissions in `.emission-label` — so both are tried, and
+     * the graphs are told apart by their heading rather than by their order.
+     *
+     * Only the LEADING number is taken. Stripping non-digits from
+     * "28 kgeqCO2/m²/an" yields 282, which is a plausible-looking wrong answer
+     * of exactly the kind that survives.
+     */
+    const leadingNumber = (raw: string): number | null => {
+      const found = raw.replace(/\u00a0/g, " ").match(/(\d[\d\s.,]*)/);
+      if (!found) return null;
+      const value = Number(found[1].replace(/[\s,]/g, ""));
+      return Number.isFinite(value) && value > 0 ? value : null;
+    };
+
+    let energyKwh: number | null = null;
+    let ghgCo2: number | null = null;
+    $(".dpe-content-wrapper").each((_, el) => {
+      const block = $(el);
+      const heading = block.find("h3").first().text();
+      const figure = leadingNumber(
+        block.find(".current-label b").first().text() || block.find(".emission-label").first().text(),
+      );
+      if (figure === null) return;
+      if (/consommation/i.test(heading)) energyKwh = figure;
+      else if (/serre|gaz/i.test(heading)) ghgCo2 = figure;
+    });
+
+    /** The emissions scale marks its row `current`; the energy letter is in the subtitle. */
+    const gesLetter = $("table.new-ges tr.current td").first().text().trim().toUpperCase();
+
+    listing.raw = {
+      dpe: dpeClass && /^[A-G]$/.test(dpeClass) ? dpeClass : null,
+      ges: /^[A-G]$/.test(gesLetter) ? gesLetter : null,
+      energyKwhM2Year: energyKwh,
+      ghgCo2M2Year: ghgCo2,
+      ...(isEmpty(characteristics)
+        ? {}
+        : { characteristics: characteristics.attributes, flags: characteristics.flags }),
+    };
 
     const missing: string[] = [];
     if (listing.priceEur === null) missing.push("priceEur");
