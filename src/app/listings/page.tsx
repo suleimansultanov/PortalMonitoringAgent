@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listProperties, featureLabel, COMMUNE_LABELS } from "@/lib/api/queries";
+import { listProperties, listSourceOptions, featureLabel, COMMUNE_LABELS } from "@/lib/api/queries";
 import { PageTitle, Empty, Warnings, money, m2, ago } from "@/components/ui";
 
 /**
@@ -20,7 +20,16 @@ import { PageTitle, Empty, Warnings, money, m2, ago } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
-type Search = { commune?: string; source?: string; new?: string };
+type Search = {
+  commune?: string;
+  source?: string;
+  new?: string;
+  q?: string;
+  page?: string;
+};
+
+/** Four across on a wide screen, so a page always ends on a full row. */
+const PAGE_SIZE = 48;
 
 export default async function ListingsPage({
   searchParams,
@@ -29,16 +38,73 @@ export default async function ListingsPage({
 }) {
   const sp = await searchParams;
   const newWithinDays = sp.new ? Number(sp.new) : undefined;
+  const q = sp.q?.trim() || undefined;
+  const page = Math.max(1, Number(sp.page) || 1);
 
-  const { rows, total } = await listProperties({
-    communeInsee: sp.commune ? [sp.commune] : undefined,
-    source: sp.source,
-    newWithinDays: Number.isFinite(newWithinDays) ? newWithinDays : undefined,
-    limit: 120,
-  });
+  const [{ rows, total, totalListings }, sources] = await Promise.all([
+    listProperties({
+      communeInsee: sp.commune ? [sp.commune] : undefined,
+      source: sp.source,
+      q,
+      newWithinDays: Number.isFinite(newWithinDays) ? newWithinDays : undefined,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+    }),
+    listSourceOptions(),
+  ]);
 
-  const listingCount = rows.reduce((n, r) => n + Math.max(r.portals.length, 1), 0);
-  const merged = listingCount - rows.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
+  const merged = totalListings - total;
+
+  /**
+   * Every filter keeps the others.
+   *
+   * The chips used to be plain links to `/listings?commune=X`, so choosing a
+   * commune silently threw away the portal filter and the search — the classic
+   * way a filter bar teaches people not to trust it. Changing any one of them
+   * also returns to page one, because staying on page nine of a result set that
+   * now has two pages shows an empty screen, and an empty screen in this
+   * product reads as "no market here".
+   */
+  const href = (changes: Partial<Search>): string => {
+    const next = new URLSearchParams();
+    const merged_: Search = { ...sp, ...changes, page: undefined };
+    for (const [k, v] of Object.entries(merged_)) {
+      if (v !== undefined && v !== "") next.set(k, String(v));
+    }
+    const qs = next.toString();
+    return qs ? `/listings?${qs}` : "/listings";
+  };
+
+  /**
+   * Where the cards point back to.
+   *
+   * Carried on the card link rather than worked out on the other side: the
+   * detail page cannot know which page of which filter you were reading, and
+   * guessing from the Referer header breaks the moment somebody opens a card in
+   * a new tab. Passed explicitly, "← Listings" returns to the exact screen —
+   * page nine of Ramatuelle with a search still in the box.
+   */
+  const fromQuery = (() => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) {
+      if (v !== undefined && v !== "") params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return qs ? `?from=${encodeURIComponent(qs)}` : "";
+  })();
+
+  const pageHref = (n: number): string => {
+    const next = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) {
+      if (v !== undefined && v !== "" && k !== "page") next.set(k, String(v));
+    }
+    if (n > 1) next.set("page", String(n));
+    const qs = next.toString();
+    return qs ? `/listings?${qs}` : "/listings";
+  };
 
   return (
     <div>
@@ -50,7 +116,12 @@ export default async function ListingsPage({
           <div className="text-right text-xs text-[var(--color-muted)]">
             <div className="tnum text-[var(--color-ink)]">{total} unique properties</div>
             {merged > 0 && (
-              <div className="tnum mt-0.5">deduplicated from {listingCount} portal entries</div>
+              <div className="tnum mt-0.5">deduplicated from {totalListings} portal entries</div>
+            )}
+            {total > PAGE_SIZE && (
+              <div className="tnum mt-0.5 text-[var(--color-faint)]">
+                showing {from}–{to}
+              </div>
             )}
           </div>
         }
@@ -64,15 +135,73 @@ export default async function ListingsPage({
         ]}
       />
 
-      <div className="mb-6 flex flex-wrap gap-1.5">
-        <Filter href="/listings" active={!sp.commune && !sp.new} label="All" />
-        <Filter href="/listings?new=7" active={sp.new === "7"} label="Last 7 days" />
-        <Filter href="/listings?new=30" active={sp.new === "30"} label="Last 30 days" />
-        <span className="mx-1 w-px bg-[var(--color-line)]" />
+      {/*
+        A plain GET form. No client component, no debounce, no state to get out
+        of step with the URL — the address bar IS the state, so a filtered
+        search can be pasted into a message and opens the same screen.
+      */}
+      <form method="GET" action="/listings" className="mb-4 flex flex-wrap items-center gap-2">
+        {(["commune", "source", "new"] as const).map((k) =>
+          sp[k] ? <input key={k} type="hidden" name={k} value={sp[k]} /> : null,
+        )}
+        <div className="relative flex-1 sm:max-w-md">
+          <input
+            type="search"
+            name="q"
+            defaultValue={sp.q ?? ""}
+            placeholder="Search title, description, agency or ref…"
+            className="w-full rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2 pr-20 text-[12px] outline-none placeholder:text-[var(--color-faint)] focus:border-[var(--color-faint)]"
+          />
+          <button
+            type="submit"
+            className="absolute right-1 top-1 rounded-full bg-[var(--color-ink)] px-3 py-1 text-[11px] font-medium text-[var(--color-canvas)]"
+          >
+            Search
+          </button>
+        </div>
+        {q && (
+          <Link
+            href={href({ q: undefined })}
+            className="text-[11px] text-[var(--color-muted)] underline underline-offset-4 hover:text-[var(--color-ink)]"
+          >
+            clear “{q}”
+          </Link>
+        )}
+      </form>
+
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] uppercase tracking-[0.14em] text-[var(--color-faint)]">
+          Seen
+        </span>
+        <Filter href={href({ new: undefined })} active={!sp.new} label="Any time" />
+        <Filter href={href({ new: "7" })} active={sp.new === "7"} label="Last 7 days" />
+        <Filter href={href({ new: "30" })} active={sp.new === "30"} label="Last 30 days" />
+
+        <span className="mx-2 h-4 w-px bg-[var(--color-line)]" />
+
+        <span className="mr-1 text-[10px] uppercase tracking-[0.14em] text-[var(--color-faint)]">
+          Portal
+        </span>
+        <Filter href={href({ source: undefined })} active={!sp.source} label="All portals" />
+        {sources.map((s) => (
+          <Filter
+            key={s.key}
+            href={href({ source: s.key })}
+            active={sp.source === s.key}
+            label={`${s.name} · ${s.properties}`}
+          />
+        ))}
+      </div>
+
+      <div className="mb-6 flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] uppercase tracking-[0.14em] text-[var(--color-faint)]">
+          Commune
+        </span>
+        <Filter href={href({ commune: undefined })} active={!sp.commune} label="All" />
         {Object.entries(COMMUNE_LABELS).map(([insee, label]) => (
           <Filter
             key={insee}
-            href={`/listings?commune=${insee}`}
+            href={href({ commune: insee })}
             active={sp.commune === insee}
             label={label}
           />
@@ -83,7 +212,15 @@ export default async function ListingsPage({
         <Empty
           title="Nothing here yet"
           detail={
-            sp.commune
+            q
+              ? `Nothing matches “${q}”. The descriptions are in French — an English ` +
+                `word will not find them. Try the agency name, the mandate reference, ` +
+                `or a French term like “piscine” or “vue mer”.`
+              : sp.source
+              ? `No properties from this portal under the current filters. Portals cover ` +
+                `different communes, so a portal filter and a commune filter together ` +
+                `often describe somewhere nobody has crawled yet.`
+              : sp.commune
               ? `No stock collected for ${COMMUNE_LABELS[sp.commune] ?? sp.commune}. That almost ` +
                 `certainly means this commune has not been crawled yet rather than that the ` +
                 `market is empty — Reports shows which sources have actually run.`
@@ -104,7 +241,7 @@ export default async function ListingsPage({
                 the kind of small wrongness that makes a page feel broken.
               */}
               <Link
-                href={`/listings/${r.id}`}
+                href={`/listings/${r.id}${fromQuery}`}
                 className="relative block aspect-[4/3] overflow-hidden"
                 aria-label={r.headline}
               >
@@ -150,7 +287,7 @@ export default async function ListingsPage({
                 )}
               </Link>
 
-              <Link href={`/listings/${r.id}`} className="block p-4">
+              <Link href={`/listings/${r.id}${fromQuery}`} className="block p-4">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="tnum display text-[22px] leading-none">
                     {money(r.priceEur)}
@@ -215,15 +352,21 @@ export default async function ListingsPage({
                 dropping one of them — usually the one you wanted.
               */}
               <div className="mx-4 mb-4 flex flex-wrap items-center gap-1.5 border-t border-[var(--color-line-soft)] pt-3">
-                {r.portals.map((p) => (
+                {byPortal(r.portals).map((p) => (
                   <a
-                    key={p.url}
+                    key={p.source}
                     href={p.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="rounded border border-[var(--color-line)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-muted)] transition-colors hover:border-[var(--color-accent-soft)] hover:text-[var(--color-accent-soft)]"
+                    title={
+                      p.count > 1
+                        ? `${p.count} listings on this portal were merged into this property — open one`
+                        : undefined
+                    }
                   >
                     {p.source}
+                    {p.count > 1 && ` ×${p.count}`}
                   </a>
                 ))}
                 {r.agencyRef && (
@@ -236,8 +379,77 @@ export default async function ListingsPage({
           ))}
         </div>
       )}
+
+      {pages > 1 && (
+        <nav className="mt-8 flex flex-wrap items-center justify-center gap-1.5">
+          <PageLink href={pageHref(page - 1)} disabled={page === 1} label="← Prev" />
+          {pageWindow(page, pages).map((n, i) =>
+            n === null ? (
+              <span key={`gap-${i}`} className="px-1 text-[11px] text-[var(--color-faint)]">
+                …
+              </span>
+            ) : (
+              <PageLink key={n} href={pageHref(n)} label={String(n)} active={n === page} />
+            ),
+          )}
+          <PageLink href={pageHref(page + 1)} disabled={page === pages} label="Next →" />
+        </nav>
+      )}
     </div>
   );
+}
+
+function PageLink({
+  href,
+  label,
+  active,
+  disabled,
+}: {
+  href: string;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  const className =
+    "tnum rounded-full border px-3 py-1.5 text-[11px] transition-colors " +
+    (active
+      ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+      : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:border-[var(--color-faint)] hover:text-[var(--color-ink)]");
+
+  // A disabled control is rendered as a span, not a dimmed link. A link that
+  // looks inactive but still navigates is worse than no link at all.
+  if (disabled) {
+    return (
+      <span className={className + " pointer-events-none opacity-35"} aria-disabled="true">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Link href={href} className={className}>
+      {label}
+    </Link>
+  );
+}
+
+/**
+ * First, last, and a window around the current page — `null` marks a gap.
+ *
+ * Fifty pages of results will not fit as fifty chips, and a bare "Page 7 of 50"
+ * makes the end of the list unreachable without seven clicks.
+ */
+function pageWindow(page: number, pages: number): (number | null)[] {
+  const out = new Set<number>([1, pages, page - 1, page, page + 1]);
+  const sorted = [...out].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+
+  const withGaps: (number | null)[] = [];
+  let previous = 0;
+  for (const n of sorted) {
+    if (previous && n - previous > 1) withGaps.push(null);
+    withGaps.push(n);
+    previous = n;
+  }
+  return withGaps;
 }
 
 function Filter({ href, label, active }: { href: string; label: string; active: boolean }) {
@@ -254,4 +466,26 @@ function Filter({ href, label, active }: { href: string; label: string; active: 
       {label}
     </Link>
   );
+}
+
+/**
+ * One chip per portal, not one per merged listing.
+ *
+ * These were rendered straight from the listing list, so a property holding
+ * twenty-one Green-Acres listings drew twenty-one identical GREEN-ACRES chips
+ * and buried the card. The count is kept rather than hidden: two portals
+ * carrying the same villa is the product working, while one portal carrying it
+ * twenty-one times is a deduplication fault, and a card that quietly collapsed
+ * both to a single tidy chip would hide exactly the failure worth seeing.
+ */
+function byPortal(
+  portals: { source: string; url: string }[],
+): { source: string; url: string; count: number }[] {
+  const out = new Map<string, { source: string; url: string; count: number }>();
+  for (const p of portals) {
+    const seen = out.get(p.source);
+    if (seen) seen.count += 1;
+    else out.set(p.source, { source: p.source, url: p.url, count: 1 });
+  }
+  return [...out.values()];
 }

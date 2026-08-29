@@ -5,6 +5,7 @@ import {
   cluster,
   candidatePairs,
   incoherentMembers,
+  looksLikeMandateRef,
   type Candidate,
 } from "./score";
 import { containment, normaliseForCompare } from "./text";
@@ -69,6 +70,49 @@ test("a matching mandate reference decides it outright, whatever the text says",
   assert.equal(v.same, true);
   assert.equal(v.confidence, 1);
   assert.equal(v.signals.agencyRefExact, true);
+});
+
+test("a word in the reference field is not a mandate reference", () => {
+  // Superimmo's parser stopped at the first space, so "VILLA LUMA-…" arrived as
+  // "VILLA" and "SWI 1316" as "SWI". Three villas shared "VILLA" and five
+  // listings shared "SWI"; eight properties became two, at 100% confidence.
+  assert.equal(looksLikeMandateRef("VILLA"), false);
+  assert.equal(looksLikeMandateRef("SWI"), false);
+  assert.equal(looksLikeMandateRef("ref"), false);
+
+  // A date has digits and is still not a key.
+  assert.equal(looksLikeMandateRef("2025-09-12"), false);
+
+  // Every real reference seen across the portals carries a digit.
+  for (const real of ["313688", "V1958", "6138-NGU", "MPNO-A4I-P8D", "SWI 1316", "70880"]) {
+    assert.equal(looksLikeMandateRef(real), true, real);
+  }
+});
+
+test("a word-shaped reference cannot merge two villas at 100%", () => {
+  const v = scoreMatch(
+    c({ id: "a", agencyRef: "VILLA", priceEur: 5_490_000, areaM2: 356, description: "one villa" }),
+    c({
+      id: "b",
+      sourceId: "s2",
+      agencyRef: "VILLA",
+      priceEur: 9_950_000,
+      areaM2: 316,
+      description: "a different villa entirely",
+    }),
+  );
+  assert.equal(v.same, false, "€5.49M and €9.95M are not one property");
+  assert.notEqual(v.signals.agencyRefExact, true);
+});
+
+test("a word-shaped reference is not treated as a conflict either", () => {
+  // Junk on both sides means we know nothing, not that the agency told us they
+  // are different. The decision has to fall through to price, area and text.
+  const v = scoreMatch(
+    c({ id: "a", agencyRef: "VILLA" }),
+    c({ id: "b", sourceId: "s2", agencyRef: "SWI" }),
+  );
+  assert.notEqual(v.signals.agencyRefConflict, true);
 });
 
 test("different mandates from one agency are two properties, however alike they read", () => {
@@ -213,6 +257,24 @@ test("a coherent cluster is left alone", () => {
     ]),
     [],
   );
+});
+
+test("an incoherent cluster always loses a member, even with no lone outlier", () => {
+  /**
+   * The three Superimmo listings that were merged on the reference "VILLA".
+   * Ends 45% apart, so the span check fires — but each of them sits within 30%
+   * of the €6.99M in the middle, so the outlier rule evicts nobody. The group
+   * used to survive intact with the guard appearing to have run.
+   */
+  const evicted = incoherentMembers([
+    { id: "cheap", priceEur: 5_490_000 },
+    { id: "middle", priceEur: 6_990_000 },
+    { id: "dear", priceEur: 9_950_000 },
+  ]);
+
+  assert.ok(evicted.length > 0, "reporting incoherence and evicting nobody is the worst outcome");
+  assert.ok(!evicted.includes("middle"), "the side holding the median stays");
+  assert.deepEqual(evicted, ["dear"], "split at the widest gap: 6.99 → 9.95");
 });
 
 test("a cluster with no prices is not split — unknown is not a conflict", () => {

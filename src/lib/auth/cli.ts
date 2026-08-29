@@ -112,7 +112,25 @@ if (process.argv[1]?.endsWith("auth/cli.ts")) {
   main(parseArgs(process.argv))
     .then(() => process.exit(process.exitCode ?? 0))
     .catch((err) => {
-      console.error("\nuser:create failed:", err instanceof Error ? err.message : err);
+      /**
+       * Print the CAUSE, not just the query.
+       *
+       * A failed connection surfaces here as a driver error wrapping the SQL,
+       * so the default message is the full SELECT and its parameters — which
+       * looks like a broken query and sends you reading the schema. The reason
+       * ("password authentication failed", "getaddrinfo ENOTFOUND") is one
+       * level down in `cause`, and it is the only part worth reading.
+       */
+      const message = err instanceof Error ? err.message : String(err);
+      const cause = (err as { cause?: unknown })?.cause;
+      const causeMessage = cause instanceof Error ? cause.message : cause ? String(cause) : null;
+
+      console.error(`\nuser:create failed: ${causeMessage ?? message}`);
+      if (causeMessage) console.error(`  (while running: ${message.split("\n")[0]})`);
+      console.error(
+        "\nCheck DATABASE_URL: it must start with postgresql:// and carry the real\n" +
+          "password, and migrations must have run against that database first.\n",
+      );
       process.exit(1);
     });
 }

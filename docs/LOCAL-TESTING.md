@@ -117,3 +117,49 @@ the flag guards the scheduler, not a person who typed the command.
 **Re-running is safe.** Everything is keyed on `(source, external id)`, so a
 second run updates rather than duplicates. Re-run the seed after editing a
 commune slug and the config updates in place.
+
+---
+
+## One database, not two (since 2026-08-29)
+
+The local Postgres was a staging area: crawl into it, check, dump into Supabase.
+That is gone. `DATABASE_URL` in `.env.local` now points at the **Supabase
+session pooler** (port 5432), and the collector, the scripts and the deployed
+app all read and write the same rows.
+
+Session pooler for anything local, transaction pooler (6543) for Vercel. They
+are not interchangeable: the collector holds a connection across a whole pass,
+which is exactly what the transaction pooler will not give it.
+
+### What this costs, and what to do about it
+
+**The collector now writes straight into what the client sees.** There is no
+longer a copy to check before publishing. A bad crawl is live the moment it
+runs — which is why the abort guard and the commune-scoped delist baseline in
+`runner/run.ts` matter more now than they did, not less.
+
+**The Free plan takes no backups.** Daily backups start on Pro. Until then the
+backup is a command, and it is the same script that used to move data across:
+
+```bash
+./scripts/dump-data.sh backup-$(date +%F).sql
+```
+
+It reads `DATABASE_URL`, so it now dumps Supabase. Run it before anything that
+rewrites rows in bulk — `reparse`, a migration, a first run against a new
+source. 19 MB, a few seconds.
+
+**Keep the old container.** `docker stop pma-pg` rather than `docker rm`: the
+volume survives, and it holds the last known-good copy from before the switch.
+Delete it once Supabase has a backup history worth trusting.
+
+### Setting it up
+
+```bash
+docker stop pma-pg
+# in .env.local, replace DATABASE_URL with the session pooler string
+npm run db:info        # confirm: it should report the Supabase host, not localhost
+```
+
+`db:info` is the check that matters. It asks through the same connection string
+the collector uses, so if it names Supabase, everything else does too.

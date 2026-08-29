@@ -143,7 +143,23 @@ export const superimmoAdapter: PortalAdapter = {
      * id and means nothing anywhere else — taking the wrong one would produce
      * a key that never matches another portal, silently.
      */
-    listing.agencyRef = match(text, /Réf\.\s*agence\s*:\s*([A-Za-z0-9][\w\-./]{0,24})/i);
+    /**
+     * The reference runs to the next ` - Réf` label, spaces included.
+     *
+     * The previous pattern stopped at the first space, which quietly turned
+     * "VILLA LUMA-EXCELLENCERIVIERA83990" into "VILLA" and "SWI 1316" into
+     * "SWI". Three Excellence villas then shared the reference "VILLA" and five
+     * Swixim listings shared "SWI" — and since an exact agency+reference match
+     * merges at 100% confidence with no threshold, eight separate properties
+     * collapsed into two. Prices from €5.49M to €9.95M under one card.
+     *
+     * Verified against all 63 saved Superimmo pages: this changes the answer on
+     * exactly those eight and leaves the other 55 identical, and afterwards no
+     * reference is shared by two listings.
+     */
+    listing.agencyRef =
+      match(text, /R[ée]f\.\s*agence\s*:\s*(.{1,60}?)(?:\s+[-–]\s+R[ée]f|\s*$)/i) ??
+      match(text, /R[ée]f\.\s*agence\s*:\s*([A-Za-z0-9][\w\-./]{0,24})/i);
 
     // ── Agency ────────────────────────────────────────────────────────────
     const agencyLink = $('a[href*="/agence/"]').first();

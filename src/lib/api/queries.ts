@@ -29,9 +29,34 @@ import { hasFeature } from "@/lib/matching/buyers";
  * rather than being remembered by whoever renders it.
  */
 
-export const COMMUNE_LABELS: Record<string, string> = Object.fromEntries(
-  GULF_OF_SAINT_TROPEZ.filter((c) => !c.localityOf).map((c) => [c.insee, c.label]),
-);
+export const COMMUNE_LABELS: Record<string, string> = (() => {
+  const out: Record<string, string> = {};
+
+  // Communes proper win the name.
+  for (const c of GULF_OF_SAINT_TROPEZ) {
+    if (!c.localityOf) out[c.insee] = c.label;
+  }
+
+  /**
+   * Then the codes that exist ONLY as a locality.
+   *
+   * 83107 is the case that exposed this: the client watches "Les Issambres",
+   * which is a locality of Roquebrune-sur-Argens and has no commune entry of
+   * its own. Filtering localities out left the code unlabelled, and 215
+   * properties appeared on the dashboard under the heading "83107" — which
+   * reads as a bug in front of a client, and worse, as a place they do not
+   * recognise as theirs.
+   *
+   * Both names are shown because both are true and each answers a different
+   * question: the bucket really is the whole commune, and the client really is
+   * watching the locality.
+   */
+  for (const c of GULF_OF_SAINT_TROPEZ) {
+    if (c.localityOf && !out[c.insee]) out[c.insee] = `${c.localityOf} (${c.label})`;
+  }
+
+  return out;
+})();
 
 export type ListingRow = {
   id: string;
@@ -66,6 +91,8 @@ export type ListingRow = {
 export type ListingFilters = {
   communeInsee?: string[];
   source?: string;
+  /** Free text over title, description, agency name and mandate reference. */
+  q?: string;
   /** Only properties first seen in the last N days. */
   newWithinDays?: number;
   minPriceEur?: number;
@@ -84,7 +111,10 @@ export type ListingFilters = {
  */
 export async function listProperties(f: ListingFilters = {}): Promise<{
   rows: ListingRow[];
+  /** Properties matching the filter, across every page. */
   total: number;
+  /** Portal entries those properties were folded from, across every page. */
+  totalListings: number;
 }> {
   const limit = Math.min(f.limit ?? 50, 200);
   const offset = f.offset ?? 0;
@@ -112,12 +142,57 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
     );
   }
 
+  /**
+   * Free text.
+   *
+   * ILIKE rather than full-text search, on purpose. Postgres FTS needs a
+   * language configuration, and the corpus is French prose while the agents
+   * typing into the box are English-speaking — `to_tsquery('english', …)` would
+   * stem "villas" to "villa" and then fail to match "villa" in a French
+   * document that was never indexed with the right dictionary. A substring
+   * match has no such opinions, and at a few thousand rows it is instant.
+   *
+   * The mandate reference is included because it is the one string an agent
+   * already knows by heart when they are chasing a specific property.
+   */
+  if (f.q?.trim()) {
+    // % and _ are wildcards; someone searching for "120 m2" should not have
+    // their underscore silently mean "any character".
+    const pattern = `%${f.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    conditions.push(sql`(
+      ${properties.title} ilike ${pattern}
+      or ${properties.description} ilike ${pattern}
+      or ${properties.agencyRef} ilike ${pattern}
+      or exists (
+        select 1 from ${portalAgencies} a
+        where a.id = ${properties.agencyId} and a.name ilike ${pattern}
+      )
+    )`);
+  }
+
   const where = and(...conditions);
 
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(properties)
     .where(where);
+
+  /**
+   * How many portal entries the matching properties were folded from.
+   *
+   * Counted across the whole result, not the page. The screen used to sum the
+   * portals of the rows it had loaded and print that beside the global property
+   * total — "2392 unique properties, deduplicated from 176 portal entries",
+   * which is two different populations in one sentence and reads as a
+   * deduplication rate of 93%.
+   */
+  const matching = db.select({ id: properties.id }).from(properties).where(where);
+  const [{ listings }] = await db
+    .select({ listings: sql<number>`count(*)::int` })
+    .from(portalListings)
+    .where(
+      and(eq(portalListings.status, "active"), inArray(portalListings.propertyId, matching)),
+    );
 
   const rows = await db
     .select({
@@ -153,6 +228,7 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
 
   return {
     total: Number(count),
+    totalListings: Number(listings),
     rows: rows.map((r) => ({
       ...r,
       // numeric arrives as a string; Number(null) is 0, which would turn "we do
@@ -653,6 +729,32 @@ export async function communeStats(): Promise<CommuneStat[]> {
   }));
 }
 
+/**
+ * The portals that actually carry stock, for the filter bar.
+ *
+ * Counted from the data rather than from `portal_sources`, because a seeded
+ * source with nothing behind it makes a filter chip that leads to an empty
+ * screen — and an empty screen in this product reads as "no market here",
+ * which is the one impression it must never give by accident.
+ */
+export async function listSourceOptions(): Promise<
+  { key: string; name: string; properties: number }[]
+> {
+  const rows = await db
+    .select({
+      key: portalSources.key,
+      name: portalSources.name,
+      properties: sql<number>`count(distinct ${portalListings.propertyId})::int`,
+    })
+    .from(portalListings)
+    .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
+    .where(eq(portalListings.status, "active"))
+    .groupBy(portalSources.key, portalSources.name)
+    .orderBy(desc(sql`count(distinct ${portalListings.propertyId})`));
+
+  return rows.map((r) => ({ ...r, properties: Number(r.properties) }));
+}
+
 export type AgencyStat = {
   id: string;
   name: string;
@@ -690,7 +792,8 @@ export async function agencyStats(limit = 25): Promise<AgencyStat[]> {
 /** Headline counts for the dashboard, including an honest test-data warning. */
 export async function overview(): Promise<{
   activeProperties: number;
-  newThisWeek: number;
+  /** Null until we hold more than seven days of history — see the query. */
+  newThisWeek: number | null;
   buyersReal: number;
   buyersTest: number;
   matchesOpen: number;
@@ -700,11 +803,28 @@ export async function overview(): Promise<{
     .select({ active: sql<number>`count(*) filter (where status = 'active')::int` })
     .from(properties);
 
-  const [{ fresh }] = await db
+  /**
+   * "New this week" needs a week of history behind it.
+   *
+   * Collection started three days ago, so every property was first seen inside
+   * the window and this returned 2392 out of 2392 active — presented on the
+   * dashboard as though the market had gained two and a half thousand
+   * properties in a week. Arithmetically correct, and the most misleading
+   * number on the screen.
+   *
+   * So it is only a figure once the earliest sighting is older than the window.
+   * Until then the screen shows that it is still filling, which is the true
+   * answer.
+   */
+  const [{ fresh, earliest }] = await db
     .select({
       fresh: sql<number>`count(*) filter (where first_listed_at > now() - interval '7 days')::int`,
+      earliest: sql<Date | null>`min(first_listed_at)`,
     })
     .from(properties);
+
+  const windowStart = new Date(Date.now() - 7 * 86_400_000);
+  const haveAWeek = earliest !== null && new Date(earliest) < windowStart;
 
   const buyerCounts = await db
     .select({
@@ -715,9 +835,28 @@ export async function overview(): Promise<{
     .where(eq(buyers.active, true))
     .groupBy(buyers.isTestData);
 
+  /**
+   * Real buyers only.
+   *
+   * The banner on the overview screen states that matches against the invented
+   * buyers are excluded from this count. It was not true: this counted every
+   * row in buyer_matches, so ten fabricated buyers put 3711 "open matches" on
+   * the dashboard — a number an agent would act on, sitting directly under a
+   * sentence promising it had been left out.
+   *
+   * The rule at the top of this file already said what to do here. This query
+   * simply did not follow it.
+   */
   const [{ open }] = await db
-    .select({ open: sql<number>`count(*) filter (where status in ('new','seen'))::int` })
-    .from(buyerMatches);
+    .select({ open: sql<number>`count(*)::int` })
+    .from(buyerMatches)
+    .innerJoin(buyers, eq(buyers.id, buyerMatches.buyerId))
+    .where(
+      and(
+        inArray(buyerMatches.status, ["new", "seen"]),
+        eq(buyers.isTestData, false),
+      ),
+    );
 
   const sources = await db
     .select({
@@ -731,7 +870,7 @@ export async function overview(): Promise<{
 
   return {
     activeProperties: Number(active),
-    newThisWeek: Number(fresh),
+    newThisWeek: haveAWeek ? Number(fresh) : null,
     buyersReal: Number(buyerCounts.find((b) => !b.isTest)?.n ?? 0),
     buyersTest: Number(buyerCounts.find((b) => b.isTest)?.n ?? 0),
     matchesOpen: Number(open),

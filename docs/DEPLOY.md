@@ -182,3 +182,30 @@ Actions secrets to the session pooler string, and the workflow in
 `.github/workflows/collect.yml` fills the same database the client is looking at.
 
 Read the IP-address warning at the top of that workflow first.
+
+## 8. Keeping the demo up to date
+
+The collector writes to the local Postgres; the deployed app reads Supabase.
+They do not talk to each other, so the demo shows whatever was last pushed:
+
+```bash
+./scripts/sync-to-supabase.sh "<session pooler string>"
+```
+
+Empties the market tables on the target and reloads them from local. Run it
+after a night of collecting, after `reparse`, or before showing anything to
+anyone.
+
+It deliberately leaves `users`, `clients` and `settings` on the target alone.
+Accounts exist only where people log in — copying the local `users` table over
+would delete the account you signed in with, and you would discover it at the
+worst moment. `clients` is the UUID that `buyers` and `market_reports` hang
+off, and recreating it on either side breaks both.
+
+**There are no backups on the Supabase Free plan.** Before anything that
+rewrites rows in bulk, take one — it is the same script that built the first
+load:
+
+```bash
+./scripts/dump-data.sh backup-$(date +%F).sql
+```

@@ -22,14 +22,44 @@ import { Gallery } from "@/components/Gallery";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The filters the listings screen understands. Anything else in `from` is
+ * dropped.
+ *
+ * A whitelist rather than a sanitiser, because `from` arrives in the URL and
+ * anyone can put anything in it. Rebuilding the query from known keys means the
+ * back link can only ever point at our own listings screen — no scheme, no
+ * host, no path, nothing to smuggle a redirect through.
+ */
+const CARRIED_FILTERS = ["commune", "source", "new", "q", "page"] as const;
+
+function backHref(from: string | undefined): string {
+  if (!from) return "/listings";
+
+  const incoming = new URLSearchParams(from);
+  const safe = new URLSearchParams();
+  for (const key of CARRIED_FILTERS) {
+    const value = incoming.get(key);
+    if (value) safe.set(key, value);
+  }
+
+  const qs = safe.toString();
+  return qs ? `/listings?${qs}` : "/listings";
+}
+
 export default async function PropertyPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string }>;
 }) {
   const { id } = await params;
+  const { from } = await searchParams;
   const detail = await propertyDetail(id);
   if (!detail) notFound();
+
+  const back = backHref(from);
 
   const { property: p, listings, events, agency, description } = detail;
 
@@ -57,10 +87,10 @@ export default async function PropertyPage({
   return (
     <div>
       <Link
-        href="/listings"
+        href={back}
         className="mb-5 inline-block text-[11px] uppercase tracking-[0.14em] text-[var(--color-muted)] transition-colors hover:text-[var(--color-ink)]"
       >
-        ← Listings
+        ← {back === "/listings" ? "Listings" : "Back to results"}
       </Link>
 
       {/*

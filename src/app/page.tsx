@@ -45,7 +45,15 @@ export default async function Home() {
           value={head.activeProperties}
           hint="deduplicated across portals"
         />
-        <Stat label="New this week" value={head.newThisWeek} hint="first seen in 7 days" />
+        <Stat
+          label="New this week"
+          value={head.newThisWeek ?? "—"}
+          hint={
+            head.newThisWeek === null
+              ? "needs seven days of history — we have less"
+              : "first seen in 7 days"
+          }
+        />
         <Stat
           label="Buyers"
           value={head.buyersReal}

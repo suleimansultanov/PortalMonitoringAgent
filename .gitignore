@@ -25,3 +25,10 @@ next-env.d.ts
 .pages/
 /tmp/
 *.tmp.ts
+
+# Database dumps. Same reasoning as `.pages/` above: this is a copy of other
+# people's listings and their agencies' text, and the repository is public.
+# `git add -A` after a sync would otherwise commit 19 MB of it.
+pma-data.sql
+*.sql.backup
+backup-*.sql

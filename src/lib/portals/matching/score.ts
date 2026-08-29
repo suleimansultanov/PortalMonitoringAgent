@@ -72,11 +72,47 @@ const TEXT_STRONG = 0.75;
  */
 const MIN_SHINGLES = 12;
 
+/**
+ * Is this string plausibly a mandate reference, or a word that landed in the
+ * field by accident?
+ *
+ * The exact-reference rule is the strongest in the matcher: same agency, same
+ * reference, merged at 100% with no threshold and no price check. That power is
+ * only safe while the value really is a key. A Superimmo parser bug once put
+ * the literal word "VILLA" in this field for three different villas, and
+ * "SWI" for five — eight properties became two, priced €5.49M to €9.95M, all at
+ * "100% confidence".
+ *
+ * The parser is fixed. This is the second lock, because the next portal will
+ * have its own version of that bug and it must not cost a property.
+ *
+ * A digit is the test. Every genuine reference seen across the portals carries
+ * one — 313688, V1958, 6138-NGU, MPNO-A4I-P8D — and the accidents never do,
+ * because they are words. A bare date is excluded too: "2025-09-12" has digits
+ * and is still not a key.
+ */
+export function looksLikeMandateRef(ref: string): boolean {
+  const value = ref.trim();
+  if (value.length < 3) return false;
+  if (!/\d/.test(value)) return false;
+  // A date is a date, whoever put it in the reference field.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value) || /^\d{2}\/\d{2}\/\d{4}$/.test(value)) return false;
+  return true;
+}
+
 export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   const signals: MatchSignals = {};
 
-  // ── 1. The exact key, when both sides have it ──────────────────────────
-  if (a.agencyId && b.agencyId && a.agencyId === b.agencyId && a.agencyRef && b.agencyRef) {
+  // ── 1. The exact key, when both sides have one worth trusting ──────────
+  if (
+    a.agencyId &&
+    b.agencyId &&
+    a.agencyId === b.agencyId &&
+    a.agencyRef &&
+    b.agencyRef &&
+    looksLikeMandateRef(a.agencyRef) &&
+    looksLikeMandateRef(b.agencyRef)
+  ) {
     if (a.agencyRef.trim().toLowerCase() === b.agencyRef.trim().toLowerCase()) {
       signals.agencyRefExact = true;
       return { same: true, confidence: 1, signals };
@@ -308,8 +344,36 @@ export function incoherentMembers(
   if (span <= CLUSTER_PRICE_SPAN) return [];
 
   // Keep what sits near the median; evict the rest to be properties of their own.
-  return priced
+  const outliers = priced
     .filter((m) => Math.abs(m.priceEur - median) / Math.max(m.priceEur, median) > CLUSTER_PRICE_SPAN)
+    .map((m) => m.id);
+  if (outliers.length > 0) return outliers;
+
+  /**
+   * The span says the group is incoherent, but no single member is far enough
+   * from the median to be thrown out. Three listings at €5.49M, €6.99M and
+   * €9.95M do exactly this: the ends are 45% apart, while each of them sits
+   * within 30% of the €6.99M in the middle.
+   *
+   * Reporting incoherence and then evicting nobody is the worst of both — the
+   * guard appears to have run and the group survives intact. So split at the
+   * widest relative gap instead and keep the side holding the median. It always
+   * removes something, which is the point: a wrong split shows a duplicate, a
+   * wrong merge hides a property.
+   */
+  let gapAt = 1;
+  let widest = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = (sorted[i] - sorted[i - 1]) / sorted[i];
+    if (gap > widest) {
+      widest = gap;
+      gapAt = i;
+    }
+  }
+
+  const medianIsAbove = median >= sorted[gapAt];
+  return priced
+    .filter((m) => (medianIsAbove ? m.priceEur < sorted[gapAt] : m.priceEur >= sorted[gapAt]))
     .map((m) => m.id);
 }
 
