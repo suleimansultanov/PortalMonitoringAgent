@@ -12,20 +12,26 @@ docker run -d --name pma-pg \
 
 ## 2. `.env.local`
 
-Two lines are enough. With no S3 configured, fetched pages go to `.pages/` on
+Three lines are enough. With no S3 configured, fetched pages go to `.pages/` on
 disk — which is the whole point of the local fallback: needing an object store
 before you can run the collector once is how nobody ever runs it locally.
 
 ```
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
 ENCRYPTION_KEY=<64 hex chars>
+AUTH_SECRET=<32+ random chars>
 ```
 
-Generate the key:
+Generate both:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # ENCRYPTION_KEY
+npx auth secret                                                            # AUTH_SECRET
 ```
+
+`AUTH_SECRET` signs the session cookie. Changing it signs everyone out
+immediately — which is also the only way to end a session before it expires,
+because sessions are JWTs and are not stored anywhere we could delete from.
 
 ## 3. Schema and seed
 
@@ -33,7 +39,12 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 npm install       # picks up the server-only stub — see below
 npm run db:migrate
 npm run db:seed
+npm run user:create -- --email=you@example.com --role=admin
 ```
+
+The last command prints a generated password once. There is no sign-up page —
+every screen and every API route is behind a login, so without a user you get
+the login form and nothing else.
 
 The seed prints a coverage report. All three sources should read 12/12
 communes. Anything less is a commune that will be silently absent from the

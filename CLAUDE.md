@@ -18,7 +18,7 @@ Built as a product, not a one-off — see "Tenancy" below.
 - **Migrations:** hand-written idempotent SQL in `drizzle/`, applied by
   `src/lib/db/migrate.ts`. **`drizzle-kit generate` is not used** — see the
   comment at the top of the migrate script.
-- **Jobs:** Inngest. **Storage:** S3 for raw pages. **Auth:** next-auth.
+- **Jobs:** Inngest. **Storage:** S3 for raw pages. **Auth:** next-auth v5, see below.
 - **Parsing:** cheerio. Structured markup first, selectors last.
 
 ## Tenancy — the load-bearing decision
@@ -84,9 +84,49 @@ emits no `delisted` events** (`portal_runs.aborted_reason`). A blocked crawl
 otherwise looks like the entire market delisting overnight. That takes a week to
 notice and months to clean out of the reports.
 
+**Its blind spot, and the rule that covers it.** The guard only sees *how many*
+listings came back, never *from where*. A pass over two communes returns a
+healthy count and passes the guard — and then delists every other commune,
+because they were absent from `discovered`. So the baseline in `run.ts` is
+filtered to the communes the pass actually visited (`inThisPass`). Any future
+change that narrows what a run looks at — a commune subset, a price band, a
+single agency — has to narrow the baseline the same way, or it will delist
+everything outside its own window while the guard reports success.
+
+## Auth — closed by default
+Every page and every API route is behind a login. The rule lives in
+`src/middleware.ts`, not in the individual files: a check that must be
+remembered on each new screen is one that will eventually be forgotten on one,
+and the forgotten one is the leak.
+
+The config is **split in two on purpose**:
+
+- `src/lib/auth/config.ts` — edge-safe. No database, no Node built-ins. This is
+  what `middleware.ts` imports. Putting a `pg` or `bcryptjs` import in here
+  breaks the build with an error that names neither file.
+- `src/lib/auth/index.ts` — Node only. The Credentials provider, bcrypt, and
+  the query against `users`.
+
+Exempt paths are listed in `PUBLIC_PREFIXES` and in the middleware matcher.
+**`/api/inngest` must stay exempt** — it authenticates with its own signing key
+and has no cookie; putting a login in front of it does not harden anything, it
+silently stops the job runner.
+
+Sessions are JWTs, so `users.active = false` stops the *next* sign-in, not the
+session already in a browser. Rotating `AUTH_SECRET` is what ends every session
+now. Accounts are created from the terminal — there is no sign-up page:
+
+```
+npm run user:create -- --email=… --role=admin   # prints a generated password once
+npm run user:create -- --list
+npm run user:create -- --email=… --deactivate
+```
+
+Deploying the app for a client: `docs/DEPLOY.md`.
+
 ## Commands
 `npm run dev` · `build` · `typecheck` (run after edits) · `db:migrate` ·
-`db:studio` · `test`
+`db:studio` · `test` · `user:create`
 
 ## Gotchas
 - **`ENCRYPTION_KEY` must be identical across local, preview and production.**

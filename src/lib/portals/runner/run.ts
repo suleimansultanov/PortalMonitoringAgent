@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalRuns, portalSources } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
@@ -149,11 +149,38 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       .where(eq(portalRuns.id, runId));
 
     // ── 2. What we already knew ───────────────────────────────────────────
+    /**
+     * SCOPED TO THE COMMUNES THIS PASS ACTUALLY LOOKED AT. This filter is the
+     * whole correctness of a partial run.
+     *
+     * `discovered` only ever contains the communes named in `opts.communeInsee`.
+     * Compare it against every active listing for the source and the difference
+     * is not "what disappeared from the market" — it is "every other commune",
+     * and step 6 delists all of them.
+     *
+     * That is not hypothetical: it is what `--stale=2` does on its second
+     * night. Night one collects two communes; night two asks for the next two,
+     * discovers a perfectly healthy set, and silently delists everything from
+     * night one. The abort guard does not catch it, because from its point of
+     * view the numbers are fine — a full commune's worth of listings was found.
+     * The guard watches for a crawl returning too little; this returns the
+     * right amount about the wrong place.
+     *
+     * A listing whose commune never resolved (NULL) is in neither set, so a
+     * scoped pass leaves it alone rather than delisting it. Deliberate: this
+     * pipeline would rather show a stale listing than invent a disappearance.
+     */
+    const inThisPass = inArray(portalListings.communeInsee, opts.communeInsee);
+
     const known = await db
       .select({ externalId: portalListings.externalId })
       .from(portalListings)
       .where(
-        and(eq(portalListings.sourceId, source.id), eq(portalListings.status, "active")),
+        and(
+          eq(portalListings.sourceId, source.id),
+          eq(portalListings.status, "active"),
+          inThisPass,
+        ),
       );
 
     const staleCutoff = new Date(Date.now() - REFRESH_AFTER_DAYS * 86_400_000);
@@ -165,6 +192,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
           eq(portalListings.sourceId, source.id),
           eq(portalListings.status, "active"),
           lt(portalListings.updatedAt, staleCutoff),
+          inThisPass,
         ),
       );
 
