@@ -4,6 +4,7 @@ import { etreproprioAdapter } from "./adapters/etreproprio";
 import { luxuryEstateAdapter } from "./adapters/luxuryestate";
 import { superimmoAdapter } from "./adapters/superimmo";
 import { greenAcresAdapter } from "./adapters/greenacres";
+import { figaroAdapter } from "./adapters/figaro";
 
 /**
  * Adapter registry.
@@ -26,8 +27,8 @@ const ADAPTERS: PortalAdapter[] = [
   luxuryEstateAdapter,
   superimmoAdapter,
   greenAcresAdapter,
+  figaroAdapter,
   // jamesEditionAdapter,
-  // figaroProprietesAdapter,
   // avivAdapter,
   // figaroImmobilierAdapter,
   // zooplaAdapter,

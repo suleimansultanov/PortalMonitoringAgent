@@ -4,6 +4,7 @@ import { clients, clientSources, portalSources } from "@/lib/db/schema";
 import { COLLECTION_INSEE } from "./communes";
 import {
   ETREPROPRIO_SLUGS,
+  FIGARO_COMMUNES,
   GREEN_ACRES_COMMUNES,
   SMC_COMMUNES,
   SUPERIMMO_COMMUNES,
@@ -297,6 +298,53 @@ function sourceSeeds(): SourceSeed[] {
         },
         /** Their condition, enforced rather than documented. */
         collectWindow: { from: 1, to: 5, tz: "Europe/Paris" },
+        fetchMode: "browser",
+      },
+    },
+    {
+      key: "figaro",
+      name: "Propriétés Le Figaro",
+      hosts: ["proprietes.lefigaro.fr", "properties.lefigaro.com"],
+      baseUrl: "https://proprietes.lefigaro.fr",
+      /**
+       * Ours, not theirs. Their robots.txt states no Crawl-delay at all, so
+       * this is the rate we would want a stranger to use on us — and at ~170
+       * listings per commune it costs minutes, not hours.
+       */
+      crawlDelayMs: 2_000,
+      permissionNote:
+        "robots.txt read in full 2026-08-30. One `User-agent: *` group, which is " +
+        "ours. It ALLOWS /sitemap/plf-fr/ explicitly — the route this adapter takes " +
+        "— and disallows offset=, nb_par_page=, prix_min/max=, radius=, region=, " +
+        "departement=, recherche=, type_bien=, the photo galerie paths, and ville= " +
+        "tokens beginning with a digit. None of those are used here; ?page= is not " +
+        "among them. Three crawlers are banned by name (The Knowledge AI, Uptime " +
+        "Robot 2.0, Bytespider) and we are none of them. No Crawl-delay is stated.\n\n" +
+        "Their WAF answers 403 to the plain HTTP client on every page — index, " +
+        "listing and sitemap alike — and 200 to a browser that says who it is. Same " +
+        "shape as Etreproprio and SMC: the rule is applied before anyone looks at " +
+        "the identifier, so it is not a refusal of us. No disguise is used; the " +
+        "collector's own user-agent rides on the browser context.",
+      config: {
+        host: "https://proprietes.lefigaro.fr",
+        communes: FIGARO_COMMUNES,
+        /**
+         * Their all-types index. Figaro also publishes sixteen per-type pages
+         * (villa, mas, château, vignoble…); crawling those would be sixteen
+         * passes over the same stock and would still miss whatever type they
+         * add next.
+         */
+        section: "immobilier",
+        region: "var-provence+alpes+cote+d+azur-france",
+        /**
+         * Generous on purpose, and safe to be: pagination ends on their own
+         * `<link rel="next">` rather than on this number, and reaching the
+         * ceiling reports the commune incomplete instead of passing for an
+         * ending. Ramatuelle is 167 listings over six pages, the largest of
+         * ours is nowhere near sixty.
+         */
+        maxPages: 60,
+        /** 403 to the plain client on every page. See `permissionNote`. */
         fetchMode: "browser",
       },
     },

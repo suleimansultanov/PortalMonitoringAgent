@@ -182,6 +182,8 @@ export const luxuryEstateAdapter: PortalAdapter = {
     // ── Agency — the one thing not in the markup ──────────────────────────
     listing.agencyName = agencyFromHtml(html);
 
+    applyGallery(html, listing);
+
     const missing: string[] = [];
     if (listing.priceEur === null) missing.push("priceEur");
     if (listing.areaM2 === null) missing.push("areaM2");
@@ -243,3 +245,49 @@ function listingUrlsOnPage(html: string, host: string): string[] {
 }
 
 export type { RawListing };
+
+/**
+ * Photographs.
+ *
+ * Their gallery is a set of <img> carrying `data-index`, which is the agency's
+ * own ordering — no need to infer it from captions or document order, and no
+ * need to guess. Index 0 appears twice, at 520x390 and again at 1024x768, so
+ * the larger of the two wins where both are present.
+ *
+ * Two things that would go wrong if taken naively. Their src is
+ * protocol-relative (`//pic.le-cdn.com/...`), which is a valid URL in a page
+ * and a broken one everywhere else — it has to be given a scheme before it is
+ * stored. And the page's own logo is an <img> too, so the gallery is scoped to
+ * their image CDN rather than to every image on the page.
+ *
+ * Sizes are taken as published, never rewritten: the 1024x768 in a path is
+ * their thumbnailer's parameter, and editing it to ask for something larger
+ * would be inventing a URL they never served.
+ */
+function applyGallery(html: string, listing: RawListing): void {
+  const $ = cheerio.load(html);
+
+  /** index → the widest URL seen for it. */
+  const byIndex = new Map<number, { url: string; width: number }>();
+
+  $('img[data-index]').each((_, el) => {
+    const raw = $(el).attr("src");
+    if (!raw || !raw.includes("pic.le-cdn.com")) return;
+    const url = raw.startsWith("//") ? `https:${raw}` : raw;
+    const index = Number($(el).attr("data-index"));
+    if (!Number.isFinite(index)) return;
+    const width = Number(url.match(/\/thumbs\/(\d+)x\d+\//)?.[1] ?? 0);
+    const seen = byIndex.get(index);
+    if (!seen || width > seen.width) byIndex.set(index, { url, width });
+  });
+
+  const gallery = [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v.url);
+  if (gallery.length > 0) {
+    listing.imageUrls = gallery;
+    listing.imageUrl = gallery[0];
+  }
+  // `og:image` is the cover at full size and is present even when the gallery
+  // markup changes shape, so it is the fallback rather than the first choice.
+  listing.imageUrl ??=
+    $('meta[property="og:image"]').attr("content")?.trim() || null;
+}

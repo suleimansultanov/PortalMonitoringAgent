@@ -210,6 +210,56 @@ export const GREEN_ACRES_COMMUNES: GreenAcresCommune[] = [
    */
 ];
 
+/**
+ * Propriétés Le Figaro — the `?ville=` token they use in their own URLs.
+ *
+ * Every one of these was READ OFF their sitemap
+ * (`sitemap/plf-fr/Liste_Vente_FR.xml`, captured 2026-08-30), not inferred.
+ * That matters more here than anywhere else, because their spellings are not
+ * derivable from the commune name: `st+tropez` rather than `saint+tropez`,
+ * `cavalaire+mer` with the `sur` dropped, `plan+tour` with both. A guessed
+ * token does not 404 — the site answers "La localisation n'a pas été trouvée"
+ * with a 200 and an empty result set, which reads as a commune with no stock.
+ *
+ * The path segment is `immobilier-...`, their all-types index. Figaro also
+ * publishes sixteen per-type indexes (villa, mas, vignoble, château…); taking
+ * the union of those would mean sixteen crawls for the same stock, and would
+ * miss whatever type they invent next.
+ *
+ * Fourteen of fourteen, districts included — Port Grimaud and Les Issambres
+ * have their own tokens, so they are collected directly rather than fished out
+ * of listing prose.
+ */
+export type FigaroCommune = { insee: string; ville: string; label: string };
+
+export const FIGARO_COMMUNES: FigaroCommune[] = [
+  { insee: "83119", ville: "st tropez", label: "Saint-Tropez" },
+  { insee: "83101", ville: "ramatuelle", label: "Ramatuelle" },
+  { insee: "83065", ville: "gassin", label: "Gassin" },
+  { insee: "83068", ville: "grimaud", label: "Grimaud" },
+  { insee: "83068", ville: "port grimaud", label: "Port Grimaud" },
+  { insee: "83042", ville: "cogolin", label: "Cogolin" },
+  { insee: "83115", ville: "ste maxime", label: "Sainte-Maxime" },
+  { insee: "83048", ville: "la croix valmer", label: "La Croix-Valmer" },
+  { insee: "83036", ville: "cavalaire mer", label: "Cavalaire-sur-Mer" },
+  { insee: "83078", ville: "la mole", label: "La Môle" },
+  { insee: "83063", ville: "la garde freinet", label: "La Garde-Freinet" },
+  { insee: "83094", ville: "plan tour", label: "Le Plan-de-la-Tour" },
+  { insee: "83107", ville: "les issambres", label: "Les Issambres" },
+  /**
+   * Spaces, not `+`. The adapter encodes them; storing the encoded form here
+   * would mean a second, differently-escaped spelling of the same thing living
+   * in the database, and the first person to fix one would leave the other.
+   *
+   * Two neighbours are deliberately absent though Figaro publishes both:
+   * `roquebrune+argens` (the whole commune — only its Les Issambres locality is
+   * on the client's list, and it has its own token above) and
+   * `rayol+canadel+mer` (not one of the fourteen places Med-Estates asked for).
+   * Collecting either would inflate every count in the product against a market
+   * the client does not work in.
+   */
+];
+
 /** LuxuryEstate keys on our display labels, so map them back to INSEE. */
 export function luxuryEstatePathsByInsee(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -274,6 +324,12 @@ export function coverageReport(): { portal: string; missing: string[] }[] {
       portal: "green-acres",
       missing: all
         .filter((i) => !GREEN_ACRES_COMMUNES.some((c) => c.insee === i))
+        .map((i) => byInsee.get(i) ?? i),
+    },
+    {
+      portal: "figaro",
+      missing: all
+        .filter((i) => !FIGARO_COMMUNES.some((c) => c.insee === i))
         .map((i) => byInsee.get(i) ?? i),
     },
   ];

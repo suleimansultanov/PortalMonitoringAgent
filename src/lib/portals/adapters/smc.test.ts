@@ -98,3 +98,26 @@ test("Port Grimaud stays distinct from Grimaud", () => {
 test("a listing outside the watched communes resolves to nothing", () => {
   assert.equal(resolveCommune("Nice", "06000", "Appartement à Nice"), null);
 });
+
+test("photographs are ordered by the number in the filename, not by the markup", () => {
+  /**
+   * The fixture emits ext_2 before ext_0, as their pages sometimes do. That
+   * number is the agency's sequence; document order is whatever their template
+   * did, and taking it would put the third room first on the client's card.
+   */
+  const l = parseFixture();
+
+  assert.deepEqual(l.imageUrls, [
+    "https://medias.maisonsetappartements.fr/pict/f1200x800/4/9/3/1/ext_0_4931521.jpg?t=1787891282",
+    "https://medias.maisonsetappartements.fr/pict/f1200x800/4/9/3/1/ext_1_4931521.jpg?t=1787891450",
+    "https://medias.maisonsetappartements.fr/pict/f1200x800/4/9/3/1/ext_2_4931521.jpg?t=1787891451",
+  ]);
+  assert.equal(l.imageUrl, l.imageUrls[0]);
+});
+
+test("the agency's logo is refused even though it sits on the same media host", () => {
+  // Every listing page carries one. Taking every image from that host would put
+  // an estate agent's badge at the front of every villa's gallery.
+  const l = parseFixture();
+  assert.ok(l.imageUrls.every((u) => !u.includes("/Agences/")));
+});

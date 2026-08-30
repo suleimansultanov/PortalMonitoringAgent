@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createFetcher } from "./runner/fetcher";
+import { createFetcher, USER_AGENT } from "./runner/fetcher";
+import { createBrowserSession, type BrowserSession } from "./runner/browser";
 
 /**
  * Save a live page as a parser fixture.
  *
  *   npm run fixture -- --url=https://… --name=green-acres-ramatuelle
+ *   npm run fixture -- --url=… --name=… --browser
  *
  * Fetched with the real collector, so what lands on disk is exactly what the
  * adapter will see in production — not what a browser renders, and not what
@@ -15,6 +17,14 @@ import { createFetcher } from "./runner/fetcher";
  *
  * Committed fixtures are the regression net: when a portal redesigns, the test
  * fails in CI rather than silently in a report three weeks later.
+ *
+ * `--browser` drives Chromium instead of the plain client, still carrying our
+ * own user-agent and still with no stealth of any kind. Several of these
+ * portals answer 403 to a fetch client and 200 to a browser — SMC, Etreproprio
+ * and Figaro all do — and without this flag the tool inherited the same blind
+ * spot that had three of them filed as unreachable for a week. If a source
+ * runs with `fetchMode: browser`, capture its fixtures the same way, or the
+ * fixture is not what the adapter will actually be handed.
  */
 
 const FIXTURES = path.resolve(process.cwd(), "src/lib/portals/__fixtures__");
@@ -35,20 +45,32 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`fetching ${url}`);
-  const fetcher = createFetcher({ delayMs: delay, attempts: 2 });
+  const useBrowser = process.argv.includes("--browser");
+
+  console.log(`fetching ${url}${useBrowser ? " (through a browser)" : ""}`);
+
+  let session: BrowserSession | null = null;
+  if (useBrowser) {
+    session = await createBrowserSession({ delayMs: delay, userAgent: USER_AGENT });
+  }
+  const fetcher = session?.fetch ?? createFetcher({ delayMs: delay, attempts: 2 });
 
   let html: string;
   try {
     html = await fetcher(url);
   } catch (err) {
+    await session?.close().catch(() => {});
     console.error(`\nrefused: ${(err as Error).message}`);
     console.error(
-      `\nThat is a result too — it means this portal will not serve the collector,\n` +
-        `and no adapter can be written against it until that changes.`,
+      useBrowser
+        ? `\nRefused to a browser carrying our own name, which is a real no.\n` +
+            `The answer to that is a conversation, not a different tool.`
+        : `\nRefused to the plain client. Try --browser before concluding anything:\n` +
+            `SMC, Etreproprio and Figaro all answer 403 here and 200 to a browser.`,
     );
     process.exit(1);
   }
+  await session?.close().catch(() => {});
 
   // Save under the extension the content actually is. A sitemap sitting on disk
   // as .html is the kind of small lie that costs someone ten minutes later.

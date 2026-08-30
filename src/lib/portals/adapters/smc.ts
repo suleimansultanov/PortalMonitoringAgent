@@ -170,6 +170,8 @@ export const smcAdapter: PortalAdapter = {
      * one agency into a single row.
      */
 
+    applyGallery(html, listing);
+
     const missing: string[] = [];
     if (listing.priceEur === null) missing.push("priceEur");
     if (listing.areaM2 === null) missing.push("areaM2");
@@ -384,4 +386,41 @@ function listingUrlsOnPage(html: string, host: string): string[] {
     urls.add(href.startsWith("http") ? href : new URL(href, host).toString());
   });
   return [...urls];
+}
+
+/**
+ * Photographs.
+ *
+ * Their filenames carry the order: `.../pict/f1200x800/4/9/3/1/ext_0_4931521.jpg`,
+ * then `ext_1_`, `ext_2_`. That number is the agency's own sequence, so it is
+ * read rather than inferred from where an <img> happens to sit in the markup.
+ *
+ * The exclusion matters more than the inclusion here. Agency logos live on the
+ * same media host under `/pict/Agences/Logos/`, and every listing page carries
+ * one — taking every image from that host would put a Century 21 badge at the
+ * front of a villa's gallery on every SMC property we hold.
+ *
+ * A `?t=` cache-buster rides along on each URL. It is kept: it is part of the
+ * address they serve, and stripping it is a guess about their caching that we
+ * have no reason to make.
+ */
+function applyGallery(html: string, listing: RawListing): void {
+  const $ = cheerio.load(html);
+  const byOrder = new Map<number, string>();
+
+  $('img[src*="/pict/"]').each((_, el) => {
+    const src = $(el).attr("src");
+    if (!src || src.includes("/Agences/")) return;
+    const n = src.match(/\/ext_(\d+)_\d+\.[a-z]+/i)?.[1];
+    if (n === undefined) return;
+    const order = Number(n);
+    if (!byOrder.has(order)) byOrder.set(order, src);
+  });
+
+  const gallery = [...byOrder.entries()].sort((a, b) => a[0] - b[0]).map(([, url]) => url);
+  if (gallery.length > 0) {
+    listing.imageUrls = gallery;
+    listing.imageUrl = gallery[0];
+  }
+  listing.imageUrl ??= $('meta[property="og:image"]').attr("content")?.trim() || null;
 }

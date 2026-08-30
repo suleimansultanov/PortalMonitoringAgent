@@ -16,5 +16,21 @@
     <img alt="Excellence Real Estate">
     Presented by Excellence Real Estate
   </div>
+
+  <!--
+    The gallery, three of the five on the live page.
+
+    Faithful in the two ways that matter. Index 0 appears twice, small and
+    large, which is why the extractor keeps the widest per index rather than
+    the first it meets. And every src is protocol-relative — valid in a page,
+    broken anywhere else — so it has to be given a scheme before it is stored.
+    The site logo is here too: it is an <img> like the rest and must not become
+    a photograph of the villa.
+  -->
+  <img src="/bundles/app/images/logos/luxuryestate.svg" alt="LuxuryEstate.com" height="30">
+  <img class="big" id="smallgallerypic1" data-index="0" src="//pic.le-cdn.com/thumbs/520x390/480/1/properties/Property-aaa111-132837599.jpg">
+  <img class="big" id="smallgallerypic1" data-index="0" src="//pic.le-cdn.com/thumbs/1024x768/480/1/properties/Property-aaa111-132837599.jpg">
+  <img class="small" id="smallgallerypic2" data-index="1" src="//pic.le-cdn.com/thumbs/520x390/480/2/properties/Property-bbb222-132837599.jpg">
+  <img class="small" id="smallgallerypic3" data-index="2" src="//pic.le-cdn.com/thumbs/520x390/480/3/properties/Property-ccc333-132837599.jpg">
 </body>
 </html>
