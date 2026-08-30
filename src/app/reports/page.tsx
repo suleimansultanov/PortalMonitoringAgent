@@ -26,20 +26,43 @@ export default async function ReportsPage() {
   const covered = communes.filter((c) => c.active > 0).length;
   const idle = head.sources.filter((s) => !s.enabled);
 
+  const monthNotYetLived = communes.some((c) => c.newIn30d === null);
+
   const liveWarnings: string[] = [
     "Days on market are measured from OUR first sighting, not the portal's " +
       "publication date, except on Superimmo — so these are a floor, not an estimate.",
   ];
+  if (monthNotYetLived) {
+    liveWarnings.push(
+      `The "new (30d)" column is blank because we have not been watching for ` +
+        `thirty days. Filling it from what we have would count the whole backfill ` +
+        `as this month's arrivals.`,
+    );
+  }
   if (covered < 12) {
     liveWarnings.push(
       `Only ${covered} of 12 communes have any stock collected. Comparing communes ` +
         `to each other is not meaningful yet.`,
     );
   }
-  if (idle.length > 0) {
+  /**
+   * `enabled` gates the SCHEDULER, not collection. Four portals are collecting
+   * today with every source flagged disabled, because every pass so far has
+   * been started by hand — so the old wording here ("every count below is an
+   * undercount") told the client that correct figures were wrong, which costs
+   * more trust than an actual error would.
+   *
+   * What is true, and worth saying, is that nothing refreshes on its own.
+   */
+  if (idle.length === head.sources.length) {
     liveWarnings.push(
-      `Sources not enabled: ${idle.map((s) => s.key).join(", ")}. Every count below ` +
-        `is an undercount.`,
+      `No source is on a schedule yet — the figures refresh only when a collection ` +
+        `is run by hand, so they are as old as the last run.`,
+    );
+  } else if (idle.length > 0) {
+    liveWarnings.push(
+      `Not on a schedule: ${idle.map((s) => s.key).join(", ")}. Those refresh only ` +
+        `when run by hand.`,
     );
   }
 
@@ -162,7 +185,9 @@ export default async function ReportsPage() {
                       >
                         <td className="px-5 py-3">{c.label}</td>
                         <td className="tnum px-3 py-3 text-right">{c.active}</td>
-                        <td className="tnum px-3 py-3 text-right">{c.newIn30d}</td>
+                        <td className="tnum px-3 py-3 text-right">
+                          {c.newIn30d ?? <span className="text-[var(--color-faint)]">—</span>}
+                        </td>
                         <td className="tnum px-3 py-3 text-right">{money(c.medianPriceEur)}</td>
                         <td className="tnum px-3 py-3 text-right">
                           {c.medianPricePerM2 === null

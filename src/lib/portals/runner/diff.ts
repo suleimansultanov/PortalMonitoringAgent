@@ -28,6 +28,21 @@ export type DiffInput = {
    * removals are suppressed entirely.
    */
   complete: boolean;
+
+  /**
+   * Known ids sitting in a commune discovery could not finish.
+   *
+   * `complete: false` is the blunt instrument — it shields the entire source.
+   * This is the scalpel. A 502 on page four of Grimaud says nothing about
+   * Ramatuelle, and the two are worth separating: if every hiccup shielded the
+   * whole portal, a site that stumbles most nights would never delist anything
+   * again, and the suppression would have stopped protecting the data and
+   * started hiding it.
+   *
+   * Ids listed here move from `removed` to `suppressedRemovals`, exactly as if
+   * the whole pass had been incomplete — for them alone.
+   */
+  incomplete?: Iterable<string>;
 };
 
 export type DiffResult = {
@@ -61,16 +76,20 @@ export function diffListings(input: DiffInput): DiffResult {
     }
   }
 
-  const missing: string[] = [];
-  for (const id of known) if (!discovered.has(id)) missing.push(id);
+  /**
+   * Two reasons to spare an unseen listing, and they compose: the pass as a
+   * whole did not finish, or the commune this listing lives in did not.
+   */
+  const shielded = new Set(input.incomplete ?? []);
+  const removed: string[] = [];
+  const suppressedRemovals: string[] = [];
+  for (const id of known) {
+    if (discovered.has(id)) continue;
+    if (input.complete && !shielded.has(id)) removed.push(id);
+    else suppressedRemovals.push(id);
+  }
 
-  return {
-    added,
-    present,
-    refresh,
-    removed: input.complete ? missing : [],
-    suppressedRemovals: input.complete ? [] : missing,
-  };
+  return { added, present, refresh, removed, suppressedRemovals };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { num } from "../jsonld";
 import { collectCharacteristics, isEmpty } from "../attributes";
+import { isPastLastPage } from "../runner/fetcher";
 
 /**
  * Superimmo.
@@ -49,6 +50,23 @@ export const superimmoAdapter: PortalAdapter = {
       postcode: string;
     }[];
     const maxPages = (ctx.config.maxPages as number) ?? 20;
+    /**
+     * Newest first, and this is the one portal where that is worth anything.
+     *
+     * Everywhere else a pass reaches the whole market, so discovery order only
+     * decides the sequence. Superimmo cannot be finished — roughly two minutes
+     * per listing against a rate limit that sits below any crawl rate — so what
+     * is collected first is simply what the client sees. Unsorted, that was a
+     * random slice by age: 63 listings spanning eleven months, ten of them from
+     * the last one.
+     *
+     * `created_at` is their own parameter, taken from their own markup rather
+     * than guessed, and the ordering was verified against the dates printed on
+     * the cards before this line was written. Config-driven so that the day it
+     * is renamed, the fix is a row rather than a release — and so a portal that
+     * offers no sort simply omits it.
+     */
+    const sort = (ctx.config.sort as string | undefined) ?? null;
 
     for (const insee of ctx.communeInsee) {
       if (!communes.some((c) => c.insee === insee)) {
@@ -58,15 +76,32 @@ export const superimmoAdapter: PortalAdapter = {
 
     for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
       const seen = new Set<string>();
+      /** Every exit from the loop that is not "the results ran out". */
+      let cutShort: string | null = null;
+
       for (let page = 1; page <= maxPages; page++) {
         const base = `${host}/achat/provence-alpes-cote-d-azur/var/${c.slug}-${c.postcode}`;
-        const url = page === 1 ? base : `${base}/p/${page}`;
+        /**
+         * The sort rides on EVERY page, not just the first. Two different
+         * orderings across a paginated set do not add up to the set: page one
+         * takes the newest 24, page two takes items 25-48 of some other
+         * ordering, and whatever falls in neither window is never discovered —
+         * then delisted for not being seen. Same page, same order, always.
+         */
+        const path = page === 1 ? base : `${base}/p/${page}`;
+        const url = sort ? `${path}?sort=${encodeURIComponent(sort)}` : path;
 
         let html: string;
         try {
           html = await ctx.fetch(url);
         } catch (err) {
-          console.warn(`[superimmo] index fetch failed ${url}:`, (err as Error).message);
+          if (isPastLastPage(err)) {
+            if (page > 1) break;
+            cutShort = `the commune URL is missing (${(err as Error).message}) — check the slug`;
+          } else {
+            cutShort = `index page ${page} failed: ${(err as Error).message}`;
+          }
+          console.warn(`[superimmo] ${c.slug}: ${cutShort}`);
           break;
         }
 
@@ -78,7 +113,14 @@ export const superimmoAdapter: PortalAdapter = {
           const id = u.match(ID_FROM_URL)?.[1];
           if (id) yield { externalId: id, url: u, communeHint: c.slug };
         }
+
+        if (page === maxPages) {
+          cutShort = `hit the ${maxPages}-page ceiling with listings still arriving`;
+          console.warn(`[superimmo] ${c.slug}: ${cutShort}`);
+        }
       }
+
+      if (cutShort) ctx.incomplete(c.insee, cutShort);
     }
   },
 

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listMatches } from "@/lib/api/queries";
+import { communeStats, listMatches } from "@/lib/api/queries";
 import { MatchList, type Match } from "@/components/MatchList";
 import { Warnings } from "@/components/ui";
 
@@ -21,7 +21,11 @@ export default async function MatchesPage({
   const sp = await searchParams;
   const includeTestData = sp.test === "1";
 
-  const rows = (await listMatches({ includeTestData, limit: 100 })) as unknown as Match[];
+  const [rows, communes] = await Promise.all([
+    listMatches({ includeTestData, limit: 100 }) as unknown as Promise<Match[]>,
+    communeStats(),
+  ]);
+  const covered = communes.filter((c) => c.active > 0).length;
 
   const warnings: string[] = [];
   if (includeTestData) {
@@ -31,10 +35,19 @@ export default async function MatchesPage({
         "address here can receive mail.",
     );
   }
-  warnings.push(
-    "Only one commune has been crawled so far, so a buyer with no matches most " +
-      "likely means their area has not been collected yet — not that nothing fits.",
-  );
+  /**
+   * Derived, not written down. This line used to read "only one commune has
+   * been crawled so far" — true on the day it was typed, quietly false for
+   * every day after, and pointed at the client. A sentence about the state of
+   * the data has to be computed from the data or it becomes a lie on a
+   * schedule.
+   */
+  if (covered < communes.length) {
+    warnings.push(
+      `${covered} of ${communes.length} communes have stock collected. A buyer with ` +
+        `no matches may simply be looking in one of the others.`,
+    );
+  }
 
   return (
     <div className="space-y-6">

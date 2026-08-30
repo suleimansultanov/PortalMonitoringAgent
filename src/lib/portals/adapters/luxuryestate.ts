@@ -8,6 +8,7 @@ import {
   type RawListing,
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str, type JsonLdNode } from "../jsonld";
+import { isPastLastPage } from "../runner/fetcher";
 
 /**
  * LuxuryEstate.
@@ -53,6 +54,9 @@ export const luxuryEstateAdapter: PortalAdapter = {
       }
 
       const seen = new Set<string>();
+      /** Every exit from the loop that is not "the results ran out". */
+      let cutShort: string | null = null;
+
       for (let page = 1; page <= maxPages; page++) {
         const url = page === 1 ? `${host}${path}` : `${host}${path}?pag=${page}`;
 
@@ -60,7 +64,13 @@ export const luxuryEstateAdapter: PortalAdapter = {
         try {
           html = await ctx.fetch(url);
         } catch (err) {
-          console.warn(`[luxuryestate] index fetch failed ${url}:`, (err as Error).message);
+          if (isPastLastPage(err)) {
+            if (page > 1) break;
+            cutShort = `the commune URL is missing (${(err as Error).message}) — check the path`;
+          } else {
+            cutShort = `index page ${page} failed: ${(err as Error).message}`;
+          }
+          console.warn(`[luxuryestate] ${path}: ${cutShort}`);
           break;
         }
 
@@ -72,7 +82,14 @@ export const luxuryEstateAdapter: PortalAdapter = {
           const id = u.match(ID_FROM_URL)?.[1];
           if (id) yield { externalId: id, url: u, communeHint: path };
         }
+
+        if (page === maxPages) {
+          cutShort = `hit the ${maxPages}-page ceiling with listings still arriving`;
+          console.warn(`[luxuryestate] ${path}: ${cutShort}`);
+        }
       }
+
+      if (cutShort) ctx.incomplete(insee, cutShort);
     }
   },
 

@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
 import { communeSlugMatcher, walkSitemap } from "../runner/sitemap";
+import { isPastLastPage } from "../runner/fetcher";
 
 /**
  * SMC France — Maisons et Appartements + Résidences Immobilier.
@@ -60,12 +61,51 @@ export const smcAdapter: PortalAdapter = {
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const sitemapRoot = ctx.config.sitemap as string | undefined;
+
+    /**
+     * Sitemap first, index pages as a real fallback rather than a dead branch.
+     *
+     * The sitemap is the better route by a distance — one file instead of a
+     * walk through their search infrastructure — so it is tried first and, when
+     * it works, it is the only thing that runs. But their Var shard has
+     * answered 403 since the day it was written, which meant this adapter had a
+     * preferred path that never worked and a working path it never reached.
+     *
+     * A fallback that only triggers on ZERO results, never on "fewer than
+     * expected": a sitemap that returns some listings is a sitemap that is
+     * working, and crawling their index on top of it would double our request
+     * count against a portal that has been generous with us.
+     */
+    /**
+     * ⚠️ While this source runs in `browser` mode the sitemap route cannot
+     * work, for a reason that has nothing to do with permission: Chromium
+     * treats `.xml.gz` as a download rather than a page, so `page.goto` fails
+     * with "Download is starting" before any status code is seen. Measured
+     * 2026-08-29.
+     *
+     * Harmless today — their Var shard answers 403 to the plain client anyway,
+     * and the fallback below carries the pass. It becomes a trap the day they
+     * allowlist us: the better route would silently stay broken and we would
+     * keep crawling their index pages instead. The fix then is to walk the
+     * sitemap with the plain fetcher even when the rest of the pass uses a
+     * browser, which needs a second fetcher on DiscoverContext.
+     */
     if (sitemapRoot) {
-      yield* discoverViaSitemap(ctx, sitemapRoot);
-      return;
+      let found = 0;
+      try {
+        for await (const item of discoverViaSitemap(ctx, sitemapRoot)) {
+          found += 1;
+          yield item;
+        }
+      } catch (err) {
+        // A refused shard is exactly the case this fallback exists for, so it
+        // is reported and stepped over rather than ending the pass.
+        console.warn(`[smc] sitemap unavailable (${(err as Error).message}) — trying index pages`);
+      }
+      if (found > 0) return;
+      console.warn("[smc] sitemap yielded nothing — falling back to index pages");
     }
-    // Kept as a fallback for the day they open their search pages again, or for
-    // a portal on this engine that never closed them.
+
     yield* discoverViaIndex(ctx);
   },
 
@@ -217,6 +257,13 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
 
   for (const entry of communes.filter((c) => ctx.communeInsee.includes(c.insee))) {
     const seen = new Set<string>();
+    /**
+     * Reported against the INSEE code, which several district pages share —
+     * Port Grimaud and Grimaud are one commune as far as delisting is
+     * concerned, so a truncated crawl of either shields both.
+     */
+    let cutShort: string | null = null;
+
     for (let page = 1; page <= maxPages; page++) {
       const suffix = page === 1 ? "" : `_${page}`;
       const url = `${host}/fr/83/biens/vente/selection-biens-${entry.slug}-${entry.id}${suffix}.html`;
@@ -225,7 +272,13 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
       try {
         html = await ctx.fetch(url);
       } catch (err) {
-        console.warn(`[smc] index fetch failed ${url}:`, (err as Error).message);
+        if (isPastLastPage(err)) {
+          if (page > 1) break;
+          cutShort = `the commune URL is missing (${(err as Error).message}) — check the slug`;
+        } else {
+          cutShort = `index page ${page} failed: ${(err as Error).message}`;
+        }
+        console.warn(`[smc] ${entry.slug}: ${cutShort}`);
         break;
       }
 
@@ -234,7 +287,27 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
       // serves the last page forever past the end, so counting pages is not
       // enough — you have to notice you are going in circles.
       const fresh = found.filter((u) => !seen.has(u));
-      if (fresh.length === 0) break;
+      if (fresh.length === 0) {
+        /**
+         * Page two repeating page one is not an ending, it is a pagination
+         * parameter being accepted and ignored — and it caps the commune at
+         * whatever fits on one page while looking exactly like a small market.
+         *
+         * Measured 2026-08-30: `_2` is served byte-for-byte identical to page
+         * one for La Croix-Valmer and Ramatuelle, so the first SMC collection
+         * took fifteen listings per commune and reported a clean finish. The
+         * same trap as Green-Acres' `p_n`, which is why that adapter has said
+         * this since the day it was written and this one now does too.
+         */
+        if (page > 1 && found.length > 0) {
+          cutShort =
+            `page ${page} repeated page ${page - 1} — the '_N' page suffix is not ` +
+            `taking effect, so only the first ${seen.size} listings of this ` +
+            `commune are visible`;
+          console.warn(`[smc] ${entry.slug}: ${cutShort}`);
+        }
+        break;
+      }
 
       for (const u of fresh) {
         seen.add(u);
@@ -242,7 +315,14 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
         if (!id) continue;
         yield { externalId: id, url: u, communeHint: entry.slug };
       }
+
+      if (page === maxPages) {
+        cutShort = `hit the ${maxPages}-page ceiling with listings still arriving`;
+        console.warn(`[smc] ${entry.slug}: ${cutShort}`);
+      }
     }
+
+    if (cutShort) ctx.incomplete(entry.insee, cutShort);
   }
 }
 

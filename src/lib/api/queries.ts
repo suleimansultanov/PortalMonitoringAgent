@@ -9,6 +9,7 @@ import {
   portalListings,
   portalSources,
   properties,
+  settings,
 } from "@/lib/db/schema";
 import { GULF_OF_SAINT_TROPEZ } from "@/lib/portals/communes";
 import { hasFeature } from "@/lib/matching/buyers";
@@ -668,7 +669,20 @@ export type CommuneStat = {
   medianPricePerM2: number | null;
   medianDaysOnMarket: number | null;
   priceCuts30d: number;
-  newIn30d: number;
+  /**
+   * NULL until we have been watching for thirty days.
+   *
+   * Otherwise the figure is not "new this month", it is "everything we have
+   * collected", and it comes out larger than the active count — 921 new
+   * against 913 active in Sainte-Maxime on 30 August, four days after that
+   * portal was first read. Arithmetically correct, and it reads as a market
+   * that turned over completely in a month.
+   *
+   * `newThisWeek` on the Overview has refused to answer for the same reason
+   * since the day it was written; this is that rule applied where it was
+   * missed.
+   */
+  newIn30d: number | null;
 };
 
 /**
@@ -717,6 +731,17 @@ export async function communeStats(): Promise<CommuneStat[]> {
     order by active desc
   `);
 
+  /**
+   * How long our own record actually runs. A window we have not lived through
+   * cannot be reported on, and saying "—" is the only honest answer until we
+   * have.
+   */
+  const [{ oldest }] = await db
+    .select({ oldest: sql<Date | null>`min(first_seen_at)` })
+    .from(portalListings);
+  const watchedLongEnough =
+    oldest !== null && Date.now() - new Date(oldest).getTime() >= 30 * 86_400_000;
+
   return rows.rows.map((r) => ({
     insee: r.commune_insee,
     label: COMMUNE_LABELS[r.commune_insee] ?? r.commune_insee,
@@ -725,7 +750,7 @@ export async function communeStats(): Promise<CommuneStat[]> {
     medianPricePerM2: r.median_ppm2 === null ? null : Math.round(Number(r.median_ppm2)),
     medianDaysOnMarket: r.median_dom === null ? null : Math.round(Number(r.median_dom)),
     priceCuts30d: Number(r.price_cuts_30d),
-    newIn30d: Number(r.new_30d),
+    newIn30d: watchedLongEnough ? Number(r.new_30d) : null,
   }));
 }
 
@@ -876,4 +901,174 @@ export async function overview(): Promise<{
     matchesOpen: Number(open),
     sources,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sources
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type SourceRun = {
+  status: string;
+  mode: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  seen: number;
+  added: number;
+  gone: number;
+  failed: number;
+  communes: number;
+  abortedReason: string | null;
+  error: string | null;
+};
+
+export type SourceStat = {
+  key: string;
+  name: string;
+  /** Every site this one adapter covers — SMC is two brands on one engine. */
+  hosts: string[];
+  enabled: boolean;
+  /** Live now. */
+  active: number;
+  /** Ever seen, including what has since gone. */
+  everSeen: number;
+  delisted: number;
+  /** Communes this source has any live stock in. */
+  communes: number;
+  /** Live listings first seen inside the window. */
+  newLast24h: number;
+  newLast7d: number;
+  /** Oldest and newest first sighting we hold — how far back our own record runs. */
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  /** Listings whose page we have not re-read in over a week. */
+  stale: number;
+  lastRun: SourceRun | null;
+};
+
+/**
+ * Everything the Sources screen shows, in one query set.
+ *
+ * The screen exists because "how much have we got" was, for a week, a question
+ * answered by counting files on a laptop. Three separate truncations hid inside
+ * that gap — a page ceiling, an ignored pagination parameter, an index error
+ * read as an ending — and each was found by hand, days late, because nothing
+ * put a source's own numbers where somebody would see them.
+ *
+ * Note what is deliberately NOT here: a "listings on the portal" figure to
+ * compare against. We cannot know it without asking the portal, and a number
+ * that looks authoritative while being a guess is worse than an absent one.
+ * What the screen gives instead is every signal that moves when collection
+ * breaks — the last run's counts, how much is stale, whether a pass aborted —
+ * so a wrong total shows up as a wrong shape.
+ */
+export async function sourceStats(): Promise<SourceStat[]> {
+  const sources = await db
+    .select({
+      id: portalSources.id,
+      key: portalSources.key,
+      name: portalSources.name,
+      hosts: portalSources.hosts,
+      enabled: portalSources.enabled,
+    })
+    .from(portalSources)
+    .orderBy(portalSources.key);
+
+  const counts = await db.execute(sql`
+    select
+      l.source_id,
+      count(*) filter (where l.status = 'active')::int                    as active,
+      count(*)::int                                                       as ever_seen,
+      count(*) filter (where l.status <> 'active')::int                   as delisted,
+      count(distinct l.commune_insee) filter (where l.status = 'active')::int as communes,
+      count(*) filter (
+        where l.status = 'active' and l.first_seen_at > now() - interval '24 hours'
+      )::int                                                              as new_24h,
+      count(*) filter (
+        where l.status = 'active' and l.first_seen_at > now() - interval '7 days'
+      )::int                                                              as new_7d,
+      count(*) filter (
+        where l.status = 'active' and l.updated_at < now() - interval '7 days'
+      )::int                                                              as stale,
+      min(l.first_seen_at)                                                as first_seen,
+      max(l.first_seen_at)                                                as last_seen
+    from portal_listings l
+    group by l.source_id
+  `);
+
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const r of counts.rows as unknown as Record<string, unknown>[]) {
+    byId.set(String(r.source_id), r);
+  }
+
+  const runs = await db.execute(sql`
+    select distinct on (r.source_id)
+      r.source_id, r.status, r.mode, r.started_at, r.completed_at,
+      r.seen_count, r.new_count, r.gone_count, r.failed_count,
+      cardinality(r.commune_insee) as communes,
+      r.aborted_reason, r.error
+    from portal_runs r
+    order by r.source_id, r.started_at desc
+  `);
+
+  const runById = new Map<string, Record<string, unknown>>();
+  for (const r of runs.rows as unknown as Record<string, unknown>[]) {
+    runById.set(String(r.source_id), r);
+  }
+
+  const n = (v: unknown): number => Number(v ?? 0);
+  const d = (v: unknown): Date | null => (v ? new Date(String(v)) : null);
+
+  return sources.map((s) => {
+    const c = byId.get(s.id);
+    const r = runById.get(s.id);
+    return {
+      key: s.key,
+      name: s.name,
+      hosts: (s.hosts ?? []).filter((h) => !h.startsWith("www.")),
+      enabled: s.enabled,
+      active: n(c?.active),
+      everSeen: n(c?.ever_seen),
+      delisted: n(c?.delisted),
+      communes: n(c?.communes),
+      newLast24h: n(c?.new_24h),
+      newLast7d: n(c?.new_7d),
+      stale: n(c?.stale),
+      firstSeenAt: d(c?.first_seen),
+      lastSeenAt: d(c?.last_seen),
+      lastRun: r
+        ? {
+            status: String(r.status),
+            mode: String(r.mode),
+            startedAt: new Date(String(r.started_at)),
+            completedAt: d(r.completed_at),
+            seen: n(r.seen_count),
+            added: n(r.new_count),
+            gone: n(r.gone_count),
+            failed: n(r.failed_count),
+            communes: n(r.communes),
+            abortedReason: r.aborted_reason ? String(r.aborted_reason) : null,
+            error: r.error ? String(r.error) : null,
+          }
+        : null,
+    };
+  });
+}
+
+/**
+ * When the market tables were last pushed to the hosted database.
+ *
+ * Written by `scripts/sync-to-supabase.sh`, because nothing else knows: the
+ * sync is a shell script outside the application, and until it recorded this
+ * the deployed site could sit a day behind with no way to tell from inside it.
+ * A stale figure that looks live is the most expensive kind on a screen an
+ * agent acts from.
+ */
+export async function lastSyncAt(): Promise<Date | null> {
+  const row = await db
+    .select({ value: settings.value })
+    .from(settings)
+    .where(eq(settings.key, "last_sync_at"))
+    .limit(1);
+  const v = row[0]?.value;
+  return v ? new Date(v) : null;
 }

@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { num } from "../jsonld";
 import { collectCharacteristics, isEmpty } from "../attributes";
+import { isPastLastPage } from "../runner/fetcher";
 
 /**
  * Green-Acres.
@@ -85,6 +86,12 @@ export const greenAcresAdapter: PortalAdapter = {
 
     for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
       const seen = new Set<string>();
+      /**
+       * Set by every exit from the loop that is not "the results ran out".
+       * Read once at the bottom, so a new `break` added later has to make a
+       * deliberate choice about it rather than inherit silence by default.
+       */
+      let cutShort: string | null = null;
 
       for (let page = 1; page <= maxPages; page++) {
         const base = `${host}/immobilier/${c.slug}`;
@@ -94,7 +101,15 @@ export const greenAcresAdapter: PortalAdapter = {
         try {
           html = await ctx.fetch(url);
         } catch (err) {
-          console.warn(`[green-acres] index fetch failed ${url}:`, (err as Error).message);
+          if (isPastLastPage(err)) {
+            // The page after the last one. An ending, not a failure — unless it
+            // is page one, in which case the commune URL itself is wrong.
+            if (page > 1) break;
+            cutShort = `the commune URL is missing (${(err as Error).message}) — check the slug`;
+          } else {
+            cutShort = `index page ${page} failed: ${(err as Error).message}`;
+          }
+          console.warn(`[green-acres] ${c.slug}: ${cutShort}`);
           break;
         }
 
@@ -111,11 +126,11 @@ export const greenAcresAdapter: PortalAdapter = {
          */
         if (fresh.length === 0) {
           if (page > 1 && cards.length > 0) {
-            console.warn(
-              `[green-acres] ${c.slug}: page ${page} repeated page ${page - 1} — ` +
-                `pagination parameter '${pageParam}' is not taking effect, ` +
-                `so only the first ${seen.size} listings of this commune are visible`,
-            );
+            cutShort =
+              `pagination parameter '${pageParam}' is not taking effect — ` +
+              `page ${page} repeated page ${page - 1}, so only the first ` +
+              `${seen.size} listings of this commune are visible`;
+            console.warn(`[green-acres] ${c.slug}: ${cutShort}`);
           }
           break;
         }
@@ -124,7 +139,19 @@ export const greenAcresAdapter: PortalAdapter = {
           seen.add(card.url);
           yield { externalId: card.id, url: card.url, communeHint: c.slug };
         }
+
+        /**
+         * The ceiling is a guard against an infinite crawl, not a statement
+         * about the market. Reaching it while the last page was still yielding
+         * new listings means there are more we did not ask for.
+         */
+        if (page === maxPages) {
+          cutShort = `hit the ${maxPages}-page ceiling with listings still arriving`;
+          console.warn(`[green-acres] ${c.slug}: ${cutShort}`);
+        }
       }
+
+      if (cutShort) ctx.incomplete(c.insee, cutShort);
     }
   },
 

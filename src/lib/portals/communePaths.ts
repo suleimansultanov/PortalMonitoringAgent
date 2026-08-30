@@ -11,7 +11,7 @@
  * without a deploy.
  */
 
-import { GULF_OF_SAINT_TROPEZ } from "./communes";
+import { COLLECTION_INSEE, GULF_OF_SAINT_TROPEZ } from "./communes";
 
 /**
  * LuxuryEstate — full paths, read off their own Var commune index.
@@ -122,9 +122,41 @@ export const SUPERIMMO_COMMUNES: SuperimmoCommune[] = [
   { insee: "83115", slug: "sainte-maxime", postcode: "83120", label: "Sainte-Maxime" },
   { insee: "83048", slug: "la-croix-valmer", postcode: "83420", label: "La Croix-Valmer" },
   { insee: "83036", slug: "cavalaire-sur-mer", postcode: "83240", label: "Cavalaire-sur-Mer" },
-  // TODO — read from https://www.superimmo.com/achat/provence-alpes-cote-d-azur/var
-  //   83078 La Môle · 83063 La Garde-Freinet · 83094 Le Plan-de-la-Tour
-  //   83107 Les Issambres (a locality — may sit under Roquebrune-sur-Argens)
+  /**
+   * Read off Cogolin's own "nearby" links 2026-08-29, not inferred. Note the
+   * postcode: La Môle shares 83310 with Cogolin and Grimaud, so deriving it
+   * from the commune name would have produced nothing usable.
+   */
+  { insee: "83078", slug: "la-mole", postcode: "83310", label: "La Môle" },
+  /**
+   * Both read off Grimaud's "nearby" links 2026-08-29, and Le Plan-de-la-Tour
+   * confirmed a second time from Sainte-Maxime's. Neither postcode follows from
+   * the commune name — Le Plan-de-la-Tour carries Sainte-Maxime's 83120 — which
+   * is the whole reason these three waited for a read instead of a guess.
+   */
+  { insee: "83063", slug: "la-garde-freinet", postcode: "83680", label: "La Garde-Freinet" },
+  { insee: "83094", slug: "le-plan-de-la-tour", postcode: "83120", label: "Le Plan-de-la-Tour" },
+  /**
+   * `postcode` is whatever Superimmo puts after the slug, and it is NOT always
+   * a postcode. Read off their own department page 2026-08-29: communes with a
+   * single postcode get it in full (`sainte-maxime-83120`), while communes
+   * spanning several get the department number alone — `roquebrune-sur-argens-83`,
+   * `frejus-83`, `saint-raphael-83`, `toulon-83`.
+   *
+   * Worth stating because the plausible guess is wrong in the worst way:
+   * `roquebrune-sur-argens-83380` would not 404 loudly, it would collect an
+   * empty commune, and an empty commune reads as a quiet market.
+   *
+   * Eleven of twelve as of 2026-08-29. The department page lists only the large
+   * towns, so the three small communes came from neighbours' "nearby" blocks —
+   * Cogolin's for La Môle, Grimaud's for the other two. That block is real
+   * adjacency rather than a fixed popular list, which makes it the route to use
+   * next time a commune is missing here. 83107 Roquebrune-sur-Argens is now known
+   * (`roquebrune-sur-argens-83`) but deliberately not added yet: the URL covers
+   * the whole commune rather than the Les Issambres locality the client
+   * actually watches, and on a portal costing ~2 min per listing that volume is
+   * a decision, not a detail.
+   */
 ];
 
 /**
@@ -192,10 +224,28 @@ export function luxuryEstatePathsByInsee(): Record<string, string> {
 
 /** What is still unconfigured, for the seed script to shout about. */
 export function coverageReport(): { portal: string; missing: string[] }[] {
-  const byInsee = new Map(
-    GULF_OF_SAINT_TROPEZ.filter((c) => !c.localityOf).map((c) => [c.insee, c.label]),
-  );
-  const all = [...byInsee.keys()];
+  /**
+   * Every code we collect, including the one that only ever appears as a
+   * locality.
+   *
+   * This used to skip localities entirely, and 83107 has no non-locality entry
+   * — it is "Les Issambres", inside Roquebrune-sur-Argens, a commune nobody put
+   * on the client's list. So 83107 could never turn up in `missing`, while the
+   * printed total counted all twelve codes. Every portal therefore reported
+   * 12/12 and a ✓ regardless of whether it covered Roquebrune at all, which is
+   * how Superimmo printed "full coverage" the day it had no slug for it.
+   *
+   * A coverage report that cannot report the gap it has is worse than no
+   * report: it is the reassurance without the check.
+   *
+   * The label prefers a real commune's name where one claims the code (Grimaud
+   * over Port Grimaud) and falls back to the locality's where none does.
+   */
+  const byInsee = new Map<string, string>();
+  for (const c of GULF_OF_SAINT_TROPEZ) {
+    if (!byInsee.has(c.insee) || !c.localityOf) byInsee.set(c.insee, c.label);
+  }
+  const all = COLLECTION_INSEE;
 
   const lux = luxuryEstatePathsByInsee();
 

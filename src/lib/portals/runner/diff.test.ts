@@ -69,3 +69,60 @@ test("growth never trips the guard", () => {
 test("exactly at the threshold is allowed through", () => {
   assert.equal(shouldAbort({ discovered: 200, baseline: 400, threshold: 0.5 }).abort, false);
 });
+
+/**
+ * Per-commune shielding. The scenario these describe is the one that cost a
+ * real run elsewhere in this pipeline: discovery stops early, the short list
+ * looks exactly like a market emptying out, and the delistings are written.
+ */
+
+test("a listing in an unfinished commune is spared, not delisted", () => {
+  const r = diffListings({
+    known: ["a", "b", "c"],
+    discovered: ["a"],
+    complete: true,
+    incomplete: ["b"],
+  });
+  assert.deepEqual(r.removed, ["c"]);
+  assert.deepEqual(r.suppressedRemovals, ["b"]);
+});
+
+test("shielding one commune does not shield the rest", () => {
+  // The whole point of doing this per commune: Ramatuelle still delists while
+  // Grimaud is being protected. Otherwise one flaky page freezes the portal.
+  const r = diffListings({
+    known: ["grimaud-1", "ramatuelle-1"],
+    discovered: [],
+    complete: true,
+    incomplete: ["grimaud-1"],
+  });
+  assert.deepEqual(r.removed, ["ramatuelle-1"]);
+  assert.deepEqual(r.suppressedRemovals, ["grimaud-1"]);
+});
+
+test("an incomplete pass still shields everything, shielded list or not", () => {
+  const r = diffListings({
+    known: ["a", "b"],
+    discovered: [],
+    complete: false,
+    incomplete: ["a"],
+  });
+  assert.deepEqual(r.removed, []);
+  assert.deepEqual(r.suppressedRemovals, ["a", "b"]);
+});
+
+test("shielding never suppresses an addition — what we saw is certainly there", () => {
+  const r = diffListings({
+    known: ["a"],
+    discovered: ["a", "new"],
+    complete: true,
+    incomplete: ["a"],
+  });
+  assert.deepEqual(r.added, ["new"]);
+});
+
+test("omitting the shield list leaves the old behaviour exactly as it was", () => {
+  const r = diffListings({ known: ["a", "b"], discovered: ["a"], complete: true });
+  assert.deepEqual(r.removed, ["b"]);
+  assert.deepEqual(r.suppressedRemovals, []);
+});

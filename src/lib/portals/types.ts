@@ -119,6 +119,28 @@ export type DiscoverContext = {
   communeInsee: string[];
   /** Adapter-specific settings from `portal_sources.config`. */
   config: Record<string, unknown>;
+
+  /**
+   * Report that a commune could not be enumerated to the end.
+   *
+   * Discovery has exactly two ways of stopping — the results ran out, or
+   * something went wrong — and from the outside they produce an identical
+   * short list. Nothing downstream can tell them apart, so it believes the
+   * list, and every listing discovery never reached is delisted. A 502 on page
+   * four of seven empties half a commune, plausibly and silently, and the
+   * report that says so is a week away.
+   *
+   * So a `break` out of a pagination loop is never allowed to speak for
+   * itself. Every one of them either means "that was the last page" or calls
+   * this first.
+   *
+   * Scoped to a single commune because that is the true blast radius. Marking
+   * the whole pass incomplete would be safe and useless: one flaky page would
+   * freeze delisting across eleven healthy communes, and a portal that is
+   * flaky most nights would freeze it permanently — at which point the
+   * suppression is no longer protecting the data, it is hiding it.
+   */
+  incomplete(communeInsee: string, reason: string): void;
 };
 
 export type PortalAdapter = {

@@ -120,7 +120,7 @@ async function probeOne(url: string): Promise<string> {
 
 export async function probe(): Promise<void> {
   console.log(`\nProbing ${TARGETS.length} portals with the real collector.`);
-  console.log(`user-agent: ${process.env.CRAWLER_USER_AGENT ?? "(default)"}\n`);
+  console.log(`user-agent: ${process.env.COLLECTOR_USER_AGENT ?? "(default)"}\n`);
 
   const results: Result[] = [];
 

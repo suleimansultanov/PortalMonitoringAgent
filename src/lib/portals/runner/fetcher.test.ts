@@ -193,3 +193,56 @@ test("a 200 carrying a CAPTCHA throws rather than returning an empty page", asyn
   // Returning the body here would reach the diff as "this commune is empty".
   await assert.rejects(() => fetcher("https://example.test/c"), BlockedError);
 });
+
+test("a portal's agreed header rides on every request, beside its user-agent", async () => {
+  /**
+   * LuxuryEstate refuses any user-agent that is not a browser's, and their
+   * technical operations team answered by asking for a browser string plus an
+   * `X-Collector` header they can filter on. That header is the entire reason
+   * the browser string is acceptable there: with it they can still pick our
+   * traffic out and throttle it; without it we would be indistinguishable from
+   * visitors, which is the thing this project does not do.
+   *
+   * So the two travel together. A regression that dropped the header while
+   * keeping the user-agent would turn an agreed configuration into exactly the
+   * evasion it was built to avoid — silently, and while continuing to work.
+   */
+  const seen: Record<string, string>[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    now: () => 0,
+    sleep: async () => {},
+    userAgent: "Mozilla/5.0 (Macintosh) Chrome/140.0.0.0",
+    extraHeaders: { "X-Collector": "PortalMonitoringAgent/1.0 (+https://leadestate.com)" },
+    doFetch: (async (_url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      return new Response("<html>ok</html>", { status: 200 });
+    }) as unknown as typeof fetch,
+  });
+
+  await fetcher("https://example.test/a");
+  await fetcher("https://example.test/b");
+
+  assert.equal(seen.length, 2, "both requests");
+  for (const h of seen) {
+    assert.equal(h["X-Collector"], "PortalMonitoringAgent/1.0 (+https://leadestate.com)");
+    assert.match(h["user-agent"], /Chrome/);
+  }
+});
+
+test("a source with no agreed headers sends none — the default stays untouched", async () => {
+  const seen: Record<string, string>[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    now: () => 0,
+    sleep: async () => {},
+    doFetch: (async (_url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      return new Response("<html>ok</html>", { status: 200 });
+    }) as unknown as typeof fetch,
+  });
+
+  await fetcher("https://example.test/a");
+  assert.equal(seen[0]["X-Collector"], undefined);
+  assert.match(seen[0]["user-agent"], /PortalMonitoringAgent/);
+});

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { greenAcresAdapter } from "./greenacres";
+import { FetchFailedError } from "../runner/fetcher";
 
 /**
  * Golden-file tests against pages captured from the live site with the real
@@ -226,24 +227,42 @@ test("a URL that is not a listing is refused rather than guessed at", () => {
  * Discovery is exercised through a fake fetch over the two captured index
  * pages. No network, so this runs in CI.
  */
-async function discovered(pages: Record<string, string>): Promise<string[]> {
-  const out: string[] = [];
+async function discover(
+  pages: Record<string, string>,
+  maxPages = 3,
+  /**
+   * What a page we did not stub answers with. The default is a 500, because
+   * most of these tests are about something going wrong; the 410 case gets
+   * passed in explicitly, since on this portal it means the opposite.
+   */
+  onMissing: (url: string) => Error = (url) =>
+    new FetchFailedError(url, 500, "server error 500"),
+): Promise<{ urls: string[]; incomplete: Record<string, string> }> {
+  const urls: string[] = [];
+  const incomplete: Record<string, string> = {};
   for await (const item of greenAcresAdapter.discover({
     fetch: async (url: string) => {
       const html = pages[url];
-      if (!html) throw new Error(`not found ${url}`);
+      if (!html) throw onMissing(url);
       return html;
     },
     communeInsee: ["83101"],
     config: {
       host: "https://www.green-acres.fr",
       communes: [{ insee: "83101", slug: "ramatuelle", label: "Ramatuelle" }],
-      maxPages: 3,
+      maxPages,
+    },
+    incomplete: (insee, reason) => {
+      incomplete[insee] ??= reason;
     },
   })) {
-    out.push(item.url);
+    urls.push(item.url);
   }
-  return out;
+  return { urls, incomplete };
+}
+
+async function discovered(pages: Record<string, string>): Promise<string[]> {
+  return (await discover(pages)).urls;
 }
 
 test("obfuscated cards are read, and pagination advances", async () => {
@@ -309,4 +328,86 @@ test("the unlabelled amenities are kept too — there are more of them than of t
   for (const flag of ["Piscine", "Cave", "Alarme", "Climatisation", "Gardien", "Digicode"]) {
     assert.ok(raw.flags?.includes(flag), `missing amenity: ${flag}`);
   }
+});
+
+/**
+ * Truncated discovery.
+ *
+ * Three ways this crawl can stop short of the end of a commune, and all three
+ * used to look identical to a finished one from the outside — which is what
+ * turned a portal's bad afternoon into a commune full of false delistings.
+ */
+
+const P1 = "https://www.green-acres.fr/immobilier/ramatuelle";
+const P2 = "https://www.green-acres.fr/immobilier/ramatuelle?p_n=2";
+const P3 = "https://www.green-acres.fr/immobilier/ramatuelle?p_n=3";
+const EMPTY = "<html><body></body></html>";
+
+test("a failing index page marks the commune incomplete and keeps what it got", async () => {
+  // Page two answers 500 — something went wrong mid-pagination.
+  const { urls, incomplete } = await discover({ [P1]: fixture("green-acres-ramatuelle.html") });
+
+  assert.equal(urls.length, 24, "page one's listings are still real and still ours");
+  assert.match(incomplete["83101"], /page 2 failed/);
+});
+
+test("410 past the last page is an ending, not a failure", async () => {
+  /**
+   * Green-Acres answers 410 for the page after the last one rather than
+   * serving an empty result set. Measured on the first re-run of an already
+   * collected market: reading that as a failure marked eleven of twelve
+   * communes incomplete and suppressed every delisting on a healthy pass.
+   *
+   * Protection that fires on every normal ending is not protection — it is
+   * delisting quietly switched off, which is the thing it was built to prevent.
+   */
+  const gone = (url: string) => new FetchFailedError(url, 410, "not found (410)");
+  const { urls, incomplete } = await discover(
+    { [P1]: fixture("green-acres-ramatuelle.html") },
+    3,
+    gone,
+  );
+
+  assert.equal(urls.length, 24);
+  assert.deepEqual(incomplete, {}, "an ordinary end of pagination reports nothing");
+});
+
+test("410 on page one is the opposite — the commune URL itself is wrong", async () => {
+  // A bad slug produces no listings and no error anyone would notice. It has
+  // to be loud, because an empty commune reads as a quiet market.
+  const gone = (url: string) => new FetchFailedError(url, 410, "not found (410)");
+  const { urls, incomplete } = await discover({}, 3, gone);
+
+  assert.equal(urls.length, 0);
+  assert.match(incomplete["83101"], /commune URL is missing/);
+});
+
+test("pagination that silently repeats itself is incompleteness, not an ending", async () => {
+  // Their `p_n` parameter being renamed would look exactly like this: a second
+  // page identical to the first. Every listing past the first 24 is invisible,
+  // and delisting on that basis would empty most of the commune.
+  const page = fixture("green-acres-ramatuelle.html");
+  const { urls, incomplete } = await discover({ [P1]: page, [P2]: page });
+
+  assert.equal(urls.length, 24);
+  assert.match(incomplete["83101"], /not taking effect/);
+});
+
+test("the page ceiling is a crawl limit, not a statement about the market", async () => {
+  const { incomplete } = await discover({ [P1]: fixture("green-acres-ramatuelle.html") }, 1);
+  assert.match(incomplete["83101"], /ceiling/);
+});
+
+test("a commune that simply ran out of listings is reported as complete", async () => {
+  // The negative case, and the one that matters most: if an ordinary ending
+  // also flagged incomplete, nothing would ever be delisted again and the
+  // protection would be indistinguishable from having no delisting at all.
+  const { urls, incomplete } = await discover({
+    [P1]: fixture("green-acres-ramatuelle.html"),
+    [P2]: fixture("green-acres-ramatuelle-p2b.html"),
+    [P3]: EMPTY,
+  });
+
+  assert.equal(urls.length, 48);
+  assert.deepEqual(incomplete, {});
 });

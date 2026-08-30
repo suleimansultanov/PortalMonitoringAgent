@@ -48,6 +48,12 @@ type Response_ = { status(): number };
 export type BrowserFetcherOptions = {
   delayMs: number;
   userAgent?: string;
+  /**
+   * Headers the portal asked us to send on every request — see the long note on
+   * `FetcherOptions.extraHeaders`. Set at the context level so that Playwright
+   * attaches them to sub-resource requests too, not only to `page.goto`.
+   */
+  extraHeaders?: Record<string, string>;
   timeoutMs?: number;
   /**
    * 'domcontentloaded' rather than 'networkidle'.
@@ -103,13 +109,20 @@ export async function createBrowserSession(
     locale: "fr-FR",
     timezoneId: "Europe/Paris",
     /**
-     * Identify ourselves in the user-agent even here.
+     * Identify ourselves in the user-agent — unless a portal has asked us in
+     * writing not to, and given us another header to be identified by instead.
      *
-     * A browser that says who it is can be allowlisted, contacted, or asked to
-     * slow down. One that pretends to be an anonymous visitor cannot — and
-     * pretending is the part that would make this evasion rather than access.
+     * A client that says who it is can be allowlisted, contacted, or asked to
+     * slow down. One that cannot be picked out of ordinary traffic at all
+     * cannot — and that is the part that would make this evasion rather than
+     * access. LuxuryEstate is the one source where the identifier moved out of
+     * the user-agent and into `X-Collector` at their own request; see its
+     * `permission_note`. Everywhere else the user-agent still names us.
      */
     ...(opts.userAgent ? { userAgent: opts.userAgent } : {}),
+    ...(opts.extraHeaders && Object.keys(opts.extraHeaders).length > 0
+      ? { extraHTTPHeaders: opts.extraHeaders }
+      : {}),
   });
 
   let nextAllowedAt = 0;

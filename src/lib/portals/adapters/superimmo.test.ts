@@ -148,3 +148,56 @@ test("only the leading number is taken out of an emissions figure", () => {
   const raw = parseCharacteristics().raw as { ghgCo2M2Year?: number | null };
   assert.notEqual(raw.ghgCo2M2Year, 282);
 });
+
+/**
+ * Discovery, over a fake fetch. What is being tested is the URLs we ask for,
+ * which is the part a portal's redesign breaks and a unit test can still catch.
+ */
+async function discover(
+  config: Record<string, unknown>,
+): Promise<{ asked: string[]; incomplete: Record<string, string> }> {
+  const asked: string[] = [];
+  const incomplete: Record<string, string> = {};
+  const card = (id: string) =>
+    `<a href="https://www.superimmo.com/annonces/achat-maison-160m-ramatuelle-83350-${id}">x</a>`;
+
+  for await (const _ of superimmoAdapter.discover({
+    fetch: async (url: string) => {
+      asked.push(url);
+      // Page one has listings, page two is empty — an ordinary ending.
+      return asked.length === 1 ? card("aaa111") + card("bbb222") : "<html></html>";
+    },
+    communeInsee: ["83101"],
+    config: {
+      host: "https://www.superimmo.com",
+      communes: [{ insee: "83101", slug: "ramatuelle", postcode: "83350" }],
+      maxPages: 5,
+      ...config,
+    },
+    incomplete: (insee, reason) => {
+      incomplete[insee] ??= reason;
+    },
+  })) {
+    // The ids themselves are covered by the parse tests; this is about URLs.
+  }
+  return { asked, incomplete };
+}
+
+test("the sort parameter is carried on every page, not only the first", async () => {
+  // Two orderings across one paginated set do not add up to the set: anything
+  // falling outside both windows is never discovered, then delisted unseen.
+  const { asked } = await discover({ sort: "created_at" });
+
+  assert.ok(asked.length >= 2, "pagination should have asked for a second page");
+  for (const url of asked) {
+    assert.match(url, /\?sort=created_at$/, `no sort on ${url}`);
+  }
+  assert.match(asked[1], /\/p\/2\?sort=created_at$/);
+});
+
+test("a source configured without a sort asks for plain URLs", async () => {
+  // Superimmo is the only portal that offers one. The others must not end up
+  // requesting a parameter their site has never heard of.
+  const { asked } = await discover({});
+  for (const url of asked) assert.ok(!url.includes("?"), `unexpected query in ${url}`);
+});

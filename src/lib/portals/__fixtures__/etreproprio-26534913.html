@@ -22,5 +22,26 @@
   </div>
   <p class="prix">25 000 000 €</p>
   <p>SAINT-TROPEZ</p>
+
+  <!--
+    The gallery, trimmed to three of the nineteen photographs on the live page.
+
+    Two things here are faithful to the real markup and both matter. Every
+    photograph appears twice — once in the carousel, once in the grid below it —
+    and the two blocks do not agree on order, so document order is not the
+    agency's order; only the "- photo N" caption is. The agency's own logo is an
+    <img> on the same page and must not end up in the gallery.
+  -->
+  <img class="h-full w-full object-contain" src="https://storage.etreproprio.com/realtor/image/logo/pt/pt1_g8yg6gg8.jpeg" alt="Logo de l'agence Côte D'azur Sotheby's Int. Realty">
+  <div class="carousel">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/i/d/m/66886831-d30f-44b3-a8b2-502b9fa3a3ea_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 2" loading="lazy">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/v/q/g/df46aca1-0790-4f5c-b933-67f60851c12a_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 3" loading="lazy">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/t/u/v/21a63042-b867-4198-8002-18b7f9ab048c_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 1" loading="lazy">
+  </div>
+  <div class="grid">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/t/u/v/21a63042-b867-4198-8002-18b7f9ab048c_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 1" loading="lazy">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/i/d/m/66886831-d30f-44b3-a8b2-502b9fa3a3ea_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 2" loading="lazy">
+    <img src="https://storage.etreproprio.com/classified/image/thumb/v/q/g/df46aca1-0790-4f5c-b933-67f60851c12a_ptw0.webp" alt="Saint-Tropez, domaine de deux villas provençales - photo 3" loading="lazy">
+  </div>
 </body>
 </html>

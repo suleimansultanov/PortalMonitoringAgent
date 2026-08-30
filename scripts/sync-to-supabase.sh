@@ -48,12 +48,17 @@ fi
 if command -v pg_dump >/dev/null 2>&1; then
   run_dump() { pg_dump "$SOURCE" "$@"; }
   run_psql()  { psql "$TARGET" "$@"; }
+  # The collector's own database, for the sync stamp at the end. `settings` is
+  # not one of the tables this script copies — it holds encrypted values keyed
+  # to an environment — so the two sides are written separately and on purpose.
+  run_psql_local() { psql "$SOURCE" "$@"; }
 else
   echo "pg_dump not on PATH — using the postgres:16 image."
   DOCKER_SOURCE="${SOURCE//localhost/host.docker.internal}"
   DOCKER_SOURCE="${DOCKER_SOURCE//127.0.0.1/host.docker.internal}"
   run_dump() { docker run --rm postgres:16 pg_dump "$DOCKER_SOURCE" "$@"; }
   run_psql()  { docker run --rm -i postgres:16 psql "$TARGET" "$@"; }
+  run_psql_local() { docker run --rm -i postgres:16 psql "$DOCKER_SOURCE" "$@"; }
 fi
 
 # Parents first. The same order is used to empty and to fill; emptying happens
@@ -103,3 +108,24 @@ run_psql -c "select 'portal_listings' t, count(*) from portal_listings
              union all select 'properties', count(*) from properties
              union all select 'buyers', count(*) from buyers
              union all select 'users (untouched)', count(*) from users;"
+
+echo
+echo "── stamping the sync ────────────────────────────────"
+# Written on BOTH sides, and after the load rather than before.
+#
+# The hosted copy is what the Sources screen reads, so that one has to say when
+# the data behind it actually arrived. The local copy exists so the same screen
+# tells the truth when run against the collector's own database.
+#
+# Stamped last on purpose: a timestamp written before a load that then fails
+# would claim the site is current while it is showing yesterday's market, which
+# is the exact failure the screen exists to make visible.
+STAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for target in remote local; do
+  if [ "$target" = "remote" ]; then RUN=run_psql; else RUN=run_psql_local; fi
+  $RUN -v ON_ERROR_STOP=1 -c "
+    insert into settings (key, value, encrypted, updated_at)
+    values ('last_sync_at', '$STAMP', false, now())
+    on conflict (key) do update set value = excluded.value, updated_at = now();" > /dev/null
+done
+echo "  $STAMP"

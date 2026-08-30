@@ -156,6 +156,18 @@ const POSTCODE_TO_INSEE: Record<string, string> = {
   "83120": "83115", // Sainte-Maxime
   "83420": "83048", // La Croix-Valmer
   "83240": "83036", // Cavalaire-sur-Mer
-  "83310": "83068", // Grimaud AND Cogolin — ambiguous, prefer the name
-  "83680": "83078", // La Môle
+  "83310": "83068", // Grimaud, Cogolin AND La Môle — ambiguous, prefer the name
+  /**
+   * 83680 is LA GARDE-FREINET, not La Môle.
+   *
+   * Corrected 2026-08-29 against Superimmo's own commune URLs, read the same
+   * day: `la-garde-freinet-83680` and `la-mole-83310`. La Môle shares 83310
+   * with Cogolin and Grimaud, which is also why it cannot be resolved by
+   * postcode at all and has been moved into the ambiguous line above.
+   *
+   * The old entry sent every listing resolved by this postcode to a commune
+   * roughly twenty kilometres away — silently, since a listing filed under the
+   * wrong commune looks exactly like a listing.
+   */
+  "83680": "83063", // La Garde-Freinet
 };

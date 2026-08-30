@@ -28,7 +28,24 @@ import type { PoliteFetch } from "../types";
  * down, and two different strings would mean a portal allowlisting one of them
  * and still refusing the other.
  */
+/**
+ * Who we say we are, on every request — the plain fetcher and the browser alike.
+ *
+ * Overridable with COLLECTOR_USER_AGENT so the operator can sign the traffic
+ * with their own name without editing code, and so a personal name never enters
+ * a public repository. The default names the company and gives two ways to
+ * reach it, which is what a portal needs in order to complain, rate-limit us,
+ * or say no.
+ *
+ * WHAT THIS MUST ALWAYS BE. An honest identifier: a name, a contact, and no
+ * claim to be something we are not. A browser's user-agent string is not a
+ * name, it is the assertion "a person is reading this page" — and sending one
+ * would remove the only thing that lets a site recognise us and refuse. If a
+ * portal asks in writing for a different string, record who asked and when in
+ * that source's `permission_note` before changing anything here.
+ */
 export const USER_AGENT =
+  process.env.COLLECTOR_USER_AGENT?.trim() ||
   "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)";
 
 export class BlockedError extends Error {
@@ -75,6 +92,27 @@ export class FetchFailedError extends Error {
     this.url = url;
     this.status = status;
   }
+}
+
+/**
+ * Whether a failed index fetch means "there is no page N" rather than
+ * "something went wrong".
+ *
+ * Green-Acres answers **410 Gone** for the page after the last one instead of
+ * serving an empty result set; 404 is the same statement in a more common
+ * dialect. Past page one that is an ordinary ending and must not be reported as
+ * incomplete — measured 2026-08-29, when treating it as a failure shielded
+ * eleven of twelve communes from delisting on a run that was in fact perfectly
+ * healthy. Protection that fires on every normal ending is not protection; it
+ * is delisting quietly switched off.
+ *
+ * On page ONE the same status means the opposite: the commune URL itself is
+ * wrong. That is the silent-empty-commune failure this project has paid for
+ * twice, so callers treat it as incomplete and say so loudly. The distinction
+ * is the page number, which is why this only answers half the question.
+ */
+export function isPastLastPage(err: unknown): boolean {
+  return err instanceof FetchFailedError && (err.status === 404 || err.status === 410);
 }
 
 /**
@@ -129,6 +167,28 @@ export type FetcherOptions = {
   /** From `portal_sources.crawl_delay_ms`, which comes from their robots.txt. */
   delayMs: number;
   userAgent?: string;
+  /**
+   * Headers a portal has asked us to send, from `portal_sources.config`.
+   *
+   * The reason this exists: LuxuryEstate's firewall refuses any user-agent that
+   * is not a browser's, and on 30 August 2026 their technical operations team
+   * answered our question about it by asking us to send a standard browser
+   * string **and** an `X-Collector` header on every request, so that they can
+   * still pick our traffic out of their logs and filter it without touching
+   * their firewall rules.
+   *
+   * That header is the whole basis on which the browser string is acceptable
+   * here. Without it we would simply be indistinguishable from visitors, which
+   * is the thing this project does not do. With it, they can identify, throttle
+   * or block us at any moment — which is what makes it a configuration they
+   * chose rather than a disguise we adopted.
+   *
+   * So: never send the browser user-agent for a source without also sending
+   * whatever header that portal agreed to identify us by, and never invent
+   * either. Both live in that source's config, beside the permission note
+   * quoting who agreed and when.
+   */
+  extraHeaders?: Record<string, string>;
   /** Retries for transient failures only. Never for 403, 404 or a block. */
   attempts?: number;
   timeoutMs?: number;
@@ -154,6 +214,7 @@ const MAX_DELAY_MS = 120_000;
 export function createFetcher(opts: FetcherOptions): PoliteFetch {
   const {
     delayMs,
+    extraHeaders = {},
     /**
      * Identify ourselves properly, with a way to be contacted.
      *
@@ -194,6 +255,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
         const res = await doFetch(url, {
           headers: {
             "user-agent": userAgent,
+            ...extraHeaders,
             // The headers any well-formed HTTP client sends. Not a disguise —
             // omitting them makes the request malformed rather than anonymous,
             // and some servers reject on that alone.

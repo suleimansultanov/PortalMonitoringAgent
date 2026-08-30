@@ -57,6 +57,28 @@ listings, looking like a thin market.
 **Do this first. It is the cheapest capability in the list and it is half
 written.**
 
+### Measured 2026-08-29: Green-Acres cannot take this route
+
+Their `sitemap.xml` is served, the `.gz` shards open, and `lastmod` is current
+(same-day, unlike SMC's five-month-old dates). None of that helps: the index
+holds fourteen shard families, all of them either property-type sections
+(`main-house`, `main-land`) or city landing pages (`cities-house/1..8`), and a
+shard contains **no `/fr/properties/` URLs at all**. Green-Acres publishes its
+SEO pages to search engines and not its listings, so there is no per-listing
+`lastmod` to order by and no sitemap discovery to replace the `p_n` pagination
+with.
+
+Three requests to find out, against a day of writing against an assumption.
+
+**And it matters less than it looked, which is the more useful lesson.**
+Freshness ordering only pays where a pass cannot reach the whole market.
+Green-Acres and Etreproprio are collected in full every run — everything new is
+found because everything is found. The portal where ordering is worth real money
+is **Superimmo**, the one we cannot finish: ~2 min per listing, ~80 h for the
+gulf, so what gets collected first is what the client sees. That is where the
+next question about ordering belongs, and it is a question about their index
+cards, not about sitemaps.
+
 ## Route 2 — a browser, for index pages only
 
 `runner/browser.ts` exists — Playwright, explicitly with no stealth plugins, no
@@ -138,10 +160,16 @@ still open:
 
 - the delist baseline must be scoped to what the pass actually visited
   (fixed 2026-08-28 — it would have wiped a commune on the second night);
-- the adapters still swallow index-fetch errors and `break`, so a 5xx on page 4
-  of 7 reads as the end of the commune and delists everything unseen. Harmless
-  while a commune is being collected for the first time, dangerous the moment
-  nightly re-visits start. **Fix before scheduling anything.**
+- the adapters used to swallow index-fetch errors and `break`, so a 5xx on page
+  4 of 7 read as the end of the commune and delisted everything unseen
+  (fixed 2026-08-29 — `DiscoverContext.incomplete(insee, reason)`. Every exit
+  from a pagination loop that is not "the results ran out" now names the
+  commune it could not finish, and the runner shields exactly that commune's
+  listings from delisting. Per commune rather than per pass, so one flaky page
+  cannot freeze delisting across a whole portal — which would stop protecting
+  the data and start hiding it. Three cases report: a failed fetch, pagination
+  that repeats itself, and the page ceiling reached while listings were still
+  arriving.)
 
 **Honesty is the feature.** The overview screen states what is missing as
 prominently as what is there, matches against invented buyers are excluded from
