@@ -60,7 +60,7 @@ export const ETREPROPRIO_SLUGS: Record<string, string> = {
   // ⚠ UNVERIFIED — derived from their slug convention, not read off their site.
   // Both are also the two INSEE codes that were set from memory rather than
   // observed, so a mistake here fails twice over and silently.
-  "83078": "la-mole",
+  "83079": "la-mole",
   "83107": "roquebrune-sur-argens",
 };
 
@@ -90,7 +90,7 @@ export const SMC_COMMUNES: SmcCommune[] = [
   { insee: "83115", slug: "ste-maxime", id: "35965", label: "Sainte-Maxime" },
   { insee: "83048", slug: "la-croix-valmer", id: "35898", label: "La Croix-Valmer" },
   { insee: "83036", slug: "cavalaire-sur-mer", id: "35886", label: "Cavalaire-sur-Mer" },
-  { insee: "83078", slug: "la-mole", id: "35929", label: "La Môle" },
+  { insee: "83079", slug: "la-mole", id: "35929", label: "La Môle" },
   { insee: "83063", slug: "la-garde-freinet", id: "35913", label: "La Garde-Freinet" },
   { insee: "83094", slug: "le-plan-de-la-tour", id: "35944", label: "Le Plan-de-la-Tour" },
   { insee: "83107", slug: "les-issambres", id: "36027", label: "Les Issambres" },
@@ -127,7 +127,7 @@ export const SUPERIMMO_COMMUNES: SuperimmoCommune[] = [
    * postcode: La Môle shares 83310 with Cogolin and Grimaud, so deriving it
    * from the commune name would have produced nothing usable.
    */
-  { insee: "83078", slug: "la-mole", postcode: "83310", label: "La Môle" },
+  { insee: "83079", slug: "la-mole", postcode: "83310", label: "La Môle" },
   /**
    * Both read off Grimaud's "nearby" links 2026-08-29, and Le Plan-de-la-Tour
    * confirmed a second time from Sainte-Maxime's. Neither postcode follows from
@@ -188,7 +188,7 @@ export const GREEN_ACRES_COMMUNES: GreenAcresCommune[] = [
   { insee: "83115", slug: "sainte-maxime", label: "Sainte-Maxime" },
   { insee: "83048", slug: "la-croix-valmer", label: "La Croix-Valmer" },
   { insee: "83036", slug: "cavalaire-sur-mer", label: "Cavalaire-sur-Mer" },
-  { insee: "83078", slug: "la-mole", label: "La Môle" },
+  { insee: "83079", slug: "la-mole", label: "La Môle" },
   { insee: "83063", slug: "la-garde-freinet", label: "La Garde-Freinet" },
   { insee: "83094", slug: "le-plan-de-la-tour", label: "Le Plan-de-la-Tour" },
   { insee: "83107", slug: "les-issambres", label: "Les Issambres" },
@@ -230,19 +230,31 @@ export const GREEN_ACRES_COMMUNES: GreenAcresCommune[] = [
  * have their own tokens, so they are collected directly rather than fished out
  * of listing prose.
  */
-export type FigaroCommune = { insee: string; ville: string; label: string };
+export type FigaroCommune = {
+  insee: string;
+  ville: string;
+  label: string;
+  /** The code Figaro itself uses, where it is not the real INSEE one. */
+  portalInsee?: string;
+};
 
 export const FIGARO_COMMUNES: FigaroCommune[] = [
   { insee: "83119", ville: "st tropez", label: "Saint-Tropez" },
   { insee: "83101", ville: "ramatuelle", label: "Ramatuelle" },
   { insee: "83065", ville: "gassin", label: "Gassin" },
   { insee: "83068", ville: "grimaud", label: "Grimaud" },
-  { insee: "83068", ville: "port grimaud", label: "Port Grimaud" },
+  /**
+   * 83900 is Figaro's own code for the district, read off their answer on
+   * 2026-08-30 — it is not an INSEE code, and no such commune exists. Recorded
+   * so the adapter does not report an expected difference as a fault every
+   * night: an unexplained one freezes delisting for the whole of Grimaud.
+   */
+  { insee: "83068", ville: "port grimaud", label: "Port Grimaud", portalInsee: "83900" },
   { insee: "83042", ville: "cogolin", label: "Cogolin" },
   { insee: "83115", ville: "ste maxime", label: "Sainte-Maxime" },
   { insee: "83048", ville: "la croix valmer", label: "La Croix-Valmer" },
   { insee: "83036", ville: "cavalaire mer", label: "Cavalaire-sur-Mer" },
-  { insee: "83078", ville: "la mole", label: "La Môle" },
+  { insee: "83079", ville: "la mole", label: "La Môle" },
   { insee: "83063", ville: "la garde freinet", label: "La Garde-Freinet" },
   { insee: "83094", ville: "plan tour", label: "Le Plan-de-la-Tour" },
   { insee: "83107", ville: "les issambres", label: "Les Issambres" },

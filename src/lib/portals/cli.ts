@@ -107,11 +107,25 @@ export async function collect(args: Args): Promise<void> {
     });
     const seconds = Math.round((Date.now() - started) / 1000);
 
+    /**
+     * `stored` before `new`, and both printed.
+     *
+     * `new` is what discovery decided to go and fetch; `stored` is what
+     * actually landed. On a clean pass they match. On a curtailed one they do
+     * not, and printing only the first turned a LuxuryEstate pass that stored
+     * about a hundred listings into a line reading "new 1845" — a run that
+     * stopped early reporting as a run that finished.
+     */
     console.log(
       `   ${summary.status} in ${seconds}s — discovered ${summary.discovered}, ` +
-        `new ${summary.added}, refreshed ${summary.refreshed}, ` +
-        `delisted ${summary.delisted}, failed ${summary.failed}`,
+        `stored ${summary.ingested} of ${summary.added} new, ` +
+        `refreshed ${summary.refreshed}, delisted ${summary.delisted}, ` +
+        `failed ${summary.failed}`,
     );
+    if (summary.fetchStoppedEarly) {
+      console.log(`   ⚠ fetching stopped early: ${summary.fetchStoppedEarly}`);
+      console.log(`     the rest are untouched — re-run to pick them up`);
+    }
     if (summary.abortedReason) console.log(`   aborted: ${summary.abortedReason}`);
 
     if (summary.failureSamples?.length) {

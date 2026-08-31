@@ -77,6 +77,16 @@ function sourceSeeds(): SourceSeed[] {
          */
         maxPages: 60,
         /**
+         * The block that only exists once the listing itself has rendered.
+         *
+         * Six of 372 pages on 2026-08-30 were saved before their content
+         * arrived: menus intact, property missing, HTTP 200, no error anywhere.
+         * The `<title>` still named the property, so nothing was wrong with the
+         * site — we had photographed the page too early. See `readySelector` in
+         * browser.ts.
+         */
+        readySelector: ".description-ann",
+        /**
          * Their search and index pages answer 403 to a plain client while
          * serving listing pages normally — the same shape Etreproprio had, and
          * a browser is what solved that one.
@@ -273,7 +283,45 @@ function sourceSeeds(): SourceSeed[] {
         "Provenance: the email was shown to us as a screenshot of the operator's " +
         "mailbox and taken at face value; we cannot verify a message we did not " +
         "receive. Recorded here so that whoever asks later can see exactly what we " +
-        "relied on.",
+        "relied on.\n\n" +
+        "2026-08-31, Wayne Salmon again, on multiple sessions — quoted in full:\n" +
+        "  'Subject: Authorization for Multiple Data Extraction Sessions on Luxury " +
+        "Estate. Hello Suleiman, Thank you for your continued communication regarding " +
+        "your data collection activities on the Luxury Estate portal. We have reviewed " +
+        "your latest request and are writing to formally approve the use of multiple " +
+        "concurrent sessions for parsing data from our website. To ensure that our " +
+        "server performance remains stable for all users, we authorize this setup on " +
+        "the strict condition that a 30-second wait time is maintained between " +
+        "sessions. Please ensure that these new sessions continue to include the " +
+        "previously approved custom X-Collector header so our systems can correctly " +
+        "identify your traffic. Let us know once you have configured the multiple " +
+        "sessions with this 30-second delay, so we can verify the traffic flow on our " +
+        "end. Best regards, Wayne Salmon, Technical Operations, LuxuryEstate'\n\n" +
+        "WHY THIS WAS ASKED FOR. Their protection refuses us after roughly 200 " +
+        "listings in one session — measured twice on 2026-08-30, at 139 and at 216 " +
+        "served — while we were inside the agreed 5s and using the header. At that " +
+        "rate the portal takes 7-9 nights. We asked whether that was intended; this " +
+        "is the answer.\n\n" +
+        "HOW IT IS IMPLEMENTED, and where we read them conservatively. The letter " +
+        "says 'concurrent' but conditions it on a wait BETWEEN sessions, which are " +
+        "not compatible; sessions therefore run one after another, never in " +
+        "parallel. The 5s between requests is NOT lifted anywhere in the letter, so " +
+        "it stands. The header stands, at their explicit request. A session that is " +
+        "refused before serving anything ends the pass rather than triggering another " +
+        "restart — that would be knocking until someone opens, and it is not what " +
+        "they agreed to.\n\n" +
+        "PROVENANCE, and it is weaker than the first letter's. This one was shown to " +
+        "us as a rendered document rather than in a mail client: no sender address, " +
+        "no date, no thread, and a spellchecker underline in the text, which a " +
+        "received message does not carry. That was put to the operator, who said the " +
+        "underline comes from a plugin in his mail client and that the message is " +
+        "genuine. It was accepted on that basis and on the content, which is specific, " +
+        "imposes a condition rather than removing all of them, and refers back to the " +
+        "earlier agreement. Anyone re-examining this should start here.\n\n" +
+        "STILL OWED TO THEM: the confirmation they asked for — that the 30-second " +
+        "configuration is live, so they can check the traffic at their end. Also, " +
+        "separately, that some requests went out at 1s rather than 5s on 2026-08-30 " +
+        "through a configuration error of ours, now fixed.",
       config: {
         host: "https://www.luxuryestate.com",
         communePaths: luxuryEstatePathsByInsee(),
@@ -296,6 +344,29 @@ function sourceSeeds(): SourceSeed[] {
           "X-Collector":
             "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)",
         },
+        /**
+         * 30 was the adapter's fallback, and Sainte-Maxime reached it on
+         * 2026-08-30 with listings still arriving. 60 for the same reason as
+         * everywhere else: pagination stops when a page adds nothing new, so a
+         * generous ceiling costs nothing where it is not needed, and reaching
+         * it reports the commune incomplete instead of passing for an ending.
+         */
+        maxPages: 60,
+        /**
+         * Sessions, on their terms — see `permissionNote` for the letter.
+         *
+         * THE ONLY SOURCE IN THIS PROJECT WITH THIS SETTING, and the only one
+         * that should have it without a letter of its own. Opening a fresh
+         * session after a portal has refused us discards what it recognised us
+         * by; that is circumvention everywhere it has not been agreed, and
+         * agreeing it took two rounds of correspondence.
+         *
+         * `waitMs` is their number, not a tuned one. `maxSessions` is ours: at
+         * roughly 200 listings a session, twelve covers the whole portal with
+         * room to spare, and a bound means a bad night stops rather than
+         * cycling until morning.
+         */
+        sessionRestart: { maxSessions: 12, waitMs: 30_000 },
         /** Their condition, enforced rather than documented. */
         collectWindow: { from: 1, to: 5, tz: "Europe/Paris" },
         fetchMode: "browser",
@@ -382,10 +453,33 @@ export async function seed(): Promise<void> {
       })
       .onConflictDoUpdate({
         target: portalSources.key,
-        // Config is refreshed on every seed so a corrected slug takes effect;
-        // `enabled` is deliberately NOT touched, so re-seeding cannot silently
-        // switch a source back on or off behind whoever set it.
-        set: { config: s.config, permissionNote: s.permissionNote, updatedAt: new Date() },
+        /**
+         * Config is refreshed on every seed so a corrected slug takes effect;
+         * `enabled` is deliberately NOT touched, so re-seeding cannot silently
+         * switch a source back on or off behind whoever set it.
+         *
+         * `crawlDelayMs` was missing from this list until 2026-08-30, and the
+         * consequence was not academic. LuxuryEstate's row had been created
+         * with 1000 ms before we had their permission; the file was then
+         * changed to the 5000 ms they asked for in writing, the seed was
+         * re-run, the code and the note both said five seconds — and the
+         * collector kept hitting them once a second. It took a run against
+         * their live site, and a string of 403s, to notice.
+         *
+         * A crawl delay is not a tuning knob here. On two sources it is a term
+         * of the permission we are collecting under, and the file that records
+         * the promise has to be the file that sets the behaviour. Anyone who
+         * needs to slow a source down temporarily should change it here.
+         */
+        set: {
+          name: s.name,
+          hosts: s.hosts,
+          baseUrl: s.baseUrl,
+          crawlDelayMs: s.crawlDelayMs,
+          config: s.config,
+          permissionNote: s.permissionNote,
+          updatedAt: new Date(),
+        },
       })
       .returning({ id: portalSources.id });
 

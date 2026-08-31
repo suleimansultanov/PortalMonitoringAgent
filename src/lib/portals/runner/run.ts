@@ -4,7 +4,7 @@ import { db } from "@/lib/db/client";
 import { portalListings, portalRuns, portalSources } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { getAdapter } from "../registry";
-import type { DiscoveredListing } from "../types";
+import type { DiscoveredListing, PoliteFetch } from "../types";
 import { diffListings, shouldAbort } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { createBrowserSession, type BrowserSession } from "./browser";
@@ -65,6 +65,17 @@ export type RunSummary = {
   refreshed: number;
   delisted: number;
   failed: number;
+  /**
+   * Listings actually stored, as opposed to `added`, which is how many
+   * discovery decided to go and get.
+   *
+   * They are equal on a clean pass and nowhere near equal on a curtailed one,
+   * and until 2026-08-30 only `added` was reported: a LuxuryEstate pass that
+   * stored about a hundred listings and then stopped printed "new 1845".
+   */
+  ingested: number;
+  /** Why the fetch phase ended before it reached the end of its list. */
+  fetchStoppedEarly?: string;
   abortedReason?: string;
   error?: string;
   /**
@@ -89,6 +100,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       runId: "",
       status: "disabled",
       discovered: 0,
+      ingested: 0,
       added: 0,
       refreshed: 0,
       delisted: 0,
@@ -180,6 +192,30 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     }
   }
 
+  /**
+   * The slower of what the database says and what the adapter declares.
+   *
+   * Two records of the same promise, and the run takes whichever is kinder to
+   * the portal. This exists because on 2026-08-30 they disagreed and nothing
+   * noticed: LuxuryEstate's row still held 1000 ms from before their
+   * permission existed, while the adapter, the seed file and the written
+   * agreement all said 5000. The collector used the row.
+   *
+   * A crawl delay that drifts is not a performance detail on this project. On
+   * two sources it is the term the access rests on, and the only way we would
+   * have learnt we were breaking it is by being blocked — which is exactly how
+   * we did learn.
+   */
+  const declared = adapter.defaultCrawlDelayMs;
+  const crawlDelayMs = Math.max(source.crawlDelayMs, declared);
+  if (crawlDelayMs !== source.crawlDelayMs) {
+    console.warn(
+      `[run:${source.key}] the stored crawl delay is ${source.crawlDelayMs}ms but this ` +
+        `adapter asks for ${declared}ms — using ${declared}ms. ` +
+        `Run npm run db:seed to correct the row.`,
+    );
+  }
+
   const extraHeaders = (cfg.extraHeaders as Record<string, string> | undefined) ?? {};
   /** A portal-specified user-agent overrides ours — only ever by agreement. */
   const agent = (cfg.userAgent as string | undefined)?.trim() || USER_AGENT;
@@ -187,24 +223,67 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
   const fetchMode = (source.config as Record<string, unknown> | null)?.fetchMode;
   const useBrowser = fetchMode === "browser" || fetchMode === "browser-discovery";
   const browserForListingsToo = fetchMode === "browser";
+
+  /**
+   * Whether this source may open a fresh browser session part-way through a
+   * pass, and on what terms.
+   *
+   * ABSENT ON EVERY SOURCE BUT ONE, and it must stay that way. Starting a new
+   * session after a portal has refused us discards the state it recognised us
+   * by and returns as a new visitor, which is circumvention wherever it has
+   * not been agreed. It is configured for LuxuryEstate alone, on their own
+   * written terms, with their thirty-second gap — the letter is quoted in full
+   * in that source's `permissionNote`, including what we could and could not
+   * verify about it.
+   */
+  const restartPolicy = cfg.sessionRestart as
+    | { maxSessions?: number; waitMs?: number }
+    | undefined;
+
+  const browserOptions = {
+    delayMs: crawlDelayMs,
+    userAgent: agent,
+    extraHeaders,
+    /** See `readySelector` in browser.ts — six SMC pages a night, silently. */
+    readySelector: (cfg.readySelector as string | undefined)?.trim() || undefined,
+  };
+
   let browserSession: BrowserSession | null = null;
+  let sessionCount = 1;
 
   if (useBrowser) {
-    browserSession = await createBrowserSession({
-      delayMs: source.crawlDelayMs,
-      userAgent: agent,
-      extraHeaders,
-    });
+    browserSession = await createBrowserSession(browserOptions);
     console.log(`[run:${source.key}] browser enabled (fetchMode: ${String(fetchMode)})`);
   }
 
+  /**
+   * Handed to the adapter once and stable for the whole pass, so that replacing
+   * the session underneath does not leave a stale `fetch` bound to a browser
+   * that has been closed.
+   */
+  const browserFetch: PoliteFetch = (url) => {
+    if (!browserSession) throw new Error("the browser session is not open");
+    return browserSession.fetch(url);
+  };
+
+  const restartBrowserSession = async (waitMs: number): Promise<void> => {
+    const closing = browserSession;
+    browserSession = null;
+    await closing?.close().catch((err) => {
+      console.warn(`[run:${source.key}] closing the browser failed: ${(err as Error).message}`);
+    });
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    browserSession = await createBrowserSession(browserOptions);
+    sessionCount += 1;
+  };
+
   const plainFetcher = createFetcher({
-    delayMs: source.crawlDelayMs,
+    delayMs: crawlDelayMs,
     userAgent: agent,
     extraHeaders,
   });
   /** Discovery: the browser when there is one. */
-  const fetcher = browserSession?.fetch ?? plainFetcher;
+  const fetcher = useBrowser ? browserFetch : plainFetcher;
   /** Ingestion: the browser only when this source needs it there too. */
   const listingFetcher = browserForListingsToo ? fetcher : plainFetcher;
 
@@ -362,6 +441,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       return {
         runId,
         status: "aborted",
+        ingested: 0,
         discovered: discovered.size,
         added: 0,
         refreshed: 0,
@@ -412,24 +492,57 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
        * low — deliberately, since the alternative is padding a guess and then
        * being wrong in the direction that makes people give up on a run.
        */
-      const minutes = Math.round((toFetch.length * source.crawlDelayMs) / 60_000);
+      const minutes = Math.round((toFetch.length * crawlDelayMs) / 60_000);
       console.log(
         `[run:${source.key}] fetching ${toFetch.length} listings ` +
           `(${diff.added.length} new, ${diff.refresh.length} due a refresh) — ` +
-          `at least ${minutes} min at ${source.crawlDelayMs / 1000}s apart`,
+          `at least ${minutes} min at ${crawlDelayMs / 1000}s apart`,
       );
     }
     let ingested = 0;
     let failed = 0;
     /** Counted separately from `failed`: throttling is not a parser problem. */
     let rateLimited = 0;
+    /**
+     * Refusals since the last page that came back fine.
+     *
+     * Reset by any success, which is the whole point — see the refusal branch
+     * below for why one 403 is not the portal refusing us.
+     */
+    let refusalStreak = 0;
+    /**
+     * Listings actually put through `ingestListing`, which is NOT the loop
+     * index. Both stop conditions below jump the index to the end of the list
+     * to break out of a nested loop, so reporting progress from it announced a
+     * pass that had stopped at a hundred as "1845/1845 fetched".
+     */
+    let attempted = 0;
+    /** Set by whichever stop condition fires, so the summary cannot claim a clean run. */
+    let fetchStoppedEarly: string | null = null;
     const failureSamples: { externalId: string; url: string; error: string }[] = [];
 
-    for (let i = 0; i < toFetch.length; i += CHUNK) {
-      const chunk = toFetch.slice(i, i + CHUNK);
-      for (const externalId of chunk) {
+    /**
+     * A cursor rather than a chunked slice, because a session restart has to
+     * resume at the exact listing it stopped on. With `slice` the remainder of
+     * the current chunk was simply lost, which is a silent hole of up to
+     * twenty-four listings every time — and a hole that only appears on the
+     * runs that already went wrong.
+     */
+    let cursor = 0;
+    /** Set when a refusal streak is to be answered with a fresh session. */
+    let restartWanted = false;
+    /** Listings served since the current session opened, for the guard below. */
+    let servedThisSession = 0;
+
+    while (cursor < toFetch.length) {
+      const chunkEnd = Math.min(cursor + CHUNK, toFetch.length);
+      restartWanted = false;
+
+      for (; cursor < chunkEnd; cursor++) {
+        const externalId = toFetch[cursor];
         const target = discovered.get(externalId);
         if (!target) continue;
+        attempted += 1;
 
         const outcome = await ingestListing(
           {
@@ -444,6 +557,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
 
         if (outcome.status === "ingested" || outcome.status === "unchanged") {
           ingested += 1;
+          servedThisSession += 1;
+          refusalStreak = 0;
         } else {
           failed += 1;
           if (failureSamples.length < 5) {
@@ -456,21 +571,76 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         }
 
         /**
-         * "Blocked" ends the pass. "Rate limited" does not.
+         * Sustained refusal ends the pass. A single one does not.
          *
-         * A 403 or a CAPTCHA is the portal refusing us, and carrying on means
-         * hammering somewhere we are not welcome. A 429 is the portal saying we
-         * are asking too fast — the fetcher has already slowed the pacing down
-         * for everything that follows, and the right move is to lose this one
-         * listing and keep going.
+         * A 403 or a CAPTCHA is the portal refusing us, and carrying on through
+         * a wall of them means hammering somewhere we are plainly not welcome.
+         * A 429 is a different message — "too fast" — and the fetcher has
+         * already slowed everything behind it down.
          *
-         * Conflating them cost a real run: 60 listings discovered, ONE ingested,
-         * because a single stubborn URL aborted everything queued behind it.
+         * But ONE refusal is neither. On 2026-08-30 LuxuryEstate served 139
+         * listings without complaint and then answered 403 on a single URL; the
+         * pass stopped there, and the other 1706 — two and a half hours of
+         * crawling already paid for in discovery — were abandoned for it. The
+         * portal was not refusing us. One listing was unreachable, which is
+         * what `failed` is for.
+         *
+         * Three in a row is the line. At a five-second delay that is fifteen
+         * seconds of being told no with nothing getting through, which is a
+         * portal that has changed its mind; and because the streak resets on
+         * every success, a run that is genuinely being blocked from the start
+         * still stops after three requests rather than after a thousand.
          */
         if (outcome.status === "fetch_failed" && isRefusal(outcome.error)) {
-          console.warn(`[run:${source.key}] refused during ingest, stopping pass`);
-          i = toFetch.length;
-          break;
+          refusalStreak += 1;
+          if (refusalStreak >= REFUSAL_STREAK_LIMIT) {
+            /**
+             * A fresh session, but only where the portal has said we may.
+             *
+             * Two guards on top of their own thirty seconds. `maxSessions`
+             * caps how many times a pass may do this at all; and a session
+             * that is refused before it has served anything means the door is
+             * shut rather than the session exhausted — starting a third, a
+             * fourth and a fifth against that would be knocking until someone
+             * opens, which is not what they agreed to and not what we would
+             * want done to us.
+             */
+            const mayRestart =
+              useBrowser &&
+              restartPolicy !== undefined &&
+              sessionCount < (restartPolicy.maxSessions ?? 1) &&
+              servedThisSession > 0;
+
+            if (mayRestart) {
+              const waitMs = restartPolicy?.waitMs ?? 30_000;
+              console.warn(
+                `[run:${source.key}] refused ${refusalStreak} times in a row after ` +
+                  `${servedThisSession} served in session ${sessionCount} — waiting ` +
+                  `${waitMs / 1000}s and opening a new one (their condition), then ` +
+                  `resuming at listing ${cursor + 1} of ${toFetch.length}`,
+              );
+              restartWanted = true;
+              cursor += 1;
+              break;
+            }
+
+            fetchStoppedEarly =
+              servedThisSession === 0
+                ? `refused ${refusalStreak} times in a row on a session that had served ` +
+                  `nothing — the door is shut, not the session spent`
+                : `refused ${refusalStreak} times in a row after ${ingested} served` +
+                  (restartPolicy ? ` across ${sessionCount} sessions` : "");
+            console.warn(
+              `[run:${source.key}] ${fetchStoppedEarly} — stopping the pass. ` +
+                `Do not simply retry.`,
+            );
+            cursor = toFetch.length;
+            break;
+          }
+          console.warn(
+            `[run:${source.key}] refused on ${target.url} — carrying on ` +
+              `(${refusalStreak}/${REFUSAL_STREAK_LIMIT} in a row)`,
+          );
         }
 
         if (outcome.status === "fetch_failed" && /rate limited/i.test(outcome.error ?? "")) {
@@ -481,12 +651,14 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
            * hundreds of one-minute waits to hear it again.
            */
           if (rateLimited >= 10 && rateLimited > ingested) {
+            fetchStoppedEarly =
+              `rate limited on ${rateLimited} listings with only ${ingested} through`;
             console.warn(
               `[run:${source.key}] rate limited on ${rateLimited} listings and only ` +
                 `${ingested} through — stopping. This portal will not serve a crawl ` +
                 `at this size; it needs a raised limit or an overnight schedule.`,
             );
-            i = toFetch.length;
+            cursor = toFetch.length;
             break;
           }
         }
@@ -498,7 +670,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
        * of them it printed nothing between the first line and the summary.
        */
       console.log(
-        `[run:${source.key}] ${Math.min(i + CHUNK, toFetch.length)}/${toFetch.length} ` +
+        `[run:${source.key}] ${attempted}/${toFetch.length} ` +
           `fetched (${failed} failed${rateLimited > 0 ? `, ${rateLimited} throttled` : ""})`,
       );
 
@@ -506,6 +678,31 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         .update(portalRuns)
         .set({ fetchedCount: ingested, failedCount: failed })
         .where(eq(portalRuns.id, runId));
+
+      if (restartWanted) {
+        await restartBrowserSession(restartPolicy?.waitMs ?? 30_000);
+        refusalStreak = 0;
+        servedThisSession = 0;
+        console.log(
+          `[run:${source.key}] session ${sessionCount} open, resuming at ` +
+            `${cursor + 1}/${toFetch.length}`,
+        );
+      }
+    }
+
+    if (sessionCount > 1) {
+      console.log(
+        `[run:${source.key}] used ${sessionCount} browser sessions, ` +
+          `${restartPolicy?.waitMs ? restartPolicy.waitMs / 1000 : 30}s apart, as agreed`,
+      );
+    }
+
+    if (fetchStoppedEarly) {
+      console.warn(
+        `[run:${source.key}] FETCHING STOPPED EARLY — ${fetchStoppedEarly}. ` +
+          `${attempted} of ${toFetch.length} listings were attempted; the rest are ` +
+          `untouched and will be picked up by the next pass.`,
+      );
     }
 
     // ── 6. Delist ─────────────────────────────────────────────────────────
@@ -521,7 +718,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         fetchedCount: ingested,
         parsedCount: ingested,
         failedCount: failed,
-        error: discoveryError,
+        error: [discoveryError, fetchStoppedEarly && `fetch stopped early: ${fetchStoppedEarly}`]
+          .filter(Boolean)
+          .join(" · ") || null,
         completedAt: new Date(),
       })
       .where(eq(portalRuns.id, runId));
@@ -539,6 +738,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       refreshed: diff.refresh.length,
       delisted,
       failed,
+      ingested,
+      fetchStoppedEarly: fetchStoppedEarly ?? undefined,
       failureSamples: failureSamples.length > 0 ? failureSamples : undefined,
     };
   } catch (err) {
@@ -609,10 +810,23 @@ export async function stalestCommunes(sourceId: string, count: number): Promise<
     LEFT JOIN portal_runs r
       ON r.source_id = ${sourceId}
       AND c.commune_insee = ANY(r.commune_insee)
-      -- Only completed passes count. A run that aborted partway through says
+      -- Only genuinely completed passes count. A run that stopped partway says
       -- nothing about whether the commune was actually collected, and treating
       -- it as done would skip the commune for another full cycle.
+      --
+      -- Status alone was not enough. A pass whose FETCH phase stops early --
+      -- a portal that starts refusing after two hundred listings, which is
+      -- LuxuryEstate's behaviour -- still closes as 'done', because it did
+      -- finish the work it was able to do. On 2026-08-30 such a run stored 216
+      -- of 1726 listings and would have marked all twelve communes freshly
+      -- collected, rotating the --stale option away from the 1510 it never
+      -- reached.
+      --
+      -- The error column is where both kinds of incompleteness are recorded,
+      -- so it is the honest condition: a pass counts only if nothing curtailed
+      -- it. NOTE: no backticks in here, the whole query is a template literal.
       AND r.status = 'done'
+      AND r.error IS NULL
     GROUP BY c.commune_insee
     ORDER BY last_run ASC NULLS FIRST, c.commune_insee
     LIMIT ${count}
@@ -629,3 +843,14 @@ export async function activeSources(): Promise<{ id: string; key: string }[]> {
     .where(eq(portalSources.enabled, true));
   return rows;
 }
+
+/**
+ * How many refusals in a row mean the portal has closed the door.
+ *
+ * Three, and the number is a judgement rather than a measurement: it has to be
+ * small enough that a run which is being blocked outright stops almost at once,
+ * and large enough that one unreachable listing among hundreds served does not
+ * throw the pass away. Both of those failures have happened here — the second
+ * one on LuxuryEstate, 139 listings in.
+ */
+const REFUSAL_STREAK_LIMIT = 3;

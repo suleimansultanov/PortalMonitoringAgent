@@ -117,10 +117,46 @@ export const smcAdapter: PortalAdapter = {
 
     const nodes = extractJsonLd(html);
     const product = nodesOfType(nodes, "Product")[0] ?? null;
-    if (!product) return { status: "failed", error: "no Product node in JSON-LD" };
 
     const listing = emptyListing(externalId, url);
     listing.raw = { product, agent: nodesOfType(nodes, "RealEstateAgent")[0] ?? null };
+
+    /**
+     * No Product node is not the same as no listing.
+     *
+     * SMC omit the whole structured block when the agency withholds the price
+     * — "prix sur demande". The page is otherwise complete, and at the top of
+     * the market those are exactly the properties worth having: the one that
+     * prompted this is 1700 m² and 23 rooms in Saint-Tropez.
+     *
+     * Refusing them lost about 1.5% of the portal, weighted towards the
+     * expensive end, and it looked like nothing at all in the run summary.
+     */
+    if (!product) {
+      const fromMarkup = readWithoutProduct(html, externalId);
+      if (!fromMarkup) {
+        /**
+         * Told apart from the case above on purpose. This one is a page we
+         * photographed before it had rendered — the fix is `readySelector` in
+         * browser.ts and a re-fetch, not anything in this parser — and a
+         * message that says so saves the next person the hour it cost to find.
+         */
+        return {
+          status: "failed",
+          error:
+            "no Product node and no listing markup either — the page had not " +
+            "finished rendering when it was fetched",
+        };
+      }
+      Object.assign(listing, fromMarkup);
+      applyGallery(html, listing);
+      listing.agencyRef = agencyRefFromHtml(html);
+      listing.raw = { ...listing.raw, priceOnRequest: true, source: "markup" };
+      const missingHere: string[] = ["priceEur"];
+      if (listing.areaM2 === null) missingHere.push("areaM2");
+      if (!listing.agencyName) missingHere.push("agencyName");
+      return { status: "partial", listing, missing: missingHere };
+    }
 
     listing.title = str(product.name);
     listing.description = str(product.description);
@@ -363,6 +399,71 @@ function applyNameFields(listing: RawListing): void {
 }
 
 /**
+ * Everything the page states about the property when the JSON-LD is absent.
+ *
+ * Read from `og:title`, which carries the same facts in a different order:
+ *
+ *   Maison/Villa à vendre Saint-Tropez - 23 pièces 1700 m² - Confidential Properties - 4438055
+ *
+ * The trailing id is checked against the URL's before anything is believed. A
+ * detail page carries several other properties in its "similar listings" strip,
+ * and that check is what keeps this reading about THIS one.
+ *
+ * NO PRICE IS TAKEN, ever, and that is the important line in this function.
+ * The only `.prix` elements on such a page belong to the similar-listings
+ * cards: on the Saint-Tropez estate they read 39 M, 35 M and 50 M. "First
+ * price on the page" would have given a property with no published price a
+ * neighbour's forty million, and nothing about the result would have looked
+ * wrong.
+ */
+function readWithoutProduct(html: string, externalId: string): Partial<RawListing> | null {
+  const $ = cheerio.load(html);
+  const ogTitle = $('meta[property="og:title"]').attr("content")?.trim();
+  if (!ogTitle) return null;
+
+  const parts = ogTitle.split(" - ").map((p) => p.trim());
+  if (parts.length < 3) return null;
+  if (parts[parts.length - 1] !== externalId) return null;
+
+  const out: Partial<RawListing> = {};
+
+  // "Maison/Villa à vendre Saint-Tropez"
+  const head = parts[0];
+  const split = /^(.*?)\s*à vendre\s+(.+)$/i.exec(head);
+  if (split) {
+    out.propertyType = split[1].trim() || null;
+    out.communeRaw = split[2].trim() || null;
+  }
+
+  // "23 pièces 1700 m²"
+  const rooms = parts[1].match(NAME_ROOMS);
+  if (rooms) out.rooms = Number(rooms[1]);
+  const area = parts[1].match(NAME_AREA);
+  if (area) {
+    const n = num(area[1]);
+    if (n !== null && n > 0) out.areaM2 = n;
+  }
+
+  /** Everything between the measurements and the id. Agency names contain dashes. */
+  const agency = parts.slice(2, -1).join(" - ").trim();
+  if (agency) out.agencyName = agency;
+
+  /** The agency's own headline, which is also where the postcode is printed. */
+  const subtitle = $("h2.subtitle-ann").first().text().replace(/\s+/g, " ").trim();
+  if (subtitle) out.title = subtitle;
+  const postcode = subtitle.match(/\b(\d{5})\b/);
+  if (postcode) out.postalCode = postcode[1];
+
+  const description = $(".description-ann").first().text().replace(/\s+/g, " ").trim();
+  if (description) out.description = description;
+
+  // A page with neither a headline nor a description has not rendered.
+  if (!subtitle && !description) return null;
+
+  return out;
+}
+
+/**
  * The agency's own mandate reference, printed on the page as "Réf : 86836462".
  *
  * Not in the JSON-LD, so this is the one field here that depends on markup and
@@ -406,21 +507,50 @@ function listingUrlsOnPage(html: string, host: string): string[] {
  */
 function applyGallery(html: string, listing: RawListing): void {
   const $ = cheerio.load(html);
-  const byOrder = new Map<number, string>();
 
+  /**
+   * `ext_<order>_<mediaSetId>.jpg` — and the SECOND number is what says whose
+   * photograph this is.
+   *
+   * Ordering alone was not enough. A detail page also carries a "similar
+   * properties" strip, and each of those cards shows its own `ext_0_`. Keyed on
+   * order with first-past-the-post, the neighbours' photographs lost to ours
+   * only because the hero happens to come first in the markup — three of 372
+   * pages on 2026-08-30 still ended up with a stranger's photo in the gallery,
+   * and a page whose own hero failed to render would have taken a neighbour's
+   * as its main image with nothing looking wrong.
+   *
+   * The media-set id settles it structurally: every photograph of this property
+   * shares one, and `og:image` names which one is ours.
+   */
+  const photos: { order: number; set: string; url: string }[] = [];
   $('img[src*="/pict/"]').each((_, el) => {
     const src = $(el).attr("src");
     if (!src || src.includes("/Agences/")) return;
-    const n = src.match(/\/ext_(\d+)_\d+\.[a-z]+/i)?.[1];
-    if (n === undefined) return;
-    const order = Number(n);
-    if (!byOrder.has(order)) byOrder.set(order, src);
+    const m = src.match(/\/ext_(\d+)_(\d+)\.[a-z]+/i);
+    if (!m) return;
+    photos.push({ order: Number(m[1]), set: m[2], url: src });
   });
+
+  const ogImage = $('meta[property="og:image"]').attr("content")?.trim() || null;
+  /**
+   * `og:image` first — it is the portal's own statement of which photograph
+   * represents this page. The first one in the markup as a fallback: the hero
+   * is rendered above the similar-properties strip, which is true today and is
+   * the reason the old code mostly worked.
+   */
+  const mine = ogImage?.match(/\/ext_\d+_(\d+)\.[a-z]+/i)?.[1] ?? photos[0]?.set ?? null;
+
+  const byOrder = new Map<number, string>();
+  for (const photo of photos) {
+    if (mine !== null && photo.set !== mine) continue;
+    if (!byOrder.has(photo.order)) byOrder.set(photo.order, photo.url);
+  }
 
   const gallery = [...byOrder.entries()].sort((a, b) => a[0] - b[0]).map(([, url]) => url);
   if (gallery.length > 0) {
     listing.imageUrls = gallery;
     listing.imageUrl = gallery[0];
   }
-  listing.imageUrl ??= $('meta[property="og:image"]').attr("content")?.trim() || null;
+  listing.imageUrl ??= ogImage;
 }

@@ -41,6 +41,7 @@ type BrowserContext = {
 type Page = {
   goto(url: string, opts: Record<string, unknown>): Promise<Response_ | null>;
   content(): Promise<string>;
+  waitForSelector(selector: string, opts: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
 };
 type Response_ = { status(): number };
@@ -64,6 +65,27 @@ export type BrowserFetcherOptions = {
    * of nothing.
    */
   waitUntil?: "domcontentloaded" | "load";
+  /**
+   * A selector that only exists once the listing itself has rendered.
+   *
+   * `domcontentloaded` fires when the document is parsed, which on a page that
+   * builds its content from script is BEFORE the content exists. The page is
+   * then saved, and it looks like a listing that lost its data rather than
+   * like a page we photographed too early — same 200, same size order, no
+   * error anywhere.
+   *
+   * Measured on SMC, 2026-08-30: six of 372 pages came back at 16-21 kB of
+   * text against a median of 35 kB, with the property's own details missing
+   * and the site's menus intact. Their `<title>` still named the property, so
+   * the listings existed; we simply had not waited.
+   *
+   * Optional, and deliberately forgiving — a page that never shows it is still
+   * returned, because some listings genuinely lack the block and refusing them
+   * would trade a small loss for a larger one. The parser decides.
+   */
+  readySelector?: string;
+  /** How long to wait for `readySelector` before giving up on it. */
+  readyTimeoutMs?: number;
 };
 
 export type BrowserSession = {
@@ -82,7 +104,13 @@ export type BrowserSession = {
 export async function createBrowserSession(
   opts: BrowserFetcherOptions,
 ): Promise<BrowserSession> {
-  const { delayMs, timeoutMs = 30_000, waitUntil = "domcontentloaded" } = opts;
+  const {
+    delayMs,
+    timeoutMs = 30_000,
+    waitUntil = "domcontentloaded",
+    readySelector,
+    readyTimeoutMs = 5_000,
+  } = opts;
 
   let chromium: { launch(o: Record<string, unknown>): Promise<Browser> };
   try {
@@ -143,6 +171,20 @@ export async function createBrowserSession(
       }
       if (status >= 400) {
         throw new FetchFailedError(url, status, `unexpected status ${status}`);
+      }
+
+      /**
+       * Wait for the content, not just for the document.
+       *
+       * Swallowing the timeout is the point: this improves the odds, it does
+       * not guarantee the block is there. A page that never renders it is
+       * returned anyway and fails in the parser, where the reason is visible,
+       * rather than being dropped here where it would not be.
+       */
+      if (readySelector) {
+        await page
+          .waitForSelector(readySelector, { timeout: readyTimeoutMs })
+          .catch(() => undefined);
       }
 
       const html = await page.content();

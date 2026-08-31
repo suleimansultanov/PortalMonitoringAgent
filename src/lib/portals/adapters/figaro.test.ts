@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cardsOnPage, figaroAdapter, indexUrl, readPayload, statedCount } from "./figaro";
+import { cardsOnPage, figaroAdapter, indexUrl, readPayload, singlePrice, statedCount } from "./figaro";
 import { FetchFailedError } from "../runner/fetcher";
 import type { DiscoverContext, DiscoveredListing } from "../types";
 
@@ -124,7 +124,7 @@ test("a ville token Figaro does not know is caught on page one", async () => {
   // properties, and none of them here. Unreported it reads as an empty market,
   // and everything collected there before gets delisted on the strength of it.
   const { found, incomplete, requested } = await discover(fixture("figaro-var-maison"), [
-    { insee: "83078", ville: "la mole", label: "La Môle" },
+    { insee: "83079", ville: "la mole", label: "La Môle" },
   ]);
   assert.equal(found.length, 0);
   assert.equal(requested.length, 1, "it should stop rather than page through the department");
@@ -243,4 +243,20 @@ test("with the payload gone, the page still parses off its own markup", () => {
   // failure — the alternative is thirty, of which twenty-five are neighbours'.
   assert.equal(l.imageUrls.length, 5);
   assert.equal(l.raw.payload, "missing");
+});
+
+test("a price RANGE is refused, not flattened into a number", () => {
+  // Met on a live page: listing 108245945 in Saint-Tropez publishes
+  // "De 2000000 à 5000000" because the agency sells it prix nous consulter.
+  // Stripping the non-digits gives 20 000 005 000 000, and that number reached
+  // the database on 2026-08-30 — where Postgres refused the row and the throw
+  // killed a 2104-listing pass at number fifty.
+  assert.equal(singlePrice("De 2000000 à 5000000"), null);
+  assert.equal(singlePrice("De 5000000 a 10000000"), null);
+  assert.equal(singlePrice("2000000 - 5000000"), null);
+  assert.equal(singlePrice("prix nous consulter"), null);
+  // A single figure, in the shapes they actually publish, still reads.
+  assert.equal(singlePrice(4_700_000), 4_700_000);
+  assert.equal(singlePrice("4700000"), 4_700_000);
+  assert.equal(singlePrice("4 700 000"), 4_700_000);
 });

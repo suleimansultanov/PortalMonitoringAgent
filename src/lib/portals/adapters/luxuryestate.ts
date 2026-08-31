@@ -39,7 +39,16 @@ export const luxuryEstateAdapter: PortalAdapter = {
    * so discovery walks those; the sitemap stays useful as a completeness check.
    */
   discoveryMode: "index",
-  defaultCrawlDelayMs: 1000,
+  /**
+   * Five seconds because LuxuryEstate asked for five seconds, in writing, as a
+   * condition of the access we have — not because their robots.txt says so.
+   *
+   * It read 1000 until 2026-08-30, which is what it was before we had their
+   * permission, and it stayed 1000 in the database through every re-seed. The
+   * run that exposed it went out at one request per second and came back with
+   * 403s on Saint-Tropez and Sainte-Maxime.
+   */
+  defaultCrawlDelayMs: 5_000,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const host = (ctx.config.host as string) ?? "https://www.luxuryestate.com";

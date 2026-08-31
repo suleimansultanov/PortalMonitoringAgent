@@ -63,7 +63,23 @@ export const GULF_OF_SAINT_TROPEZ: CommuneEntry[] = [
   { label: "Ramatuelle", insee: "83101" },
   { label: "La Croix-Valmer", insee: "83048" },
   { label: "Cavalaire-sur-Mer", insee: "83036" },
-  { label: "La Môle", insee: "83078" },
+  /**
+   * 83079, corrected 2026-08-30. It was 83078 for the whole of this project's
+   * life, and 83078 is Moissac-Bellevue — an inland village eighty kilometres
+   * away with no connection to the Gulf.
+   *
+   * How it was caught is the useful part. The wrong code broke nothing visible:
+   * every portal is crawled by ITS OWN slug ("la-mole"), so the listings were
+   * always the right ones, filed under a label nobody read. It surfaced only
+   * when Figaro — the one portal that publishes real INSEE codes rather than
+   * names — answered "83079" and the adapter's own check said the two did not
+   * agree. Confirmed against insee.fr before changing anything.
+   *
+   * It would have become visible, expensively, the moment anything joined on
+   * this code: DVF transaction prices for Moissac-Bellevue against La Môle's
+   * listings would have looked like a market, not like a bug.
+   */
+  { label: "La Môle", insee: "83079" },
   { label: "La Garde-Freinet", insee: "83063" },
   { label: "Le Plan-de-la-Tour", insee: "83094" },
 ];
@@ -71,11 +87,11 @@ export const GULF_OF_SAINT_TROPEZ: CommuneEntry[] = [
 /**
  * Distinct INSEE codes to collect. Twelve, not fourteen.
  *
- * VERIFY BEFORE PRODUCTION. Ten of these were read straight out of
- * Etreproprio's own URLs, which embed the INSEE code (`...-v83119/`), so they
- * are as good as confirmed. La Môle (83078) and Roquebrune-sur-Argens (83107)
- * were not, and should be checked against the official INSEE list before the
- * first real run — a wrong code fails silently as an empty commune.
+ * All twelve verified. Ten were read straight out of Etreproprio's own URLs,
+ * which embed the INSEE code (`...-v83119/`). The remaining two were checked
+ * against insee.fr on 2026-08-30: Roquebrune-sur-Argens is 83107 as recorded,
+ * and La Môle is 83079 — it had been 83078, which is Moissac-Bellevue. See the
+ * note on La Môle above for how a wrong code hides.
  */
 export const COLLECTION_INSEE: string[] = [
   ...new Set(GULF_OF_SAINT_TROPEZ.map((c) => c.insee)),

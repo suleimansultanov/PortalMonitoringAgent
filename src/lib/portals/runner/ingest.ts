@@ -133,10 +133,30 @@ export async function ingestListing(
     `${parsed.title ?? ""} ${parsed.description ?? ""}`,
   );
 
-  const pricePerM2 =
-    parsed.priceEur !== null && parsed.areaM2 !== null && parsed.areaM2 > 0
-      ? Math.round(parsed.priceEur / parsed.areaM2)
+  /**
+   * The floor under every adapter, including the ones not written yet.
+   *
+   * On 2026-08-30 a single Saint-Tropez listing published its price as a RANGE
+   * — "De 5000000 a 10000000" — which a number reader turned into
+   * 500 000 010 000 000. Postgres refused it, the INSERT threw, and the throw
+   * took the whole pass with it: the run died at listing 50 of 2104, seventy
+   * minutes of crawling thrown away for one bad string on one page.
+   *
+   * Two things were wrong there and both are worth fixing separately. The
+   * adapter should not have produced the number, and it no longer does. But no
+   * amount of care in ten adapters guarantees the eleventh, and the cost of
+   * being wrong should be one missing field on one listing — never the pass.
+   *
+   * So an impossible value is dropped rather than clamped. A listing with no
+   * price is honest and visibly incomplete; a listing with a plausible-looking
+   * invented price is neither, and it is the kind of wrong that survives.
+   */
+  const priceEur = sane(parsed.priceEur, MAX_PRICE_EUR, "priceEur", url);
+  const pricePerM2Raw =
+    priceEur !== null && parsed.areaM2 !== null && parsed.areaM2 > 0
+      ? Math.round(priceEur / parsed.areaM2)
       : null;
+  const pricePerM2 = sane(pricePerM2Raw, MAX_PRICE_EUR, "pricePerM2", url);
 
   const incoming = {
     url,
@@ -144,13 +164,13 @@ export async function ingestListing(
     description: parsed.description,
     imageUrl: parsed.imageUrl,
     imageUrls: parsed.imageUrls,
-    priceEur: parsed.priceEur,
+    priceEur,
     pricePerM2,
     areaM2: parsed.areaM2 === null ? null : String(parsed.areaM2),
     landM2: parsed.landM2 === null ? null : String(parsed.landM2),
-    rooms: parsed.rooms,
-    bedrooms: parsed.bedrooms,
-    bathrooms: parsed.bathrooms,
+    rooms: sane(parsed.rooms, MAX_ROOMS, "rooms", url),
+    bedrooms: sane(parsed.bedrooms, MAX_ROOMS, "bedrooms", url),
+    bathrooms: sane(parsed.bathrooms, MAX_ROOMS, "bathrooms", url),
     propertyType: parsed.propertyType,
     communeInsee: commune?.insee ?? null,
     communeRaw: parsed.communeRaw,
@@ -305,3 +325,27 @@ async function loadListing(sourceId: string, externalId: string) {
 
 /** Re-export so callers building a RawListing for tests do not reach past this module. */
 export type { RawListing };
+
+/**
+ * No property in France is worth two billion euros, and no integer column
+ * holds much more: Postgres `integer` stops at 2 147 483 647. Both bounds
+ * point at the same number, so one constant serves for the plausibility check
+ * and the storage check at once.
+ */
+const MAX_PRICE_EUR = 2_000_000_000;
+/** Versailles has 2 300 rooms. Anything past a thousand is a parsing accident. */
+const MAX_ROOMS = 1_000;
+
+/**
+ * A value only when it could be real. Out of range is dropped and said out
+ * loud — silence here would trade a crash for a quiet wrong number, which is
+ * the worse of the two.
+ */
+function sane(value: number | null, max: number, field: string, url: string): number | null {
+  if (value === null) return null;
+  if (!Number.isFinite(value) || value < 0 || value > max) {
+    console.warn(`[ingest] ${field}=${value} is impossible — dropped, listing kept: ${url}`);
+    return null;
+  }
+  return value;
+}

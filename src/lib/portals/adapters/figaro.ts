@@ -72,7 +72,20 @@ import { isPastLastPage } from "../runner/fetcher";
 /** `/annonces/villa-var-provence+alpes+cote+d+azur-france/103041455/` → `103041455` */
 const ID_FROM_URL = /\/annonces\/[^/?#]+\/(\d{5,})\/?(?:$|[?#])/;
 
-type FigaroCommuneConfig = { insee: string; ville: string; label: string };
+type FigaroCommuneConfig = {
+  insee: string;
+  ville: string;
+  label: string;
+  /**
+   * The code Figaro files this place under, where it is not the real INSEE one.
+   *
+   * They mint their own for districts that have no commune of their own: Port
+   * Grimaud comes back as 83900, which is not an INSEE code at all. Recorded
+   * here — read off their answer, never guessed — so an expected difference
+   * stays quiet and an unexpected one still shouts.
+   */
+  portalInsee?: string;
+};
 
 export const figaroAdapter: PortalAdapter = {
   key: "figaro",
@@ -170,20 +183,27 @@ export const figaroAdapter: PortalAdapter = {
           }
 
           /**
-           * They know the token but file it under a different code. Reported
-           * loudly and then followed, rather than treated as a failure: the
-           * commune each listing ends up in is decided later, from the listing
-           * itself, so trusting their answer here only changes which pages we
-           * bother to read. Refusing it would drop a district we can see.
+           * They know the token but file it under a different code.
+           *
+           * Expected for districts, which is what `portalInsee` records — Port
+           * Grimaud comes back as 83900. A known difference is followed in
+           * silence; an unknown one is followed too, and reported.
+           *
+           * Followed rather than refused because the commune a listing ends up
+           * in is decided later, from the listing itself. Their answer only
+           * changes which pages we bother to read, so trusting it costs
+           * nothing and refusing it would drop a district we can see.
            */
           if (payload.searchInsee !== null && payload.searchInsee !== c.insee) {
-            const note =
-              `asked for "${c.ville}" expecting INSEE ${c.insee}, and Figaro files it ` +
-              `under ${payload.searchInsee} (${payload.searchLabel ?? "unnamed"}) — ` +
-              `following their answer, but check this`;
-            console.warn(`[figaro] ${c.label}: ${note}`);
-            cutShort ??= note;
             here = payload.searchInsee;
+            if (payload.searchInsee !== c.portalInsee) {
+              const note =
+                `asked for "${c.ville}" expecting INSEE ${c.insee}, and Figaro files it ` +
+                `under ${payload.searchInsee} (${payload.searchLabel ?? "unnamed"}) — ` +
+                `following their answer, but check this against insee.fr`;
+              console.warn(`[figaro] ${c.label}: ${note}`);
+              cutShort ??= note;
+            }
           }
         }
 
@@ -304,7 +324,7 @@ export const figaroAdapter: PortalAdapter = {
       listing.priceEur = Math.round(record.priceEur);
     } else if (offer) {
       const currency = str(offer.priceCurrency);
-      const value = num(offer.price);
+      const value = singlePrice(offer.price);
       if (value !== null && (currency === null || currency.toUpperCase() === "EUR")) {
         listing.priceEur = Math.round(value);
       }
@@ -410,6 +430,7 @@ export const figaroAdapter: PortalAdapter = {
       ...(record?.pictureCount !== null && record?.pictureCount !== undefined
         ? { pictureCount: record.pictureCount }
         : {}),
+      ...(listing.priceEur === null && record?.priceOnRequest ? { priceOnRequest: true } : {}),
       /** Whether the rich reading worked at all, so a shape change is visible in the data. */
       payload: record ? "read" : "missing",
     };
@@ -566,6 +587,8 @@ export type FigaroRecord = {
   publishedAt: Date | null;
   updatedAt: Date | null;
   isAvailable: boolean | null;
+  /** Their "prix nous consulter" flag: the agency is not publishing a figure. */
+  priceOnRequest: boolean;
   seller: string | null;
   dpe: string | null;
   ges: string | null;
@@ -767,6 +790,7 @@ function toRecord(node: unknown): FigaroRecord | null {
     publishedAt: toDate(n.firstPublicationDate ?? n.createdAt),
     updatedAt: toDate(n.updatedAt),
     isAvailable: typeof n.isAvailable === "boolean" ? n.isAvailable : null,
+    priceOnRequest: price.prixNousConsulterFr === true || price.valueEUR === undefined,
     seller: str(n.origin),
     dpe: letter(dpe.energyConsumptionCategory),
     ges: letter(dpe.gesEmissionCategory),
@@ -776,6 +800,35 @@ function toRecord(node: unknown): FigaroRecord | null {
 }
 
 // ── Small readers ───────────────────────────────────────────────────────────
+
+/**
+ * A price only when the field holds ONE number.
+ *
+ * Listings sold "prix nous consulter" publish a range instead of a figure:
+ * `"De 2000000 a 5000000"`. Stripping the non-digits out of that — which is
+ * what a general number reader does — yields 20 000 005 000 000, and a villa
+ * priced at twenty trillion euros lands in the database, in every average, and
+ * on the client's screen.
+ *
+ * Caught on a real page, not imagined: 108245945 in Saint-Tropez. It was
+ * obvious because it was absurd; a range of "De 2000000 a 2500000" would have
+ * produced 20 000 002 500 000 and been just as wrong, and a narrower one could
+ * have produced something that merely looked expensive. So the rule is
+ * structural rather than a bounds check: one number or nothing.
+ *
+ * The right answer for these listings is no price at all — `raw.priceOnRequest`
+ * records why, so the product can say "price on request" instead of leaving a
+ * blank that looks like a parsing failure.
+ */
+export function singlePrice(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string") return null;
+  const trimmed = v.trim();
+  // Digits, thousands separators and a decimal mark. Anything else — a word, a
+  // dash, a second number — means this is not a single price.
+  if (!/^[\d][\d\s.,\u00a0]*$/.test(trimmed)) return null;
+  return num(trimmed);
+}
 
 /** "Ramatuelle (83)" → "Ramatuelle". The department is not part of the name. */
 function stripDepartment(raw: string | null | undefined): string | null {

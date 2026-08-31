@@ -121,3 +121,62 @@ test("the agency's logo is refused even though it sits on the same media host", 
   const l = parseFixture();
   assert.ok(l.imageUrls.every((u) => !u.includes("/Agences/")));
 });
+
+// ── A listing SMC publish without a price, and therefore without JSON-LD ────
+
+const NO_PRICE = path.join(HERE, "../__fixtures__/smc-st-tropez-4438055-no-price.html");
+const NO_PRICE_URL =
+  "https://www.maisonsetappartements.fr/fr/83/annonce-vente-maison-st-tropez-4438055.html";
+
+function parseNoPrice() {
+  const res = smcAdapter.parse(fs.readFileSync(NO_PRICE, "utf8"), NO_PRICE_URL);
+  assert.notEqual(res.status, "failed", `parse failed: ${"error" in res ? res.error : ""}`);
+  assert.ok("listing" in res);
+  return res.listing;
+}
+
+test("a listing with no published price is kept, not thrown away", () => {
+  // SMC omit the whole Product block when the agency withholds the price, and
+  // the parser used to require it. That silently cost about 1.5% of the portal,
+  // weighted towards the top of the market — this page is 1700 m² in
+  // Saint-Tropez, the most expensive thing we hold.
+  const l = parseNoPrice();
+  assert.equal(l.externalId, "4438055");
+  assert.equal(l.communeRaw, "Saint-Tropez");
+  assert.equal(l.postalCode, "83990");
+  assert.equal(l.areaM2, 1700);
+  assert.equal(l.rooms, 23);
+  assert.equal(l.agencyName, "Confidential Properties");
+  assert.equal(l.agencyRef, "CP2-041");
+  assert.ok((l.description ?? "").length > 100);
+  assert.equal(l.raw.priceOnRequest, true);
+});
+
+test("no price is invented for it from the neighbours on the page", () => {
+  // The only prices in this page's markup are 39 M, 35 M and 50 M, and every
+  // one of them belongs to the similar-properties strip. "The first price on
+  // the page" would have given this property a stranger's forty million, and
+  // nothing about the result would have looked wrong.
+  const l = parseNoPrice();
+  assert.equal(l.priceEur, null);
+});
+
+test("the gallery holds one property's photographs, told apart by media set", () => {
+  // `ext_<order>_<mediaSet>.jpg`. The similar-properties strip publishes its
+  // own `ext_0_` images, so ordering alone let a neighbour's photograph in.
+  for (const l of [parseFixture(), parseNoPrice()]) {
+    const sets = new Set(l.imageUrls.map((u) => u.match(/\/ext_\d+_(\d+)\./)?.[1]));
+    assert.equal(sets.size, 1, `gallery mixes media sets: ${[...sets].join(", ")}`);
+    assert.ok(l.imageUrl);
+    assert.ok(l.imageUrl.includes(`_${[...sets][0]}.`));
+  }
+});
+
+test("a page that never rendered is reported as that, not as missing data", () => {
+  // Two different faults with two different fixes: this one is a re-fetch and
+  // browser.ts's readySelector, not anything in this parser.
+  const stub = "<html><head><title>vente maison</title></head><body>menus only</body></html>";
+  const res = smcAdapter.parse(stub, NO_PRICE_URL);
+  assert.equal(res.status, "failed");
+  assert.match("error" in res ? res.error : "", /had not finished rendering/);
+});
