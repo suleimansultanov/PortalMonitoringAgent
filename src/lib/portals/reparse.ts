@@ -1,9 +1,8 @@
 import "server-only";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { portalListings, portalSources } from "@/lib/db/schema";
+import { portalListings, portalSnapshots, portalSources } from "@/lib/db/schema";
+import { getPage, storageDescription } from "@/lib/s3/pages";
 import { getAdapter } from "./registry";
 import { resolveAgency } from "./agencies";
 import { resolveCommune } from "./communes";
@@ -35,8 +34,6 @@ import { resolveCommuneIdentities } from "./matching/resolve";
  * a listing that was never fetched. It re-derives; it does not discover.
  */
 
-const PAGES_ROOT = path.resolve(process.cwd(), ".pages");
-
 type Args = { source?: string; dry: boolean };
 
 function parseArgs(): Args {
@@ -48,34 +45,61 @@ function parseArgs(): Args {
 /**
  * Find the saved page for a listing.
  *
- * The key encodes the date it was fetched, which we do not know here, so the
- * day directories are scanned newest-first — a listing refetched twice should
- * be re-parsed from the most recent capture, not the first.
+ * ASK THE DATABASE WHERE IT IS. Do not reconstruct the path.
+ *
+ * This used to scan `.pages/` for a file whose name it rebuilt from the
+ * external id, and it was wrong twice over.
+ *
+ * It only ever looked at local disk, so the day pages moved to object storage
+ * — which is the day the collector left this laptop — re-parsing would have
+ * quietly found nothing for everything collected since, while still working
+ * perfectly for the older files sitting next to it. A backfill would not have
+ * fixed that; this function never looked in the bucket at all.
+ *
+ * And the name it rebuilt was not the name that was written. `pageKey` encodes
+ * the id with `encodeURIComponent`; this replaced everything outside
+ * `[a-zA-Z0-9._-]` with an underscore. For an id carrying a slash or a query
+ * character — which `pages.ts` explicitly warns portals do put in them — the
+ * two disagree, the file is not found, and the listing is skipped as though no
+ * page had ever been saved. Silent, and worst on exactly the ids nobody
+ * inspects.
+ *
+ * `portal_snapshots` has recorded the exact key of every stored page since the
+ * first pass, with the time it was fetched. Reading it removes both bugs and
+ * the guessing along with them: newest row, its key, through the same storage
+ * layer the collector wrote it with — local disk or bucket, whichever is
+ * configured.
  */
-async function findPage(sourceKey: string, externalId: string): Promise<string | null> {
-  const safeId = externalId.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const root = path.join(PAGES_ROOT, "pages", sourceKey);
+async function findPage(sourceId: string, externalId: string): Promise<string | null> {
+  const [snapshot] = await db
+    .select({ s3Key: portalSnapshots.s3Key })
+    .from(portalSnapshots)
+    .where(
+      and(
+        eq(portalSnapshots.sourceId, sourceId),
+        eq(portalSnapshots.externalId, externalId),
+      ),
+    )
+    // A listing fetched more than once should be re-parsed from the most recent
+    // capture, not the first one we happened to store.
+    .orderBy(desc(portalSnapshots.fetchedAt))
+    .limit(1);
 
-  let days: string[];
+  if (!snapshot) return null;
+
   try {
-    days = (await fs.readdir(root, { withFileTypes: true }))
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name)
-      .sort()
-      .reverse();
-  } catch {
+    return await getPage(snapshot.s3Key);
+  } catch (err) {
+    /**
+     * A recorded key whose object is gone. Reported rather than swallowed: it
+     * means the two sides have drifted — a bucket lifecycle rule deleted it, or
+     * the page was written to a laptop and the row synced to a database the
+     * bucket does not match. "No page saved" and "the page we saved is missing"
+     * need different answers, and only one of them is normal.
+     */
+    console.warn(`   ⚠ ${externalId}: ${snapshot.s3Key} is recorded but unreadable — ${(err as Error).message}`);
     return null;
   }
-
-  for (const day of days) {
-    const file = path.join(root, day, `${safeId}.html`);
-    try {
-      return await fs.readFile(file, "utf8");
-    } catch {
-      /* try the next day */
-    }
-  }
-  return null;
 }
 
 export async function reparse(args: Args): Promise<void> {
@@ -87,7 +111,7 @@ export async function reparse(args: Args): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`\nRe-parsing from disk — no network, no traffic.`);
+  console.log(`\nRe-parsing from ${storageDescription()} — no network, no traffic.`);
   if (args.dry) console.log(`dry run: nothing will be written\n`);
 
   const touchedCommunes = new Set<string>();
@@ -118,7 +142,7 @@ export async function reparse(args: Args): Promise<void> {
     const changes = new Map<string, number>();
 
     for (const row of rows) {
-      const html = await findPage(source.key, row.externalId);
+      const html = await findPage(source.id, row.externalId);
       if (!html) {
         missing++;
         continue;

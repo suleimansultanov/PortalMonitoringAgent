@@ -634,8 +634,30 @@ async function main(): Promise<void> {
   let merged = 0;
   let clusters = 0;
   let resolveError: string | null = null;
+
+  /**
+   * NOTHING STORED, NOTHING TO CLUSTER.
+   *
+   * Clustering is derived entirely from `portal_listings`, so with no listing
+   * written this pass it recomputes the same answer it reached yesterday, at
+   * the cost of reading every listing in every commune across the network.
+   *
+   * Measured on the first GitHub Actions run: SMC was refused after 29 seconds,
+   * and the job then spent twelve more minutes re-deciding what it already knew
+   * — on a night where the only useful information was that we had been
+   * blocked. On a laptop against a local Postgres this was invisible; against a
+   * database three countries away it is most of the run.
+   */
+  const stored = outcomes.reduce((n, o) => n + (o.ingested ?? 0), 0);
+  if (stored === 0) {
+    console.log(
+      "[nightly] nothing was stored — skipping deduplication, which would " +
+        "recompute yesterday's answer over the whole corpus.",
+    );
+  }
+
   // What the clients actually watch, not what the region constant describes.
-  const toResolve = await collectionCommunes();
+  const toResolve = stored === 0 ? [] : await collectionCommunes();
   if (toResolve.length === 0) {
     console.warn(
       "[nightly] no active client watches any commune — nothing to cluster. " +
@@ -664,8 +686,10 @@ async function main(): Promise<void> {
     }
   }
   const resolveLine =
-    `deduplication: ${clusters} properties across the gulf, ${merged} merged this pass` +
-    (resolveError ? ` — WITH ERRORS, last: ${resolveError}` : "");
+    stored === 0
+      ? "deduplication: skipped — nothing was stored this pass"
+      : `deduplication: ${clusters} properties across the gulf, ${merged} merged this pass` +
+        (resolveError ? ` — WITH ERRORS, last: ${resolveError}` : "");
 
   const finishedAt = new Date();
   const summaryText = renderSummary(night, startedAt, finishedAt, outcomes, resolveLine, logDir);
