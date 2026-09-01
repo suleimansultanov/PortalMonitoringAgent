@@ -1,7 +1,7 @@
 import "server-only";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getS3Client, getBucket } from "./client";
 
 /**
@@ -87,6 +87,28 @@ export async function getPage(key: string, maxBytes = 8 * 1024 * 1024): Promise<
     total += buf.length;
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * Remove one stored page.
+ *
+ * Added for the preflight probe, which writes an object and reads it back to
+ * prove the credentials can actually do both — a token with read but not write
+ * looks identical to a working one until the first listing of a real crawl.
+ *
+ * NOT used by the collector. Pages are the record a parser fix is re-run
+ * against, and nothing in the pipeline has any business deleting one: a page
+ * removed is a listing that can never be re-parsed, only re-crawled, and the
+ * portal may not still be serving it. If a retention policy is ever wanted, it
+ * belongs in the bucket's own lifecycle rules, where it is visible and
+ * reversible, rather than in code that runs every night.
+ */
+export async function deletePage(key: string): Promise<void> {
+  if (useLocal()) {
+    await fs.rm(path.join(LOCAL_ROOT, key), { force: true });
+    return;
+  }
+  await getS3Client().send(new DeleteObjectCommand({ Bucket: getBucket(), Key: key }));
 }
 
 /** Where pages are going, for the run log to state plainly. */

@@ -173,6 +173,28 @@ refreshes; the alternative is a pass that overruns and gets killed part-way.
 down over several nights means the budget is too small for that portal** — that
 is the number to watch.
 
+## Outstanding: the historical pages are not in R2 yet
+
+From the first R2-configured run onward, pages go to the bucket. Everything
+collected **before** that — 4.7 GB, about 11 400 pages, the whole corpus up to
+2026-09-01 — is still only on the laptop that fetched it.
+
+Nothing is lost and nothing is broken by this. The one consequence: `npm run
+reparse` can only re-derive from pages the bucket holds, so a parser fixed in
+November cannot yet be applied backwards across September the way it is supposed
+to be. That is the entire reason raw pages are stored, so this is worth closing.
+
+```bash
+rclone copy .pages/pages r2:pma-pages/pages --progress
+```
+
+Note the path: locally the files sit at `.pages/pages/<source>/<date>/…`, and
+the key in the bucket must be `pages/<source>/<date>/…`. Copying `.pages`
+instead of `.pages/pages` puts everything one level too deep, where nothing
+looks for it.
+
+Until this is done, the laptop's `.pages/` is the only copy. Do not clear it.
+
 ## Where it should run
 
 Undecided. The script is host-agnostic on purpose: cron on a server, launchd on

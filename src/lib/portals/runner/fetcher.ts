@@ -46,6 +46,18 @@ import type { PoliteFetch } from "../types";
  */
 export const USER_AGENT =
   process.env.COLLECTOR_USER_AGENT?.trim() ||
+  /**
+   * Both names, because the project uses both and has since the beginning:
+   * `.env.example` and the GitHub workflow say CRAWLER_USER_AGENT, the code
+   * said COLLECTOR_USER_AGENT, and nothing connected them. The value sat in
+   * .env.local being read by nobody while the hard-coded fallback below did the
+   * work — invisible only because the two strings happened to be identical.
+   *
+   * The failure it was waiting for: somebody edits the contact address in
+   * .env.local, deploys, and the portals keep seeing the old one. Which is
+   * exactly the kind of promise this project keeps in writing.
+   */
+  process.env.CRAWLER_USER_AGENT?.trim() ||
   "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)";
 
 export class BlockedError extends Error {

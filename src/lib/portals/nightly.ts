@@ -8,6 +8,7 @@ import { db } from "@/lib/db/client";
 import { portalSources } from "@/lib/db/schema";
 import { collectionCommunes, communesForSource } from "./runner/run";
 import { resolveCommuneIdentities } from "./matching/resolve";
+import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
 import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
 
 /**
@@ -326,12 +327,31 @@ async function preflight(): Promise<number> {
   const notes: string[] = [];
 
   // ── the database ────────────────────────────────────────────────────────
-  const dsn = process.env.DATABASE_URL ?? "";
-  const where = dsn.replace(/:\/\/[^@]*@/, "://***@") || "(DATABASE_URL is not set)";
+  //
+  // The probe runs BEFORE the connection string is read, and the order is the
+  // point: `db/client.ts` loads .env.local lazily, on first use. Reading
+  // `process.env.DATABASE_URL` first therefore finds nothing and reports
+  // "(DATABASE_URL is not set)" next to a connection that works — harmless
+  // noise on a good day, and an actively wrong diagnosis on a bad one, naming
+  // an unset variable instead of whatever really failed.
+  //
+  // The host also comes from the server rather than from the string we sent, so
+  // what is printed is where we ARE, not where we asked to be.
+  let where = "";
   try {
-    await db.execute(sql`select 1`);
+    const probe = await db.execute<{ db: string; host: string | null; port: number | null }>(sql`
+      select current_database() as db,
+             inet_server_addr()::text as host,
+             inet_server_port() as port
+    `);
+    const dsn = process.env.DATABASE_URL ?? "";
+    const named = dsn.replace(/:\/\/[^@]*@/, "://***@");
+    const row = probe.rows[0];
+    where = named || `${row?.db ?? "?"} at ${row?.host ?? "?"}:${row?.port ?? "?"}`;
     console.log(`  db          ok    ${where}`);
   } catch (err) {
+    const dsn = process.env.DATABASE_URL ?? "";
+    where = dsn.replace(/:\/\/[^@]*@/, "://***@") || "(no DATABASE_URL — check .env.local)";
     problems.push(`cannot reach the database at ${where}: ${(err as Error).message}`);
     console.error(`  db          FAIL  ${where}`);
     // Nothing below can be checked without it, and guessing would be worse
@@ -412,6 +432,56 @@ async function preflight(): Promise<number> {
           "— run `npm i -D playwright && npx playwright install chromium`",
       );
       console.error("  chromium    FAIL  not loadable");
+    }
+  }
+
+  // ── where the pages go ──────────────────────────────────────────────────
+  //
+  // Checked by actually writing and reading one, not by looking at whether the
+  // variables are set. Every interesting way this fails — a wrong endpoint, a
+  // token scoped to the wrong bucket, read permission without write — looks
+  // exactly like a correct configuration from the outside, and shows up as a
+  // failure on the first listing of a crawl that has already spent an hour in
+  // discovery.
+  console.log("");
+  if (!process.env.S3_BUCKET || !process.env.S3_ENDPOINT) {
+    /**
+     * Local disk is right on a developer's machine and wrong on a runner, and
+     * the difference is invisible until somebody needs `reparse` in November
+     * for a page collected in September.
+     */
+    notes.push(
+      `pages go to local disk (${storageDescription()}). Correct here, ruinous on ` +
+        "a runner: the disk dies with the job and `npm run reparse` loses everything " +
+        "the night fetched.",
+    );
+  } else {
+    const probe = `pages/.preflight/${Date.now()}.html`;
+    try {
+      await putPage(probe, "<!-- preflight -->");
+      const back = await getPage(probe);
+      if (!back.includes("preflight")) {
+        problems.push(`${storageDescription()} accepted a write but returned something else`);
+      } else {
+        console.log(`  storage    ok    ${storageDescription()}`);
+      }
+      await deletePage(probe).catch(() => {
+        notes.push(
+          "the probe object could not be deleted — the token can write but not delete. " +
+            "Harmless for collection; it only means old pages cannot be cleaned up later.",
+        );
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      problems.push(
+        `cannot write to ${storageDescription()}: ${message}` +
+          (/404|NoSuchBucket/i.test(message)
+            ? " — check S3_ENDPOINT does NOT have the bucket name on the end; the client adds it."
+            : /403|AccessDenied|SignatureDoesNotMatch/i.test(message)
+              ? " — the token is wrong, or scoped to a different bucket."
+              : ""),
+      );
+      console.error("  storage    FAIL");
     }
   }
 
