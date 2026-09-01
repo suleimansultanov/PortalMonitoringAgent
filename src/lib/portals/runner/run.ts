@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalRuns, portalSources } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
@@ -37,6 +37,18 @@ import { delistListings, ingestListing } from "./ingest";
 const DEFAULT_ABORT_THRESHOLD = 0.5;
 /** How old a stored page may be before we refetch it even if nothing looks new. */
 const REFRESH_AFTER_DAYS = 7;
+/**
+ * How long one pass may spend re-fetching pages that are merely old.
+ *
+ * Expressed in minutes rather than listings because the sources differ by a
+ * factor of ten in crawl delay: 500 listings is eight minutes on Green-Acres
+ * and eighty-three on Superimmo. A time budget means one number is right for
+ * all of them, and it is the number an operator actually has — how long the
+ * night may be — rather than one they would have to derive.
+ *
+ * Override per source with `refreshBudgetMinutes` in its config row.
+ */
+const DEFAULT_REFRESH_BUDGET_MINUTES = 45;
 /** Listings per chunk. Keeps any single step short enough to survive a timeout. */
 const CHUNK = 25;
 
@@ -74,6 +86,12 @@ export type RunSummary = {
    * stored about a hundred listings and then stopped printed "new 1845".
    */
   ingested: number;
+  /**
+   * Listings still past the refresh window after this pass took its budgeted
+   * share. Reported so a backlog that is growing night over night is visible as
+   * a number rather than as listings quietly getting older.
+   */
+  refreshBacklog?: number;
   /** Why the fetch phase ended before it reached the end of its list. */
   fetchStoppedEarly?: string;
   abortedReason?: string;
@@ -406,17 +424,77 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       );
 
     const staleCutoff = new Date(Date.now() - REFRESH_AFTER_DAYS * 86_400_000);
+    const staleWhere = and(
+      eq(portalListings.sourceId, source.id),
+      eq(portalListings.status, "active"),
+      lt(portalListings.updatedAt, staleCutoff),
+      inThisPass,
+    );
+
+    /**
+     * OLDEST FIRST, AND ONLY AS MANY AS THE NIGHT CAN AFFORD.
+     *
+     * This query used to take everything past the cutoff, unordered and
+     * unbounded, which is fine by the hour and ruinous by the calendar: a
+     * corpus collected in one burst goes stale in one burst. Every LuxuryEstate
+     * listing was fetched on 31 August, so on 7 September all 1645 would come
+     * due on the same night — 1645 pages at their agreed five seconds is two
+     * hours and seventeen minutes of re-fetching pages that have almost
+     * certainly not changed, and Superimmo's 2800 at ten seconds is seven and
+     * three quarter hours, which is not a night at all.
+     *
+     * Note that a matching content hash does NOT save any of that time. The
+     * `unchanged` branch in ingest.ts is only reachable after the page has been
+     * downloaded; it saves parsing and storage, never the request.
+     *
+     * Ordering by `updatedAt` makes this a rolling refresh: each pass takes the
+     * most neglected listings it has time for and leaves the rest for tomorrow,
+     * which also breaks up the burst permanently — after the first bounded
+     * pass the ages fan out and stay fanned out.
+     *
+     * THE COST, STATED PLAINLY: a listing may now go longer than
+     * REFRESH_AFTER_DAYS between refreshes — on Superimmo, where the budget
+     * buys 270 of 2800, about ten days. That is the deliberate trade. An
+     * unbounded queue does not refresh those listings sooner; it produces a
+     * pass that overruns its window and gets killed part-way, which refreshes
+     * them later AND leaves an open row in portal_runs.
+     *
+     * New listings are never capped. `added` is the whole point of the pass and
+     * is fetched in full; only pages we already hold are rationed.
+     */
+    const budgetMinutes =
+      Number(cfg.refreshBudgetMinutes) > 0
+        ? Number(cfg.refreshBudgetMinutes)
+        : DEFAULT_REFRESH_BUDGET_MINUTES;
+    const refreshLimit = Math.max(1, Math.floor((budgetMinutes * 60_000) / crawlDelayMs));
+
+    const [dueRow] = await db
+      .select({ due: sql<number>`count(*)::int` })
+      .from(portalListings)
+      .where(staleWhere);
+    const refreshDue = dueRow?.due ?? 0;
+
     const staleRows = await db
       .select({ externalId: portalListings.externalId })
       .from(portalListings)
-      .where(
-        and(
-          eq(portalListings.sourceId, source.id),
-          eq(portalListings.status, "active"),
-          lt(portalListings.updatedAt, staleCutoff),
-          inThisPass,
-        ),
+      .where(staleWhere)
+      .orderBy(asc(portalListings.updatedAt))
+      .limit(refreshLimit);
+
+    if (refreshDue > staleRows.length) {
+      /**
+       * Said out loud every time it happens. A refresh backlog is invisible by
+       * nature — nothing is broken, no page is missing, the counts all look
+       * healthy — and the only way it becomes visible is a line like this one
+       * appearing night after night with a number that does not come down.
+       */
+      console.log(
+        `[run:${source.key}] ${refreshDue} listings are past the ${REFRESH_AFTER_DAYS}-day ` +
+          `refresh window; taking the ${staleRows.length} oldest that fit a ` +
+          `${budgetMinutes}-minute budget at ${crawlDelayMs / 1000}s apart. ` +
+          `${refreshDue - staleRows.length} roll over to the next pass.`,
       );
+    }
 
     // ── 3. The guard ──────────────────────────────────────────────────────
     const threshold = await getNumberSetting(
@@ -736,6 +814,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       discovered: discovered.size,
       added: diff.added.length,
       refreshed: diff.refresh.length,
+      refreshBacklog: Math.max(0, refreshDue - staleRows.length),
       delisted,
       failed,
       ingested,
@@ -836,6 +915,33 @@ export async function stalestCommunes(sourceId: string, count: number): Promise<
 }
 
 /** Sources with at least one active subscriber, for the daily cron to walk. */
+/**
+ * Every commune any active client watches.
+ *
+ * The set the collector is responsible for — used by clustering and by the
+ * `--source=all` paths, which until 2026-08-31 walked the `COLLECTION_INSEE`
+ * constant instead.
+ *
+ * With one client seeded from that same constant the two were identical, so
+ * nothing was visibly wrong. They part company the moment a client's commune
+ * list is edited in the database — which is the supported way to change it —
+ * and the symptom would be a commune collected but never clustered: listings
+ * arriving, no property rows forming, and no error anywhere.
+ *
+ * The constant remains the *description* of the Gulf of Saint-Tropez — labels,
+ * districts, the text fragments that tell Port Grimaud from Grimaud. It is no
+ * longer the answer to "what are we collecting", because that is a question
+ * about clients.
+ */
+export async function collectionCommunes(): Promise<string[]> {
+  const rows = await db.execute<{ commune_insee: string }>(sql`
+    SELECT DISTINCT unnest(commune_insee) AS commune_insee
+    FROM clients
+    WHERE active = true
+  `);
+  return rows.rows.map((r) => r.commune_insee).sort();
+}
+
 export async function activeSources(): Promise<{ id: string; key: string }[]> {
   const rows = await db
     .select({ id: portalSources.id, key: portalSources.key })

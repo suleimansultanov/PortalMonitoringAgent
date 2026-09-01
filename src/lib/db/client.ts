@@ -42,6 +42,20 @@ declare global {
   var __pma_pg_pool: Pool | undefined;
 }
 
+/** Loopback means a local Postgres; everything else crosses a network. */
+function needsSsl(connectionString: string): boolean {
+  if (/[?&]sslmode=disable\b/i.test(connectionString)) return false;
+  try {
+    const host = new URL(connectionString).hostname;
+    return !["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(host);
+  } catch {
+    // An unparseable string is somebody else's error to report. Assume remote,
+    // because the failure mode of guessing wrong that way is a refused
+    // connection rather than an unencrypted one.
+    return true;
+  }
+}
+
 function getPool(): Pool {
   if (globalThis.__pma_pg_pool) return globalThis.__pma_pg_pool;
 
@@ -68,10 +82,26 @@ function getPool(): Pool {
      */
     query_timeout: 10_000,
     statement_timeout: 10_000,
-    // Supabase's pooler terminates SSL at a proxy that presents no verifiable
-    // chain. Disabling verification still encrypts; it only skips the chain
-    // check, which is the standard setup for PgBouncer in front of Supabase.
-    ...(process.env.NODE_ENV === "production" && { ssl: { rejectUnauthorized: false } }),
+    /**
+     * SSL DECIDED BY WHERE THE DATABASE IS, NOT BY NODE_ENV.
+     *
+     * This used to read `NODE_ENV === "production"`, which was right while the
+     * only thing talking to a remote database was the deployed app. It stopped
+     * being right the moment the collector was pointed at Supabase: the nightly
+     * runs from the CLI, where NODE_ENV is unset, so the one process that talks
+     * to a remote database for hours a night was the one connecting without
+     * this.
+     *
+     * The host is the honest signal. A loopback address is a local Postgres and
+     * wants no TLS; anything else is across a network and does. `sslmode` in
+     * the connection string still wins, so a deliberate `sslmode=disable`
+     * against a remote host — a tunnel, a test — is left alone.
+     *
+     * Supabase's pooler terminates SSL at a proxy that presents no verifiable
+     * chain. Disabling verification still encrypts; it only skips the chain
+     * check, which is the standard setup for PgBouncer in front of Supabase.
+     */
+    ...(needsSsl(url) && { ssl: { rejectUnauthorized: false } }),
   });
 
   if (process.env.NODE_ENV !== "production") globalThis.__pma_pg_pool = pool;

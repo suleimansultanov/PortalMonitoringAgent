@@ -16,7 +16,7 @@ export async function authenticate(
   _previous: string | undefined,
   formData: FormData,
 ): Promise<string | undefined> {
-  const callbackUrl = String(formData.get("callbackUrl") || "/");
+  const callbackUrl = String(formData.get("callbackUrl") || "/portal");
 
   try {
     await signIn("credentials", {
@@ -24,7 +24,7 @@ export async function authenticate(
       password: formData.get("password"),
       // Only ever redirect within this app. A callbackUrl arrives in the query
       // string, so anyone can put anything in it.
-      redirectTo: callbackUrl.startsWith("/") ? callbackUrl : "/",
+      redirectTo: callbackUrl.startsWith("/") ? callbackUrl : "/portal",
     });
   } catch (err) {
     if (err instanceof AuthError) {

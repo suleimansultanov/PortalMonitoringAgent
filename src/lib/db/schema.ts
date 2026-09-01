@@ -631,3 +631,38 @@ export const settings = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
 );
+
+/**
+ * API keys for client instances.
+ *
+ * See `drizzle/0006_api_keys.sql` for why the key is hashed rather than
+ * encrypted, and why a fast hash is the correct choice for a random token.
+ *
+ * The row carries no scope of its own. What a key may read comes from the
+ * client it belongs to — `clients.commune_insee` and `client_sources` — so
+ * there is exactly one place where a client's reach is defined, and issuing a
+ * second key cannot accidentally widen it.
+ */
+export const clientApiKeys = pgTable(
+  "client_api_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    /** Human label. Rotation means two live keys, and they must be tellable apart. */
+    name: text("name").notNull(),
+    /** First characters, in the clear, so a key can be named in a log or a list. */
+    prefix: text("prefix").notNull(),
+    keyHash: text("key_hash").notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** Revoked, never deleted — a key seen in a log later is still identifiable. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    hashUnique: uniqueIndex("client_api_keys_hash_unique").on(t.keyHash),
+    clientIdx: index("client_api_keys_client_idx").on(t.clientId),
+  }),
+);

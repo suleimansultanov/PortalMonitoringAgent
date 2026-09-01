@@ -34,7 +34,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   return (
     <div>
       <Link
-        href="/reports"
+        href="/portal/reports"
         className="mb-5 inline-block text-[11px] uppercase tracking-[0.14em] text-[var(--color-muted)] transition-colors hover:text-[var(--color-ink)]"
       >
         ← Reports
@@ -151,7 +151,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
               {report.movements.map((m) => (
                 <Link
                   key={`${m.propertyId}-${m.occurredAt}`}
-                  href={`/listings/${m.propertyId}`}
+                  href={`/portal/listings/${m.propertyId}`}
                   className="flex items-center justify-between gap-4 px-5 py-3 text-[13px] hover:bg-[var(--color-raised)]"
                 >
                   <div className="min-w-0 flex-1">

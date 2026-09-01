@@ -66,6 +66,57 @@ async function main() {
   }
 
   console.log(ran === 0 ? "[migrate] nothing to do" : `[migrate] applied ${ran} migration(s)`);
+
+  /**
+   * ROW LEVEL SECURITY ON EVERY TABLE, AFTER EVERY MIGRATION.
+   *
+   * Not a dashboard setting, and not a line somebody has to remember to add to
+   * the next migration. Here, because this is the only code path through which
+   * a table in this schema can come into existence.
+   *
+   * WHY IT IS NEEDED AT ALL. Supabase's Data API publishes `public` over HTTP
+   * to an anonymous key that is public by design. Without RLS every table it
+   * exposes is world-readable — `users` with its password hashes,
+   * `client_api_keys`, `settings`. RLS with no policies is deny-by-default,
+   * which is exactly and only what we want.
+   *
+   * WHY THE DASHBOARD TOGGLE IS NOT ENOUGH. "Enable RLS" is checked by default
+   * for tables created through the Table Editor. These are not: they are
+   * `CREATE TABLE` over a direct connection, and nothing switches it on for
+   * them. Supabase's "automatic RLS" toggle installs an event trigger that
+   * would cover it — but only for tables created after somebody remembered to
+   * tick it, in one project, and it does not exist on a developer's local
+   * Postgres at all.
+   *
+   * WHY IT DOES NOT BREAK US. We connect as the table owner, and RLS is
+   * bypassed for the owner. Deliberately NOT `FORCE ROW LEVEL SECURITY`, which
+   * would apply to the owner too and would lock the collector out of its own
+   * database.
+   *
+   * Enabling it twice is a no-op, so this runs on every migrate and needs no
+   * bookkeeping.
+   */
+  const { rows: tables } = await pool.query<{ tablename: string }>(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public'`,
+  );
+  let secured = 0;
+  for (const { tablename } of tables) {
+    const [{ rls }] = (
+      await pool.query<{ rls: boolean }>(
+        `SELECT rowsecurity AS rls FROM pg_tables WHERE schemaname='public' AND tablename=$1`,
+        [tablename],
+      )
+    ).rows;
+    if (rls) continue;
+    await pool.query(`ALTER TABLE public."${tablename}" ENABLE ROW LEVEL SECURITY`);
+    secured += 1;
+  }
+  console.log(
+    secured === 0
+      ? `[migrate] row level security already on for all ${tables.length} tables`
+      : `[migrate] enabled row level security on ${secured} of ${tables.length} tables`,
+  );
+
   await pool.end();
 }
 

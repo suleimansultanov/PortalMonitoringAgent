@@ -8,8 +8,12 @@ import {
   properties,
 } from "@/lib/db/schema";
 import { storageDescription } from "@/lib/s3/pages";
-import { COLLECTION_INSEE } from "./communes";
-import { communesForSource, runSource, stalestCommunes } from "./runner/run";
+import {
+  collectionCommunes,
+  communesForSource,
+  runSource,
+  stalestCommunes,
+} from "./runner/run";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { listAdapters } from "./registry";
 
@@ -139,7 +143,7 @@ export async function collect(args: Args): Promise<void> {
 
   if (!args.skipResolve) {
     console.log(`\n── deduplication ──`);
-    for (const insee of args.communes ?? COLLECTION_INSEE) {
+    for (const insee of args.communes ?? (await collectionCommunes())) {
       const r = await resolveCommuneIdentities(insee);
       if (r.listings === 0) continue;
       console.log(

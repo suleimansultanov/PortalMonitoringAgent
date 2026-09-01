@@ -106,7 +106,7 @@ export default async function ReportsPage() {
             {reports.map((r) => (
               <Link
                 key={r.id}
-                href={`/reports/${r.id}`}
+                href={`/portal/reports/${r.id}`}
                 className="group rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-5 transition-colors hover:border-[var(--color-accent)]/50"
               >
                 <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--color-accent-soft)]">

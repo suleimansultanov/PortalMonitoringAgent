@@ -1,48 +1,58 @@
-name: Collect portals
+name: Nightly collection
 
-# Why here and not on the app platform: a first full crawl runs tens of minutes
-# at one request per second, and serverless functions are capped at five. This
-# job may take six hours. It also means the collector needs no step-splitting,
-# no replay semantics and no always-on HTTP route — it is a script on a timer.
+# WHY HERE AND NOT ON THE APP PLATFORM
 #
-# ⚠ IP ADDRESSES. GitHub's runners come from large shared datacentre ranges.
-# Fine while every source we collect from is openly crawlable. The moment AVIV,
-# Figaro, ZPG or SMC agree to allowlist us, this has to move to a host with a
-# fixed address — a small Hetzner box runs the same command with the same cron.
-# Do not ask a portal to allowlist GitHub's ranges; they will say no, and they
-# will be right to.
+# A pass runs for hours at one request per second, needs a real Chromium for
+# five of the six sources, and writes pages that have to outlive the run. A
+# serverless function has none of those: it is capped in seconds, cannot carry a
+# browser inside its bundle, and has no disk. This is a script on a timer, and
+# it belongs somewhere that can be one.
+#
+# ⚠ IP ADDRESSES. GitHub's runners come from large shared datacentre ranges, and
+# a different one every night. Blocks and rate limits are applied per address,
+# so our ability to collect rides on the reputation of a pool we share with
+# everyone else using Actions — Superimmo already answers 429 generously.
+#
+# The honest identification still holds: CRAWLER_USER_AGENT names us on every
+# request, and LuxuryEstate's X-Collector header is sent whatever the address.
+# But the moment a portal offers to allowlist us, this has to move to a host
+# with a fixed address. `npm run nightly` takes no position on where it runs, so
+# that move is this file and nothing else.
 
 on:
   schedule:
-    # 03:00 UTC — 04:00 in Paris in winter, 05:00 in summer. Well outside the
-    # hours when a French property portal has real visitors.
-    - cron: "0 3 * * *"
+    # 01:30 UTC — 02:30 in Paris in winter, 03:30 in summer.
+    #
+    # Chosen to sit inside LuxuryEstate's 01:00–05:00 CET window in BOTH halves
+    # of the year. The obvious 03:00 UTC does not: in summer that is 05:00 local,
+    # the edge of what they asked for, and the window is enforced in run.ts
+    # rather than merely documented — so the source would be skipped rather than
+    # collected late.
+    - cron: "30 1 * * *"
   workflow_dispatch:
     inputs:
-      source:
-        description: "Source key, or 'all'"
+      sources:
+        description: "Comma-separated source keys. Blank means every enabled one."
         required: false
-        default: "all"
-      limit:
-        description: "Listings per source. Leave blank for a full crawl; set 20 for a smoke test."
+      parallel:
+        description: "How many sources at once. 1 is safest; 2 halves the night."
         required: false
-      communes:
-        description: "Comma-separated INSEE codes. Blank means every subscribed commune."
-        required: false
+        default: "1"
 
 concurrency:
-  # Never two crawls of the same portals at once. The diff and the unique index
-  # would both hold, but we would be doubling our request rate at sites that
-  # allowed us in on the understanding we would be reasonable.
-  group: collect-portals
+  # Never two nights at once. Neither would corrupt anything — the diff and the
+  # unique index both hold — but together they double our request rate at sites
+  # that allowed us in on the understanding we would be reasonable.
+  group: nightly-collection
   cancel-in-progress: false
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    # Generous, because the first full crawl is long and being killed halfway
-    # leaves a run row open and a partial picture of the market.
-    timeout-minutes: 240
+    # Below GitHub's own 6-hour ceiling on purpose. Being killed by the platform
+    # leaves a `running` row in portal_runs and no summary; being killed by this
+    # leaves the same, but at a time we chose and can reason about.
+    timeout-minutes: 330
 
     steps:
       - uses: actions/checkout@v4
@@ -54,41 +64,76 @@ jobs:
 
       - run: npm ci
 
+      # NOT OPTIONAL, and not covered by `npm ci`.
+      #
+      # The `playwright` package has no install script — `hasInstallScript` is
+      # false in the lock file — so npm installs the library and no browser.
+      # Five of the six sources need a real one, and without this each of them
+      # walks its entire discovery phase and then fails on its first listing.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Apply migrations
         run: npm run db:migrate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
+      # Seconds, no portal touched. It catches a wrong connection string, a
+      # missing browser, a source with no subscriber and an empty enabled list —
+      # each of which would otherwise be discovered an hour into the run, one
+      # source at a time, in a log read the next morning.
+      - name: Preflight
+        run: npm run nightly -- --check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+
       - name: Collect
         run: |
-          ARGS="--source=${{ inputs.source || 'all' }}"
-          if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit=${{ inputs.limit }}"; fi
-          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
-          echo "npm run collect -- $ARGS"
-          npm run collect -- $ARGS
+          ARGS="--parallel=${{ inputs.parallel || '1' }}"
+          if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
+          npm run nightly -- $ARGS
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+          COLLECTOR_HEADER: ${{ secrets.COLLECTOR_HEADER }}
           S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
           S3_REGION: ${{ secrets.S3_REGION }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          # Identifies us to the portals that let us in. Keep it honest and
-          # reachable — several agreed on the basis of knowing who we are.
-          CRAWLER_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
 
-      - name: Keep the pages when S3 is not configured
-        # Without S3 the collector writes to .pages/ on the runner, which is
-        # destroyed with the job. Uploading them means a smoke test still leaves
-        # something to re-parse against — which is the entire reason raw pages
-        # are stored in the first place.
-        if: always() && env.S3_BUCKET == ''
+      # `always()`, because the summary matters most on the night that failed.
+      - name: Publish the summary
+        if: always()
+        run: |
+          if [ -f logs/latest/summary.txt ]; then
+            {
+              echo '```'
+              cat logs/latest/summary.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No summary was written — the run died before it got that far." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pages-${{ github.run_id }}
-          path: .pages/
-          retention-days: 7
-          if-no-files-found: ignore
+          name: nightly-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Only when S3 is not configured. Without it the collector writes pages to
+      # .pages/ on the runner, which is destroyed with the job — so the run
+      # would leave nothing to re-parse against, and `npm run reparse` would
+      # have nothing to work on. This is a stopgap that shouts, not a solution.
+      - name: Warn if pages have nowhere to go
+        if: always() && env.S3_BUCKET == ''
+        run: |
+          echo "::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against tonight's collection."
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}

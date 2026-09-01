@@ -18,7 +18,9 @@ export default NextAuth(authConfig).auth;
 export const config = {
   /**
    * Everything except next-auth's own endpoints, the login page, the Inngest
-   * webhook (it authenticates with a signing key and has no cookie) and static
+   * webhook (it authenticates with a signing key and has no cookie), the
+   * client-instance API (it authenticates with a key, and the lookup needs a
+   * database this edge runtime cannot reach — see lib/api/guard.ts) and static
    * assets.
    *
    * Note this is a denylist of paths to SKIP, not an allowlist of paths to
@@ -26,6 +28,6 @@ export const config = {
    * touching this line — which is the whole point.
    */
   matcher: [
-    "/((?!api/auth|api/inngest|login|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|txt|xml)$).*)",
+    "/((?!api/auth|api/inngest|api/v1|login|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|txt|xml)$).*)",
   ],
 };

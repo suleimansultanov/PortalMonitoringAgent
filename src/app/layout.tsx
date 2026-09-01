@@ -9,12 +9,21 @@ export const metadata: Metadata = {
   description: "New stock, buyer matches and market reports across the Gulf of Saint-Tropez.",
 };
 
+/**
+ * The screens live under /portal, not at the root.
+ *
+ * The root is now a redirect. Two things share this deployment — our own
+ * interface and the API that client instances call — and giving each a named
+ * prefix means neither can quietly become "the site". `/docs` is listed last
+ * because it describes the half that is not ours to look at.
+ */
 const NAV = [
-  { href: "/", label: "Overview" },
-  { href: "/listings", label: "Listings" },
-  { href: "/matches", label: "Matches" },
-  { href: "/reports", label: "Reports" },
-  { href: "/sources", label: "Sources" },
+  { href: "/portal", label: "Overview" },
+  { href: "/portal/listings", label: "Listings" },
+  { href: "/portal/matches", label: "Matches" },
+  { href: "/portal/reports", label: "Reports" },
+  { href: "/portal/sources", label: "Sources" },
+  { href: "/docs", label: "API" },
 ];
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

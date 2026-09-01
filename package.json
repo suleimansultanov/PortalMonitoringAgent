@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbo",
+    "dev": "next dev --turbo -p 3001",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
@@ -16,6 +16,8 @@
     "seed:buyers": "tsx src/lib/matching/seedBuyers.ts",
     "match": "tsx src/lib/matching/run.ts",
     "collect": "tsx src/lib/portals/cli.ts",
+    "nightly": "tsx src/lib/portals/nightly.ts",
+    "nightly:one": "tsx src/lib/portals/nightlyOne.ts",
     "probe": "tsx src/lib/portals/probe.ts",
     "probe:browser": "tsx src/lib/portals/browserProbe.ts",
     "smc:pages": "tsx src/lib/portals/smcPages.ts",
@@ -27,7 +29,10 @@
     "reparse": "tsx src/lib/portals/reparse.ts",
     "fixture": "tsx src/lib/portals/fixture.ts",
     "db:studio": "drizzle-kit studio",
-    "user:create": "tsx src/lib/auth/cli.ts"
+    "user:create": "tsx src/lib/auth/cli.ts",
+    "key:create": "tsx src/lib/api/keysCli.ts create",
+    "key:list": "tsx src/lib/api/keysCli.ts list",
+    "key:revoke": "tsx src/lib/api/keysCli.ts revoke"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",

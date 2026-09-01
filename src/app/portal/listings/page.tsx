@@ -241,7 +241,7 @@ export default async function ListingsPage({
                 the kind of small wrongness that makes a page feel broken.
               */}
               <Link
-                href={`/listings/${r.id}${fromQuery}`}
+                href={`/portal/listings/${r.id}${fromQuery}`}
                 className="relative block aspect-[4/3] overflow-hidden"
                 aria-label={r.headline}
               >
@@ -287,7 +287,7 @@ export default async function ListingsPage({
                 )}
               </Link>
 
-              <Link href={`/listings/${r.id}${fromQuery}`} className="block p-4">
+              <Link href={`/portal/listings/${r.id}${fromQuery}`} className="block p-4">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="tnum display text-[22px] leading-none">
                     {money(r.priceEur)}

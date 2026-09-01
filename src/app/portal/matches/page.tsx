@@ -72,7 +72,7 @@ export default async function MatchesPage({
             this screen has been built and tested against invented buyers.
             <br />
             <Link
-              href="/matches?test=1"
+              href="/portal/matches?test=1"
               className="mt-2 inline-block underline underline-offset-4"
             >
               Show them

@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "@/lib/db/client";
 import { clients, clientSources, portalSources } from "@/lib/db/schema";
 import { COLLECTION_INSEE } from "./communes";
+import { USER_AGENT } from "./runner/fetcher";
 import {
   ETREPROPRIO_SLUGS,
   FIGARO_COMMUNES,
@@ -262,17 +263,17 @@ function sourceSeeds(): SourceSeed[] {
         "the plain client, to a headless Chromium, and under two different honest " +
         "identifiers. The same URLs render normally in an ordinary browser, so the " +
         "rule is 'not a browser', applied before anyone looks at who is asking.\n\n" +
-        "2026-08-30, Wayne Salmon, Technical Operations, LuxuryEstate, by email, " +
-        "in reply to our question naming both options:\n" +
-        "  'Please proceed with Option (b). You are authorized to use a standard " +
-        "browser user-agent string to bypass the HTTP 405 errors. In return, we " +
-        "confirm that we expect the custom header to be included in every single " +
-        "request... We understand that aside from this header, your activity will " +
-        "look like standard browser traffic. This setup works perfectly for us, as " +
-        "it allows our team to identify and filter your requests through the custom " +
-        "header without altering our core firewall rules... one request every five " +
-        "seconds... only runs during off-peak hours (preferably between 01:00 and " +
-        "05:00 AM CET).'\n\n" +
+        "THE LETTERS ARE NOT REPRODUCED HERE. This repository is public and they are " +
+        "somebody's private correspondence; the person who wrote them did us a favour " +
+        "and did not agree to be published. Full text lives in the vault note " +
+        "'PMA — Portal Letters'. What governs behaviour is below, because the terms " +
+        "have to sit next to the code that honours them — that is the lesson of the " +
+        "crawl-delay incident, and it is about the terms, not about the wording.\n\n" +
+        "2026-08-30, LuxuryEstate Technical Operations, by email. We may send a " +
+        "standard browser user-agent to get past the 405, on three conditions: a " +
+        "custom X-Collector header on EVERY request so they can identify and filter " +
+        "our traffic without touching their firewall rules; one request every five " +
+        "seconds; off-peak only, preferably 01:00-05:00 CET.\n\n" +
         "THIS IS THE ONLY SOURCE WHERE OUR NAME IS NOT IN THE USER-AGENT. It moved " +
         "into X-Collector at their request, and that header is the entire basis on " +
         "which the browser string is acceptable: with it they can identify, throttle " +
@@ -280,23 +281,13 @@ function sourceSeeds(): SourceSeed[] {
         "visitors. If the header is ever dropped, drop the browser user-agent with " +
         "it. The five-second gap and the 01:00-05:00 window are their conditions, " +
         "not our settings — the window is enforced in run.ts, not merely documented.\n\n" +
-        "Provenance: the email was shown to us as a screenshot of the operator's " +
-        "mailbox and taken at face value; we cannot verify a message we did not " +
-        "receive. Recorded here so that whoever asks later can see exactly what we " +
-        "relied on.\n\n" +
-        "2026-08-31, Wayne Salmon again, on multiple sessions — quoted in full:\n" +
-        "  'Subject: Authorization for Multiple Data Extraction Sessions on Luxury " +
-        "Estate. Hello Suleiman, Thank you for your continued communication regarding " +
-        "your data collection activities on the Luxury Estate portal. We have reviewed " +
-        "your latest request and are writing to formally approve the use of multiple " +
-        "concurrent sessions for parsing data from our website. To ensure that our " +
-        "server performance remains stable for all users, we authorize this setup on " +
-        "the strict condition that a 30-second wait time is maintained between " +
-        "sessions. Please ensure that these new sessions continue to include the " +
-        "previously approved custom X-Collector header so our systems can correctly " +
-        "identify your traffic. Let us know once you have configured the multiple " +
-        "sessions with this 30-second delay, so we can verify the traffic flow on our " +
-        "end. Best regards, Wayne Salmon, Technical Operations, LuxuryEstate'\n\n" +
+        "Provenance of that first letter: it was shown to us as a screenshot of the " +
+        "operator's mailbox and taken at face value; we cannot verify a message we " +
+        "did not receive.\n\n" +
+        "2026-08-31, same correspondent, on multiple sessions. Approved, on the " +
+        "strict condition of a 30-second wait between sessions, the X-Collector " +
+        "header retained, and they asked to be told once it is configured so they " +
+        "can verify the traffic at their end.\n\n" +
         "WHY THIS WAS ASKED FOR. Their protection refuses us after roughly 200 " +
         "listings in one session — measured twice on 2026-08-30, at 139 and at 216 " +
         "served — while we were inside the agreed 5s and using the header. At that " +
@@ -310,14 +301,15 @@ function sourceSeeds(): SourceSeed[] {
         "refused before serving anything ends the pass rather than triggering another " +
         "restart — that would be knocking until someone opens, and it is not what " +
         "they agreed to.\n\n" +
-        "PROVENANCE, and it is weaker than the first letter's. This one was shown to " +
-        "us as a rendered document rather than in a mail client: no sender address, " +
-        "no date, no thread, and a spellchecker underline in the text, which a " +
-        "received message does not carry. That was put to the operator, who said the " +
-        "underline comes from a plugin in his mail client and that the message is " +
-        "genuine. It was accepted on that basis and on the content, which is specific, " +
-        "imposes a condition rather than removing all of them, and refers back to the " +
-        "earlier agreement. Anyone re-examining this should start here.\n\n" +
+        "PROVENANCE OF THE SECOND LETTER, and it is weaker than the first's. It was " +
+        "shown to us as a rendered document rather than in a mail client: no sender " +
+        "address, no date, no thread, and a spellchecker underline in the text, which " +
+        "a received message does not carry. That was put to the operator, who said " +
+        "the underline comes from a plugin in his mail client and that the message is " +
+        "genuine. It was accepted on that basis and on the content, which is " +
+        "specific, imposes a condition rather than removing all of them, and refers " +
+        "back to the earlier agreement. Anyone re-examining this should start here, " +
+        "and then read the full text in the vault.\n\n" +
         "STILL OWED TO THEM: the confirmation they asked for — that the 30-second " +
         "configuration is live, so they can check the traffic at their end. Also, " +
         "separately, that some requests went out at 1s rather than 5s on 2026-08-30 " +
@@ -341,8 +333,16 @@ function sourceSeeds(): SourceSeed[] {
          * what keeps the line above honest — see `permissionNote`.
          */
         extraHeaders: {
-          "X-Collector":
-            "PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)",
+          /**
+           * One definition, shared with the user-agent, overridable by
+           * COLLECTOR_HEADER.
+           *
+           * It was a second hard-coded copy of the same identifier, which meant
+           * the string a portal filters on could only be changed by shipping a
+           * release — and that two records of the same promise could drift, the
+           * exact failure the crawl-delay comment above describes.
+           */
+          "X-Collector": process.env.COLLECTOR_HEADER?.trim() || USER_AGENT,
         },
         /**
          * 30 was the adapter's fallback, and Sainte-Maxime reached it on
@@ -433,9 +433,39 @@ export async function seed(): Promise<void> {
     })
     .onConflictDoUpdate({
       target: clients.slug,
-      set: { communeInsee: COLLECTION_INSEE, updatedAt: new Date() },
+      /**
+       * `communeInsee` is deliberately NOT updated here.
+       *
+       * The constant is right the first time and wrong every time after: the
+       * supported way to change what a client watches is to edit the row, and a
+       * re-seed that overwrote it would silently undo that — collection would
+       * quietly go back to the twelve codes in this file, and the commune
+       * somebody added last week would stop being collected with nothing
+       * anywhere saying so.
+       *
+       * This is the same family as the `crawlDelayMs` incident below, from the
+       * other side: there the seed failed to update a field that had to follow
+       * the file, here it must not update a field that has to follow the
+       * database. The test is which of the two is the record of the decision.
+       */
+      set: { name: "Med-Estates", updatedAt: new Date() },
     })
-    .returning({ id: clients.id });
+    .returning({ id: clients.id, communeInsee: clients.communeInsee });
+
+  /**
+   * Said out loud when they differ, because after the change above they can —
+   * and a divergence nobody mentions is how the two records of one decision
+   * drift apart.
+   */
+  const stored = new Set(client.communeInsee);
+  const described = new Set(COLLECTION_INSEE);
+  if (stored.size !== described.size || [...described].some((c) => !stored.has(c))) {
+    console.warn(
+      `[seed] med-estates watches ${client.communeInsee.length} communes in the ` +
+        `database; this file describes ${COLLECTION_INSEE.length}. The database ` +
+        `wins — edit the row, not the file, to change what is collected.`,
+    );
+  }
 
   for (const s of sourceSeeds()) {
     const [source] = await db

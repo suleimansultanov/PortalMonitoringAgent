@@ -7,6 +7,11 @@ build/
 .env
 .env.local
 .env*.local
+# `.env*.local` requires the name to END in .local, so a dated backup of
+# .env.local — which scripts/use-database.sh writes before replacing it — slips
+# past it and would be committed by `git add -A`, connection string and all.
+.env.local.*
+.env.*.backup
 
 *.tsbuildinfo
 next-env.d.ts
@@ -32,3 +37,8 @@ next-env.d.ts
 pma-data.sql
 *.sql.backup
 backup-*.sql
+
+# Nightly run logs. Useful on the machine that collects, meaningless anywhere
+# else, and they name portals and URLs — the same reasoning as `.pages/`.
+# `logs/latest` is a symlink into today's directory.
+logs/

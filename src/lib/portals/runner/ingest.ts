@@ -256,6 +256,23 @@ export async function ingestListing(
     await db.insert(portalListingEvents).values(
       events.map((e) => ({
         listingId,
+        /**
+         * Filled where it is known, which is every listing that has been
+         * clustered at least once.
+         *
+         * It was omitted here until 2026-08-31, so `delisted` rows carried a
+         * property and `listed` and `price_changed` rows carried null — the
+         * exact inverse of what the column is for, and enough to make a
+         * property-level query over events return nothing for a new listing.
+         *
+         * Null remains correct and expected for a listing seen for the first
+         * time: clustering runs after collection, so nothing knows yet which
+         * property this is. Readers must therefore resolve the property through
+         * `portal_listings` rather than trusting this column — which is also
+         * the right thing to do after a merge reassigns a listing, since this
+         * value is a snapshot and the join is the current answer.
+         */
+        propertyId: existing?.propertyId ?? null,
         sourceId: deps.sourceId,
         runId: deps.runId,
         type: e.type,

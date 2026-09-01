@@ -1,5 +1,5 @@
-import { COLLECTION_INSEE } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
+import { collectionCommunes } from "./runner/run";
 
 /**
  * Deduplication on its own, without collecting anything.
@@ -31,9 +31,19 @@ const communesArg = process.argv
   .join("=");
 
 async function main(): Promise<void> {
+  // Named communes win; otherwise everything the active clients watch. Not the
+  // region constant — that describes the gulf, it does not say what we collect.
   const communes = communesArg
     ? communesArg.split(",").map((c) => c.trim()).filter(Boolean)
-    : COLLECTION_INSEE;
+    : await collectionCommunes();
+
+  if (communes.length === 0) {
+    console.error(
+      "\nNo active client watches any commune, so there is nothing to resolve.\n" +
+        "Check `select slug, active, commune_insee from clients;`\n",
+    );
+    process.exit(1);
+  }
 
   console.log(`\n── deduplication ── ${communes.length} communes\n`);
 

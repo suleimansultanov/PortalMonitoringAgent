@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { dbErrorMessage } from "./errors";
 import { db } from "./client";
 
 /**
@@ -61,10 +62,35 @@ async function main(): Promise<void> {
 main()
   .then(() => process.exit(0))
   .catch((err) => {
-    console.error("\n[db:info] failed:", (err as Error).message);
+    /**
+     * `dbErrorMessage`, not `err.message`.
+     *
+     * This file printed the raw message, which for anything going through
+     * drizzle is the wrapper — "Failed query:" plus the entire SQL, with the
+     * one useful line hidden on `cause`. `errors.ts` was written in this
+     * project precisely to undo that, and this entry point was the one place
+     * not using it: the command whose whole job is to answer "what is wrong
+     * with my connection" was the command that would not say.
+     */
+    console.error("\n[db:info] failed:", dbErrorMessage(err));
+
+    /**
+     * Connection-level failures do not come wrapped, and their `code` is the
+     * quickest route to the cause — so it is printed rather than described.
+     */
+    const code = (err as { code?: string; cause?: { code?: string } })?.code
+      ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (code) console.error(`[db:info] code: ${code}`);
+
     console.error(
-      "\nIf this says the database does not exist, DATABASE_URL in .env.local is\n" +
-        "pointing somewhere that was never created.\n",
+      "\n  28P01  the password is wrong. If the connection string was typed into a\n" +
+        "         shell, check it survived: an unencoded @ splits the URL, and in zsh\n" +
+        "         a ! inside double quotes is history expansion. Percent-encode the\n" +
+        "         password (@ = %40, ! = %21) or let the script prompt for it.\n" +
+        "  3D000  the database in the connection string does not exist.\n" +
+        "  ENOTFOUND / ETIMEDOUT  the host is wrong or unreachable.\n" +
+        "  08P01 / unsupported startup parameter  you are on the transaction pooler\n" +
+        "         (:6543). Use the session pooler (:5432).\n",
     );
     process.exit(1);
   });

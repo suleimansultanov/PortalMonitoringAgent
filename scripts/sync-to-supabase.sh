@@ -29,11 +29,58 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# ── The connection string is READ, not typed on the command line ─────────
+#
+# Three separate runs of this migration were lost to the same thing: a `!` in
+# the password is history expansion in zsh, even inside double quotes, so the
+# shell silently substitutes an old command into the middle of the password and
+# the connection fails naming a host or a port nobody typed. It is not a
+# mistake anyone learns their way out of — the fix is to stop putting the
+# string through a shell.
+#
+# An argument still works for scripted use.
 TARGET="${1:-${SUPABASE_URL:-}}"
 if [ -z "$TARGET" ]; then
-  echo "Usage: ./scripts/sync-to-supabase.sh \"<session pooler connection string>\"" >&2
-  exit 1
+  if [ -t 0 ]; then
+    printf 'Target connection string (input hidden): '
+    read -rs TARGET
+    printf '\n'
+  else
+    echo "Usage: ./scripts/sync-to-supabase.sh   (it will ask)" >&2
+    echo "   or: SUPABASE_URL=… ./scripts/sync-to-supabase.sh" >&2
+    exit 1
+  fi
 fi
+[ -n "$TARGET" ] || { echo "Nothing entered." >&2; exit 1; }
+
+# ── Percent-encode the password ──────────────────────────────────────────
+#
+# libpq splits a URI on the FIRST `@` and takes everything after it as the
+# host; node splits on the last. A password containing `@` therefore works in
+# half the tooling and fails in the other half, with an error that names a
+# hostname or a port that was never typed.
+TARGET="$(node -e '
+  const raw = process.argv[1];
+  const m = raw.match(/^(postgres(?:ql)?:\/\/)(.*)$/s);
+  if (!m) { process.stdout.write(raw); process.exit(0); }
+  const at = m[2].lastIndexOf("@");
+  if (at === -1) { process.stdout.write(raw); process.exit(0); }
+  const userinfo = m[2].slice(0, at), rest = m[2].slice(at + 1);
+  const colon = userinfo.indexOf(":");
+  if (colon === -1) { process.stdout.write(raw); process.exit(0); }
+  const user = userinfo.slice(0, colon), pass = userinfo.slice(colon + 1);
+  let already = false;
+  try { already = decodeURIComponent(pass) !== pass; } catch { already = false; }
+  process.stdout.write(m[1] + user + ":" + (already ? pass : encodeURIComponent(pass)) + "@" + rest);
+' "$TARGET")"
+
+# NOTE: PGSSLMODE is deliberately NOT exported here. It is set on the calls that
+# talk to the TARGET only — see run_psql below. Exported, it also reaches the
+# pg_dump reading the LOCAL database, which is a plain Postgres with no TLS, and
+# that fails with "server does not support SSL, but SSL was required".
+# A pager in a script waits for a keypress that a script will never give it.
+export PSQL_PAGER=cat
+export PAGER=cat
 case "$TARGET" in
   postgresql://*|postgres://*) ;;
   *) echo "The target must start with postgresql:// — got: ${TARGET%%:*}…" >&2; exit 1 ;;
@@ -47,7 +94,9 @@ fi
 
 if command -v pg_dump >/dev/null 2>&1; then
   run_dump() { pg_dump "$SOURCE" "$@"; }
-  run_psql()  { psql "$TARGET" "$@"; }
+  # The target crosses the public internet; `require` here is libpq's meaning —
+  # encrypt, do not verify the chain — which is what the Supabase pooler needs.
+  run_psql()  { PGSSLMODE=require psql "$TARGET" "$@"; }
   # The collector's own database, for the sync stamp at the end. `settings` is
   # not one of the tables this script copies — it holds encrypted values keyed
   # to an environment — so the two sides are written separately and on purpose.
@@ -57,7 +106,7 @@ else
   DOCKER_SOURCE="${SOURCE//localhost/host.docker.internal}"
   DOCKER_SOURCE="${DOCKER_SOURCE//127.0.0.1/host.docker.internal}"
   run_dump() { docker run --rm postgres:16 pg_dump "$DOCKER_SOURCE" "$@"; }
-  run_psql()  { docker run --rm -i postgres:16 psql "$TARGET" "$@"; }
+  run_psql()  { docker run --rm -i -e PGSSLMODE=require postgres:16 psql "$TARGET" "$@"; }
   run_psql_local() { docker run --rm -i postgres:16 psql "$DOCKER_SOURCE" "$@"; }
 fi
 
