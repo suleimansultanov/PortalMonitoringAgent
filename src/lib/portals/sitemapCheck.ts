@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "@/lib/db/client";
 import { portalSources } from "@/lib/db/schema";
 import { createFetcher, USER_AGENT } from "./runner/fetcher";
+import { createBrowserSession, type BrowserSession } from "./runner/browser";
 import { isSitemapIndex, parseSitemap, parseSitemapIndex, type SitemapEntry } from "./runner/sitemap";
 
 /**
@@ -9,6 +10,7 @@ import { isSitemapIndex, parseSitemap, parseSitemapIndex, type SitemapEntry } fr
  *
  *   npm run sitemap:check
  *   npm run sitemap:check -- --source=figaro --shards=3
+ *   npm run sitemap:check -- --source=green-acres --match=listing
  *
  * A sitemap that dates its entries honestly would let a night ask one question
  * — "what changed since yesterday?" — instead of walking a hundred index pages
@@ -32,6 +34,22 @@ import { isSitemapIndex, parseSitemap, parseSitemapIndex, type SitemapEntry } fr
  * source's own crawl delay. Run it from a machine the portals answer — some of
  * them refuse datacentre addresses outright, and a 403 here says nothing about
  * the dates.
+ *
+ * TWO THINGS THE FIRST VERSION GOT WRONG, both of which produced a confident
+ * answer to a question it had not asked:
+ *
+ * It fetched with the plain HTTP client always. Figaro's WAF answers 403 to
+ * that on every path — index, listing and sitemap alike — and 200 to a
+ * browser, which is why the source carries `fetchMode: browser` and a
+ * permission note saying so. The run reported "robots.txt unreadable" and no
+ * sitemap, which reads as a portal that publishes none. It publishes one; we
+ * knocked with the wrong hand.
+ *
+ * And it opened the first shards in the index, which on Green-Acres are
+ * `main-real-estate` and `main-house` — category pages, 142 and 185 URLs,
+ * regenerated wholesale. Their single shared date says nothing about whether
+ * LISTING pages are dated individually. `--match` picks the shards worth
+ * opening; the shard list is printed so there is something to pick from.
  */
 
 function arg(name: string): string | undefined {
@@ -86,6 +104,8 @@ async function roots(baseUrl: string, configured: string | undefined, fetch: (u:
 async function main(): Promise<void> {
   const only = arg("source");
   const shardLimit = Math.max(0, Number(arg("shards") ?? 2) || 2);
+  /** Substring a shard URL must contain to be opened. */
+  const match = arg("match")?.toLowerCase();
 
   const sources = await db.select().from(portalSources);
   const targets = only ? sources.filter((s) => s.key === only) : sources;
@@ -96,7 +116,38 @@ async function main(): Promise<void> {
   for (const source of targets) {
     console.log(`\n═══ ${source.key} ═══`);
     const cfg = (source.config as Record<string, unknown> | null) ?? {};
-    const fetch = createFetcher({ delayMs: source.crawlDelayMs });
+
+    /**
+     * The same door the collector uses for this source, not a door of our own.
+     * A portal that only answers a browser is not a portal without a sitemap.
+     */
+    const fetchMode = cfg.fetchMode;
+    const useBrowser = fetchMode === "browser" || fetchMode === "browser-discovery";
+    const plain = createFetcher({
+      delayMs: source.crawlDelayMs,
+      userAgent: (cfg.userAgent as string | undefined)?.trim() || undefined,
+      extraHeaders: (cfg.extraHeaders as Record<string, string> | undefined) ?? {},
+    });
+
+    let session: BrowserSession | null = null;
+    if (useBrowser) {
+      session = await createBrowserSession({
+        delayMs: source.crawlDelayMs,
+        userAgent: (cfg.userAgent as string | undefined)?.trim() || undefined,
+        extraHeaders: (cfg.extraHeaders as Record<string, string> | undefined) ?? {},
+        readySelector: (cfg.readySelector as string | undefined)?.trim() || undefined,
+      });
+      console.log(`   (browser, because this source needs one)`);
+    }
+
+    /**
+     * Gzipped shards go to the plain client even on a browser source: Chromium
+     * renders a .xml.gz as a download, not as text, and `fetcher.ts` already
+     * ungzips. Same split the collector makes in run.ts.
+     */
+    const SITEMAP_LIKE = /\.(?:xml|gz|xml\.gz)(?:$|[?#])/i;
+    const fetch = (url: string): Promise<string> =>
+      session && !SITEMAP_LIKE.test(url) ? session.fetch(url) : plain(url);
 
     const found = await roots(source.baseUrl, cfg.sitemap as string | undefined, fetch);
     if (found.length === 0) {
@@ -122,13 +173,24 @@ async function main(): Promise<void> {
       const shards = parseSitemapIndex(xml);
       describe(`index of ${shards.length} shards — dates ON THE SHARDS`, shards);
 
+      console.log(`\n     shards (first 20 of ${shards.length}):`);
+      for (const sm of shards.slice(0, 20)) {
+        console.log(`       ${sm.loc.split("/").pop()}`);
+      }
+
       /**
        * The index's own dates and the entries' dates are different claims, and
        * a portal can get one right and the other wrong. SMC stamps every shard
        * with the same day; whether the URLs inside are dated individually is a
        * separate question, and the one that actually matters.
        */
-      for (const shard of shards.slice(0, shardLimit)) {
+      const wanted = match
+        ? shards.filter((sm) => sm.loc.toLowerCase().includes(match))
+        : shards;
+      if (match && wanted.length === 0) {
+        console.log(`\n     no shard matches --match=${match}`);
+      }
+      for (const shard of wanted.slice(0, shardLimit)) {
         let child: string;
         try {
           child = await fetch(shard.loc);
@@ -139,6 +201,8 @@ async function main(): Promise<void> {
         describe(`shard ${shard.loc.split("/").pop()} — dates ON THE PAGES`, parseSitemap(child));
       }
     }
+
+    await session?.close().catch(() => {});
   }
 
   console.log(
