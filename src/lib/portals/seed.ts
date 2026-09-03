@@ -204,6 +204,29 @@ function sourceSeeds(): SourceSeed[] {
          * ignored — which `p_n` on Green-Acres taught us to check.
          */
         sort: "created_at",
+        /**
+         * The two lines that let a night stop walking, and the only source
+         * that has earned them.
+         *
+         * `discoveryOrder` is a claim about the portal, not a preference: it
+         * says the list really does come back newest-first, so a run of
+         * listings we already hold means everything after them is older still.
+         * The verification is the note directly above — their sort parameter
+         * was checked against the card dates, and against a page fetched
+         * without it, on 2026-08-29.
+         *
+         * Set it nowhere the ordering has not been checked the same way. The
+         * failure it buys is silent: a new listing sitting in the middle of an
+         * unordered list, never reached, on a night that reports success.
+         *
+         * Why this source first. On 2026-09-03 Superimmo spent 25 minutes
+         * walking Saint-Tropez alone, was rate limited at page 10 despite
+         * honouring six Retry-After: 60 in a row, and found four new listings.
+         * Twelve communes of that is five hours for one portal — past what a
+         * night can hold, and far past what we should be asking of them.
+         */
+        discoveryOrder: "newest-first",
+        deltaStopAfterKnown: 15,
       },
     },
     {

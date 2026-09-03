@@ -158,6 +158,12 @@ async function main(): Promise<void> {
       // `enabled` flag is how a portal gets taken out of rotation mid-
       // negotiation, and a scheduler that overrides it is not a scheduler.
       force: process.argv.includes("--force"),
+      /**
+       * The weekly pass that notices disappearances. A delta night never can:
+       * it stops before reaching the part of the list where a vanished listing
+       * would have been, and says so by declaring itself incomplete.
+       */
+      fullSweep: process.argv.includes("--full"),
     });
 
     const g = grade(summary);

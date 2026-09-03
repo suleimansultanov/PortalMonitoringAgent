@@ -126,6 +126,7 @@ function runChild(
   force: boolean,
   timeoutMs: number,
   communes?: string,
+  fullSweep?: boolean,
 ): Promise<SourceOutcome> {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -135,6 +136,7 @@ function runChild(
     const args = ["--import", "tsx", script, `--source=${sourceKey}`];
     if (force) args.push("--force");
     if (communes) args.push(`--communes=${communes}`);
+    if (fullSweep) args.push("--full");
 
     const child = spawn(process.execPath, args, {
       env: process.env,
@@ -589,6 +591,11 @@ async function main(): Promise<void> {
    * refusing an ADDRESS.
    */
   const communes = arg("communes");
+  /**
+   * The weekly whole-list pass. Delta sources stop early every other night and
+   * therefore never delist; this is the night that does.
+   */
+  const fullSweep = process.argv.includes("--full");
 
   const all = await db
     .select({ key: portalSources.key, enabled: portalSources.enabled, config: portalSources.config })
@@ -656,6 +663,7 @@ async function main(): Promise<void> {
         force,
         timeoutMs,
         communes,
+        fullSweep,
       );
       outcomes.push(outcome);
       console.log(

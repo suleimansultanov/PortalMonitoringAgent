@@ -85,6 +85,15 @@ export type RunOptions = {
    * the nightly pass reads.
    */
   minDelayMs?: number;
+  /**
+   * Walk the whole list even where a delta stop is configured.
+   *
+   * The delta stop below deliberately produces an incomplete view, which means
+   * a source running it every night would never notice a listing disappearing.
+   * This is how the full sweep that DOES notice gets asked for — weekly, and
+   * from wherever the portal is willing to be walked end to end.
+   */
+  fullSweep?: boolean;
 };
 
 export type RunSummary = {
@@ -407,6 +416,28 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
   const listingFetcher = browserForListingsToo ? fetcher : plainFetcher;
 
   try {
+    // ── 0. What we already knew ───────────────────────────────────────────
+    /**
+     * SCOPED TO THE COMMUNES THIS PASS ACTUALLY LOOKS AT — see the note in
+     * step 2, which is the whole correctness of a partial run.
+     *
+     * Read here rather than after discovery because the delta stop below needs
+     * to recognise a listing mid-walk, not once the walk is over.
+     */
+    const known = await db
+      .select({
+        externalId: portalListings.externalId,
+        communeInsee: portalListings.communeInsee,
+      })
+      .from(portalListings)
+      .where(
+        and(
+          eq(portalListings.sourceId, source.id),
+          eq(portalListings.status, "active"),
+          inArray(portalListings.communeInsee, opts.communeInsee),
+        ),
+      );
+
     // ── 1. Discover ───────────────────────────────────────────────────────
     const discovered = new Map<string, DiscoveredListing>();
     let complete = true;
@@ -417,6 +448,49 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      * did not, and the log is more useful naming the cause than counting it.
      */
     const partialCommunes = new Map<string, string>();
+
+    /**
+     * DELTA DISCOVERY — stop once the portal is only showing us things we have.
+     *
+     * A night does not need the whole list. The backfill is done; what changes
+     * between two nights is a handful of listings. Superimmo spent 25 minutes
+     * walking one commune to find four of them, and spent a rate limit doing
+     * it — the cost is the walk, not the fetch, and the walk is the part the
+     * portals object to.
+     *
+     * So: count listings we already hold, consecutively. Enough of them in a
+     * row means the rest of the list is older still, and there is nothing
+     * further to find. Fifteen is the default — comfortably more than one
+     * page's worth of coincidence, far less than a page of real ones.
+     *
+     * ONLY WHERE THE ORDER MAKES IT TRUE. If the list is not newest-first, a
+     * new listing can sit anywhere in it, and stopping early would skip it
+     * silently — a night that looks successful and is not, which is worse than
+     * a night that fails. So this is opt-in per source, set on the sources
+     * whose discovery URL actually asks for a date ordering, and nowhere else.
+     *
+     * The stop marks discovery INCOMPLETE, which is what stops the pass
+     * delisting anything: we did not look at the whole market and must not
+     * pretend otherwise. Noticing disappearances is the full sweep's job.
+     */
+    const deltaAfter = Number(cfg.deltaStopAfterKnown ?? 0);
+    const deltaEnabled =
+      cfg.discoveryOrder === "newest-first" &&
+      deltaAfter > 0 &&
+      !opts.fullSweep &&
+      // A capped pass is already a fragment; two reasons to stop early would
+      // make the log ambiguous about which one fired.
+      !opts.limit;
+    const knownIds = new Set(known.map((k) => k.externalId));
+    let consecutiveKnown = 0;
+    let deltaStopped = false;
+
+    if (deltaEnabled) {
+      console.log(
+        `[run:${source.key}] delta pass — stopping after ${deltaAfter} known listings ` +
+          `in a row; nothing will be delisted`,
+      );
+    }
 
     try {
       for await (const item of adapter.discover({
@@ -444,6 +518,21 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
          */
         if (discovered.size % 100 === 0) {
           console.log(`[run:${source.key}] discovering… ${discovered.size} listings so far`);
+        }
+
+        if (deltaEnabled) {
+          if (knownIds.has(item.externalId)) {
+            consecutiveKnown += 1;
+            if (consecutiveKnown >= deltaAfter) {
+              deltaStopped = true;
+              complete = false;
+              break;
+            }
+          } else {
+            // One unseen listing means the run of known ones was a coincidence
+            // — a listing edited today can float back up a date ordering.
+            consecutiveKnown = 0;
+          }
         }
 
         if (opts.limit && discovered.size >= opts.limit) {
@@ -477,7 +566,11 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       complete
         ? `[run:${source.key}] discovery done — ${discovered.size} listings across ` +
             `${opts.communeInsee.length} communes; working out what is new`
-        : `[run:${source.key}] discovery STOPPED EARLY — ${discovered.size} listings ` +
+        : deltaStopped
+          ? `[run:${source.key}] delta stop — ${discovered.size} listings seen, then ` +
+            `${deltaAfter} already-known in a row; the rest of the list is older. ` +
+            `Nothing will be delisted from this pass.`
+          : `[run:${source.key}] discovery STOPPED EARLY — ${discovered.size} listings ` +
             `collected before it broke off; nothing will be delisted from this pass`,
     );
 
@@ -509,20 +602,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      * pipeline would rather show a stale listing than invent a disappearance.
      */
     const inThisPass = inArray(portalListings.communeInsee, opts.communeInsee);
-
-    const known = await db
-      .select({
-        externalId: portalListings.externalId,
-        communeInsee: portalListings.communeInsee,
-      })
-      .from(portalListings)
-      .where(
-        and(
-          eq(portalListings.sourceId, source.id),
-          eq(portalListings.status, "active"),
-          inThisPass,
-        ),
-      );
+    // `known` is read BEFORE discovery now — see the delta stop in step 1,
+    // which has to recognise a listing while the walk is still going.
 
     const staleCutoff = new Date(Date.now() - REFRESH_AFTER_DAYS * 86_400_000);
     const staleWhere = and(
@@ -608,7 +689,15 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       threshold,
     });
 
-    if (verdict.abort) {
+    /**
+     * A delta stop looks exactly like a blocked crawl to the guard — a small
+     * fraction of the baseline discovered — and it is the opposite: we stopped
+     * because we had seen enough, not because we were stopped. The guard's
+     * purpose is to keep a fragment from being read as an empty market, and a
+     * delta pass already declares itself incomplete, so nothing can be
+     * delisted either way.
+     */
+    if (verdict.abort && !deltaStopped) {
       const reason = discoveryError
         ? `${verdict.reason} Discovery also errored: ${discoveryError}`
         : verdict.reason;
