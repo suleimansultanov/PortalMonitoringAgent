@@ -712,8 +712,29 @@ async function main(): Promise<void> {
     );
   }
 
-  // What the clients actually watch, not what the region constant describes.
-  const toResolve = stored === 0 ? [] : await collectionCommunes();
+  /**
+   * The communes this pass could have changed, not every commune we watch.
+   *
+   * Clustering is derived from `portal_listings`, so a commune nothing was
+   * written to produces the same answer it produced yesterday — bought at the
+   * price of reading all its listings across the network. The skip above
+   * catches the case where NOTHING was stored; this catches the more common
+   * one, where something was stored somewhere and we then re-clustered
+   * everywhere.
+   *
+   * Visible on the one-commune probe of 2026-09-03: we collected 83119 and
+   * the job went on to resolve 83036, 83042, 83048, 83063 and the rest. On a
+   * full night that is not a rounding error — clustering took roughly 110 of
+   * 188 minutes, against a database three countries away.
+   *
+   * `--communes` narrows it, because a pass told to look at one commune cannot
+   * have changed another.
+   */
+  const scoped = communes?.split(",").map((c) => c.trim()).filter(Boolean);
+  const watched = stored === 0 ? [] : await collectionCommunes();
+  const toResolve = scoped?.length
+    ? watched.filter((insee) => scoped.includes(insee))
+    : watched;
 
   /**
    * Only when the list is empty for the reason this warning describes.
