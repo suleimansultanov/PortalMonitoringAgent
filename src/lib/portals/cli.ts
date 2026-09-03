@@ -1,5 +1,5 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   portalListings,
@@ -163,44 +163,91 @@ export async function collect(args: Args): Promise<void> {
  * exactly what a partially broken parser looks like from the outside.
  */
 async function summarise(): Promise<void> {
-  const listings = await db.select().from(portalListings);
-  const props = await db.select().from(properties);
-  const events = await db.select().from(portalListingEvents);
+  /**
+   * COUNTED IN THE DATABASE, NOT IN NODE.
+   *
+   * This used to be three `select *` — every listing, every property, every
+   * event — pulled across the wire and tallied in JavaScript. Against a local
+   * Postgres that was instant and nobody noticed. Against Supabase it drags
+   * eleven thousand rows, including every description and every `raw` blob,
+   * through a 10-second query timeout and dies:
+   *
+   *   collect failed: DrizzleQueryError … Error: Query read timeout
+   *
+   * The collection had already succeeded. Only the report at the end failed —
+   * and it failed loudly enough, with a stack trace and a non-zero exit, to
+   * look exactly like a failed crawl. A summary that reports a good run as a
+   * broken one is worse than no summary.
+   *
+   * Postgres counts rows for a living. Nothing here needs a single row in Node.
+   */
+  const [totals] = await db
+    .select({
+      listings: sql<number>`count(*)::int`,
+      noPrice: sql<number>`count(*) filter (where ${portalListings.priceEur} is null)::int`,
+      noArea: sql<number>`count(*) filter (where ${portalListings.areaM2} is null)::int`,
+      noRooms: sql<number>`count(*) filter (where ${portalListings.rooms} is null)::int`,
+      noAgency: sql<number>`count(*) filter (where ${portalListings.agencyId} is null)::int`,
+      noAgencyRef: sql<number>`count(*) filter (where ${portalListings.agencyRef} is null)::int`,
+      noCommune: sql<number>`count(*) filter (where ${portalListings.communeInsee} is null)::int`,
+      parseFailed: sql<number>`count(*) filter (where ${portalListings.parseStatus} = 'failed')::int`,
+      parsePartial: sql<number>`count(*) filter (where ${portalListings.parseStatus} = 'partial')::int`,
+    })
+    .from(portalListings);
+
+  const [propTotals] = await db
+    .select({
+      properties: sql<number>`count(*)::int`,
+      multiSource: sql<number>`count(*) filter (where ${properties.sourceCount} > 1)::int`,
+    })
+    .from(properties);
+
+  const [{ events }] = await db
+    .select({ events: sql<number>`count(*)::int` })
+    .from(portalListingEvents);
 
   console.log(`\n── what landed ──`);
-  console.log(`   listings   ${listings.length}`);
-  console.log(`   properties ${props.length}`);
-  console.log(`   events     ${events.length}`);
+  console.log(`   listings   ${totals.listings}`);
+  console.log(`   properties ${propTotals.properties}`);
+  console.log(`   events     ${events}`);
 
-  if (listings.length === 0) return;
+  if (totals.listings === 0) return;
 
-  const nulls = (pick: (l: (typeof listings)[number]) => unknown) =>
-    Math.round((listings.filter((l) => pick(l) === null).length / listings.length) * 100);
+  /**
+   * Null rates matter more than counts. A run that "succeeded" while returning
+   * nulls for two thirds of its prices has not succeeded — and that is exactly
+   * what a partially broken parser looks like from the outside.
+   */
+  const pct = (n: number) => Math.round((n / totals.listings) * 100);
 
   console.log(`\n── missing fields (%) ──`);
-  for (const [label, pick] of [
-    ["price", (l: (typeof listings)[number]) => l.priceEur],
-    ["area", (l: (typeof listings)[number]) => l.areaM2],
-    ["rooms", (l: (typeof listings)[number]) => l.rooms],
-    ["agency", (l: (typeof listings)[number]) => l.agencyId],
-    ["agency ref", (l: (typeof listings)[number]) => l.agencyRef],
-    ["commune", (l: (typeof listings)[number]) => l.communeInsee],
+  for (const [label, missing] of [
+    ["price", totals.noPrice],
+    ["area", totals.noArea],
+    ["rooms", totals.noRooms],
+    ["agency", totals.noAgency],
+    ["agency ref", totals.noAgencyRef],
+    ["commune", totals.noCommune],
   ] as const) {
-    const pct = nulls(pick);
-    console.log(`   ${String(label).padEnd(11)} ${String(pct).padStart(3)}%${pct > 30 ? "  ← look at this" : ""}`);
+    const p = pct(missing);
+    console.log(`   ${label.padEnd(11)} ${String(p).padStart(3)}%${p > 30 ? "  ← look at this" : ""}`);
   }
 
-  const failed = listings.filter((l) => l.parseStatus === "failed").length;
-  const partial = listings.filter((l) => l.parseStatus === "partial").length;
-  if (failed || partial) {
-    console.log(`\n   parse: ${failed} failed, ${partial} partial`);
+  if (totals.parseFailed || totals.parsePartial) {
+    console.log(`\n   parse: ${totals.parseFailed} failed, ${totals.parsePartial} partial`);
   }
 
-  const multi = props.filter((p) => p.sourceCount > 1);
-  if (multi.length > 0) {
+  if (propTotals.multiSource > 0) {
     console.log(`\n── deduplication ──`);
-    console.log(`   ${multi.length} properties seen on more than one portal`);
-    for (const p of multi.slice(0, 5)) {
+    console.log(`   ${propTotals.multiSource} properties seen on more than one portal`);
+
+    const examples = await db
+      .select({ title: properties.title, sourceCount: properties.sourceCount })
+      .from(properties)
+      .where(sql`${properties.sourceCount} > 1`)
+      .orderBy(desc(properties.sourceCount))
+      .limit(5);
+    for (const p of examples) {
       console.log(`   × ${p.sourceCount}  ${(p.title ?? "").slice(0, 60)}`);
     }
   }

@@ -127,6 +127,51 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
   }
 
   const adapter = getAdapter(source.key);
+
+  /**
+   * CLOSE OUT RUNS NOBODY IS GOING TO CLOSE.
+   *
+   * A pass writes `status: 'running'` before it starts and its outcome when it
+   * finishes. A process that dies in between — killed, out of memory, a laptop
+   * lid closed, a runner cancelled — never reaches the second write, and the
+   * row stays `running` for ever. `db/client.ts` names this exact failure:
+   * "that is how jobs end up wedged in 'running' with no error anywhere".
+   *
+   * The dead process cannot fix it, so the next one does. Two such rows were
+   * found on 2026-09-01, three and four days old, left by interrupted local
+   * runs in August and carried into Supabase by the sync. Harmless to the data
+   * and quietly corrosive to every question about what is happening right now.
+   *
+   * Twelve hours rather than "any running row for this source". The scheduler
+   * runs one pass per source at a time, but nothing in the database enforces
+   * that, and somebody running `npm run collect` by hand while the nightly is
+   * out should not have their live run marked failed underneath them. No
+   * legitimate pass has come close: the longest measured is under three hours.
+   */
+  const abandoned = await db
+    .update(portalRuns)
+    .set({
+      status: "error",
+      error: "abandoned — no process ever closed this run",
+      completedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(portalRuns.sourceId, source.id),
+        eq(portalRuns.status, "running"),
+        lt(portalRuns.startedAt, new Date(Date.now() - 12 * 60 * 60 * 1000)),
+      ),
+    )
+    .returning({ id: portalRuns.id, startedAt: portalRuns.startedAt });
+
+  for (const a of abandoned) {
+    console.warn(
+      `[run:${source.key}] closed an abandoned run from ` +
+        `${Math.round((Date.now() - a.startedAt.getTime()) / 3_600_000)}h ago (${a.id}) — ` +
+        `its process died before recording an outcome`,
+    );
+  }
+
   const [run] = await db
     .insert(portalRuns)
     .values({
@@ -302,6 +347,37 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
   });
   /** Discovery: the browser when there is one. */
   const fetcher = useBrowser ? browserFetch : plainFetcher;
+
+  /**
+   * A SITEMAP IS A FILE, NOT A PAGE — fetch it with the plain client even on a
+   * browser source.
+   *
+   * Measured 2026-09-01, first run on a hosted runner:
+   *
+   *   [sitemap] could not read …/smcSitemapAnnouncement-fr-83_1.xml.gz:
+   *             page.goto: Download is starting
+   *
+   * Chromium does not render `.xml.gz`; it downloads it, and `page.goto`
+   * rejects. So SMC's sitemap has never once been read since it became a
+   * browser source — every pass silently fell through to
+   * "sitemap yielded nothing — falling back to index pages" and crawled the
+   * search pages instead.
+   *
+   * That fallback worked, which is why nobody noticed, and it is the expensive
+   * way round in every sense. `sitemap.ts` says why: search pages are what
+   * scrapers hammer, so those are the ones portals protect, while the sitemap
+   * is the enumeration they publish deliberately. We were knocking on the
+   * guarded door while holding an invitation to the open one — and paying forty
+   * paginated requests for what one gzipped file answers.
+   *
+   * The plain client already handles this properly: `fetcher.ts` imports
+   * `gunzipSync` for exactly these URLs.
+   */
+  const SITEMAP_LIKE = /\.(?:xml|gz|xml\.gz)(?:$|[?#])/i;
+  const discoveryFetch: PoliteFetch = (url) => {
+    if (useBrowser && SITEMAP_LIKE.test(url)) return plainFetcher(url);
+    return fetcher(url);
+  };
   /** Ingestion: the browser only when this source needs it there too. */
   const listingFetcher = browserForListingsToo ? fetcher : plainFetcher;
 
@@ -319,7 +395,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
 
     try {
       for await (const item of adapter.discover({
-        fetch: fetcher,
+        fetch: discoveryFetch,
         communeInsee: opts.communeInsee,
         config: source.config,
         incomplete: (insee, reason) => {

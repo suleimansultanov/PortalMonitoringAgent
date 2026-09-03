@@ -153,6 +153,19 @@ function runChild(
      * written into the log file too — a source that simply stops mid-sentence
      * is the least explicable thing a log can contain.
      */
+    /**
+     * A heartbeat for the gaps between progress markers.
+     *
+     * Superimmo waits ten seconds between requests, so fifteen minutes can pass
+     * between two index pages with nothing printed. The markers alone are not
+     * enough to tell a slow source from a stopped one.
+     */
+    const heartbeat = setInterval(
+      () => console.log(`  [nightly] ${sourceKey}: still running, ${Math.round((Date.now() - started) / 60_000)}m`),
+      5 * 60_000,
+    );
+    heartbeat.unref();
+
     let killedAt: string | null = null;
     const timer = setTimeout(() => {
       killedAt = `no result after ${Math.round(timeoutMs / 60_000)} minutes — killed`;
@@ -164,6 +177,21 @@ function runChild(
 
     let summary: SourceOutcome | null = null;
     let tail = "";
+
+    /**
+     * Lines worth echoing to the console as well as to the file.
+     *
+     * The per-source log exists so that seven sources running at once do not
+     * interleave into an unreadable stream. On a hosted runner that produced a
+     * step which prints two lines an hour apart, and a working pass became
+     * indistinguishable from a wedged one — the exact confusion `run.ts`
+     * already fixed once inside discovery, reappearing one level up.
+     *
+     * So the progress markers come back out, prefixed by source. They are
+     * low-volume by design: one line per hundred discovered, one per chunk of
+     * twenty-five fetched.
+     */
+    const PROGRESS = /^\[(?:run|nightly):/;
 
     const consume = (chunk: Buffer, isErr: boolean): void => {
       const text = chunk.toString();
@@ -178,6 +206,9 @@ function runChild(
           } catch {
             /* keep the raw line in the log; the fallback below covers us */
           }
+        } else if (PROGRESS.test(line.trim())) {
+          // Straight through, keeping the source's own prefix.
+          console.log(`  ${line.trim()}`);
         } else if (isErr && line.trim()) {
           // Kept so a child that died without emitting still has something to
           // show in the table rather than only in a file nobody opened.
@@ -191,6 +222,7 @@ function runChild(
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearInterval(heartbeat);
       // Same reason as `tee` above: the child's dying words are the ones that
       // matter, and they are still in the stream's buffer at this point.
       out.end(() => {
@@ -581,7 +613,11 @@ async function main(): Promise<void> {
      */
     console.error(
       `[nightly] NO SOURCES TO COLLECT.\n` +
-        `  Every portal_sources row is disabled, or none matched --sources.\n` +
+        (only
+          ? `  --sources=${only.join(",")} matched nothing.\n` +
+            `  Known keys: ${all.map((s) => s.key).join(", ") || "(none — run npm run db:seed)"}\n` +
+            `  (Pass the key alone: --sources=smc, not --sources=sources=smc.)\n`
+          : `  Every portal_sources row is disabled.\n`) +
         `  Switch the ones you want on:\n` +
         `    update portal_sources set enabled = true where key in ('green-acres', 'figaro');\n` +
         `  Or rehearse without enabling anything: npm run nightly -- --force`,
@@ -658,10 +694,21 @@ async function main(): Promise<void> {
 
   // What the clients actually watch, not what the region constant describes.
   const toResolve = stored === 0 ? [] : await collectionCommunes();
-  if (toResolve.length === 0) {
+
+  /**
+   * Only when the list is empty for the reason this warning describes.
+   *
+   * It fired on the first successful GitHub Actions run and said something
+   * false: every source had been refused, so `toResolve` was empty by the skip
+   * above, and the log then announced a client-configuration problem that did
+   * not exist. A warning that cries wolf on an ordinary bad night is worse than
+   * no warning — the next person to see it, on the night it is true, will
+   * already have learned to skip the line.
+   */
+  if (stored > 0 && toResolve.length === 0) {
     console.warn(
       "[nightly] no active client watches any commune — nothing to cluster. " +
-        "Listings will be collected and left unresolved.",
+        "Listings were collected and left unresolved.",
     );
   }
   for (const insee of toResolve) {
