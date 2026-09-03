@@ -125,6 +125,7 @@ function runChild(
   logFile: string,
   force: boolean,
   timeoutMs: number,
+  communes?: string,
 ): Promise<SourceOutcome> {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -133,6 +134,7 @@ function runChild(
     const script = path.resolve(process.cwd(), "src/lib/portals/nightlyOne.ts");
     const args = ["--import", "tsx", script, `--source=${sourceKey}`];
     if (force) args.push("--force");
+    if (communes) args.push(`--communes=${communes}`);
 
     const child = spawn(process.execPath, args, {
       env: process.env,
@@ -578,6 +580,15 @@ async function main(): Promise<void> {
    */
   const timeoutMs = Math.max(1, Number(arg("timeout") ?? 180) || 180) * 60_000;
   const only = arg("sources")?.split(",").map((s) => s.trim()).filter(Boolean);
+  /**
+   * Passed straight through to each child, unparsed.
+   *
+   * Not a normal night's flag. It is here so the same one-commune probe can be
+   * run from a laptop, a hosted runner and a server, and the three numbers
+   * compared — which is the only way to tell a portal refusing US from a portal
+   * refusing an ADDRESS.
+   */
+  const communes = arg("communes");
 
   const all = await db
     .select({ key: portalSources.key, enabled: portalSources.enabled, config: portalSources.config })
@@ -644,6 +655,7 @@ async function main(): Promise<void> {
         path.join(logDir, `${next.key}.log`),
         force,
         timeoutMs,
+        communes,
       );
       outcomes.push(outcome);
       console.log(

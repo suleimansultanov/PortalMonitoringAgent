@@ -38,6 +38,9 @@ on:
         description: "How many sources at once. 1 is safest; 2 halves the night."
         required: false
         default: "1"
+      communes:
+        description: "Comma-separated INSEE codes. Blank means every subscribed one. Use for a probe, not a night."
+        required: false
 
 concurrency:
   # Never two nights at once. Neither would corrupt anything — the diff and the
@@ -92,6 +95,7 @@ jobs:
         run: |
           ARGS="--parallel=${{ inputs.parallel || '1' }}"
           if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
+          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
           npm run nightly -- $ARGS
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

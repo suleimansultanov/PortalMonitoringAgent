@@ -112,7 +112,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const communes = await communesForSource(source.id);
+  /**
+   * An explicit list narrows the pass; without one it collects what the
+   * clients subscribe to, which is what a night is.
+   *
+   * It exists to make one measurement comparable across hosts. The refusals we
+   * are chasing are per-address, so telling two machines apart means running
+   * the SAME commune from each — and until now the nightly path could only run
+   * all of them, which on a hosted runner is hours. `collect` has taken
+   * --communes since the beginning; this is the same flag, reachable from the
+   * path the scheduler actually uses.
+   */
+  const requested = arg("communes")?.split(",").map((c) => c.trim()).filter(Boolean);
+  const communes = requested?.length ? requested : await communesForSource(source.id);
   if (communes.length === 0) {
     /**
      * Not an error, and not a success either. A source with no subscriber is
