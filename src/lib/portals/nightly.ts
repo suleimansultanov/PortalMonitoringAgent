@@ -5,7 +5,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { portalSources } from "@/lib/db/schema";
+import { portalListings, portalSources } from "@/lib/db/schema";
 import { collectionCommunes, communesForSource } from "./runner/run";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
@@ -732,9 +732,49 @@ async function main(): Promise<void> {
    */
   const scoped = communes?.split(",").map((c) => c.trim()).filter(Boolean);
   const watched = stored === 0 ? [] : await collectionCommunes();
-  const toResolve = scoped?.length
+  const narrowed = scoped?.length
     ? watched.filter((insee) => scoped.includes(insee))
     : watched;
+
+  /**
+   * And of those, only the ones a listing actually moved in.
+   *
+   * `--communes` covers a probe, but a real night names no communes and would
+   * still re-cluster all twelve because four of them got a new listing. The
+   * database already knows which: a row whose `updated_at` is younger than
+   * this pass is a row this pass wrote — an insert, a refresh, or a delisting,
+   * all three of which can change how listings cluster.
+   *
+   * One query, on a column we index, replacing an hour of reading listings
+   * that did not change. If it fails we fall back to the whole list rather
+   * than silently skipping the step: clustering too much is slow, clustering
+   * too little is wrong.
+   */
+  let toResolve = narrowed;
+  if (narrowed.length > 0) {
+    try {
+      const touched = await db
+        .selectDistinct({ insee: portalListings.communeInsee })
+        .from(portalListings)
+        .where(
+          sql`${portalListings.updatedAt} >= ${startedAt} and ${portalListings.communeInsee} is not null`,
+        );
+      const changed = new Set(touched.map((t) => t.insee).filter((i): i is string => i !== null));
+      const skipped = narrowed.filter((insee) => !changed.has(insee));
+      toResolve = narrowed.filter((insee) => changed.has(insee));
+      if (skipped.length > 0) {
+        console.log(
+          `[nightly] ${skipped.length} of ${narrowed.length} communes unchanged tonight — ` +
+            `not re-clustering them (${skipped.join(", ")})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[nightly] could not work out which communes changed (${(err as Error).message}) — ` +
+          `clustering all ${narrowed.length}`,
+      );
+    }
+  }
 
   /**
    * Only when the list is empty for the reason this warning describes.
