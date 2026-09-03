@@ -407,7 +407,19 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
    * The plain client already handles this properly: `fetcher.ts` imports
    * `gunzipSync` for exactly these URLs.
    */
-  const SITEMAP_LIKE = /\.(?:xml|gz|xml\.gz)(?:$|[?#])/i;
+  /**
+   * Gzipped only. Chromium treats a .gz as a download rather than as text, so
+   * a browser source still has to fetch those with the plain client, which
+   * ungzips them.
+   *
+   * This used to catch plain `.xml` as well, and that was wrong in the
+   * expensive direction: a browser renders XML fine, while the portals that
+   * need a browser are exactly the ones that answer 403 to the plain client.
+   * Routing their sitemap.xml around the browser handed it to the one client
+   * guaranteed to be refused — and the refusal reads as the portal declining,
+   * not as us knocking with the wrong hand.
+   */
+  const SITEMAP_LIKE = /\.gz(?:$|[?#])/i;
   const discoveryFetch: PoliteFetch = (url) => {
     if (useBrowser && SITEMAP_LIKE.test(url)) return plainFetcher(url);
     return fetcher(url);

@@ -152,13 +152,19 @@ async function main(): Promise<void> {
     }
 
     /**
-     * Gzipped shards go to the plain client even on a browser source: Chromium
-     * renders a .xml.gz as a download, not as text, and `fetcher.ts` already
-     * ungzips. Same split the collector makes in run.ts.
+     * GZIPPED shards go to the plain client even on a browser source, because
+     * Chromium treats a .gz as a download rather than as text and `fetcher.ts`
+     * already ungzips.
+     *
+     * Only gzipped. The first version of this rule also caught plain `.xml`,
+     * which a browser renders perfectly well — so Figaro's sitemap.xml was
+     * handed to the client Figaro answers 403 to, on a source configured to
+     * use a browser precisely because of that. The result read as "the portal
+     * refuses its own sitemap" and was our own routing.
      */
-    const SITEMAP_LIKE = /\.(?:xml|gz|xml\.gz)(?:$|[?#])/i;
+    const GZIPPED = /\.gz(?:$|[?#])/i;
     const fetch = (url: string): Promise<string> =>
-      session && !SITEMAP_LIKE.test(url) ? session.fetch(url) : plain(url);
+      session && !GZIPPED.test(url) ? session.fetch(url) : plain(url);
 
     const found = rootOverride
       ? [rootOverride]
@@ -192,8 +198,8 @@ async function main(): Promise<void> {
        * basenames is a list of duplicates and there is nothing to pick from —
        * and nothing for --match to match, since it tests the whole URL.
        */
-      console.log(`\n     shards (first 25 of ${shards.length}):`);
-      for (const sm of shards.slice(0, 25)) {
+      console.log(`\n     shards (${shards.length}):`);
+      for (const sm of shards.slice(0, 120)) {
         let path = sm.loc;
         try {
           path = new URL(sm.loc).pathname;
