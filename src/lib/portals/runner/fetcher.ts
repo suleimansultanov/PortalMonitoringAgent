@@ -203,6 +203,22 @@ export type FetcherOptions = {
   extraHeaders?: Record<string, string>;
   /** Retries for transient failures only. Never for 403, 404 or a block. */
   attempts?: number;
+  /**
+   * A SEPARATE, LONGER BUDGET FOR "not this fast".
+   *
+   * A transient failure and a rate limit are different events and deserve
+   * different patience. Three tries is right for a socket that hung up: if it
+   * fails three times it is not going to work. It is wrong for a portal that
+   * answered `Retry-After: 60`, because there we are not retrying a broken
+   * request — we are waiting out a limit the portal itself set, and giving up
+   * after two and a half minutes ignores the instruction we asked for.
+   *
+   * Superimmo on 2026-09-03: two 429s, each with `Retry-After: 60`, honoured
+   * both times, out of attempts on the third. The pass ended with 30 of 191
+   * listings — not because the portal refused us, but because we stopped
+   * waiting first.
+   */
+  rateLimitAttempts?: number;
   timeoutMs?: number;
   /** Injectable for tests. */
   now?: () => number;
@@ -243,6 +259,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
     userAgent = process.env.CRAWLER_USER_AGENT ??
       USER_AGENT,
     attempts = 3,
+    rateLimitAttempts = 6,
     timeoutMs = 20_000,
     now = () => Date.now(),
     sleep = defaultSleep,
@@ -262,7 +279,16 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
     nextAllowedAt = now() + currentDelay;
 
     let lastErr: unknown;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
+    /**
+     * Counted apart from the loop index, because the two budgets are spent on
+     * different things: `attempts` on requests that broke, `rateLimitAttempts`
+     * on a limit we are waiting out. A page rate limited five times has not
+     * failed five times — it has not been served yet.
+     */
+    let rateLimitHits = 0;
+    let brokenRequests = 0;
+    const maxAttempts = Math.max(attempts, rateLimitAttempts);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const res = await doFetch(url, {
           headers: {
@@ -308,14 +334,16 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
            */
           currentDelay = Math.min(Math.max(currentDelay * 1.5, wait), MAX_DELAY_MS);
 
-          if (attempt === attempts) {
+          rateLimitHits += 1;
+          if (rateLimitHits >= rateLimitAttempts) {
             // Not a refusal — a rate we cannot meet right now. The listing
             // fails; the pass carries on at the slower rate.
-            throw new RateLimitedError(url, attempts);
+            throw new RateLimitedError(url, rateLimitHits);
           }
           console.warn(
             `[fetch] 429 at ${url} — waiting ${Math.round(wait / 1000)}s ` +
-              `(pacing now ${Math.round(currentDelay / 1000)}s between requests)`,
+              `(pacing now ${Math.round(currentDelay / 1000)}s between requests, ` +
+              `${rateLimitHits}/${rateLimitAttempts})`,
           );
           await sleep(wait);
           nextAllowedAt = now() + currentDelay;
@@ -344,9 +372,10 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
         // Only ambiguous failures get another attempt.
         if (err instanceof BlockedError) throw err;
         if (err instanceof FetchFailedError && err.status !== null && err.status < 500) throw err;
-        if (attempt === attempts) break;
+        brokenRequests += 1;
+        if (brokenRequests >= attempts) break;
         // Back off, and respect the crawl delay while doing it.
-        await sleep(Math.max(delayMs, 1000) * attempt);
+        await sleep(Math.max(delayMs, 1000) * brokenRequests);
       }
     }
 
