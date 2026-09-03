@@ -24,10 +24,17 @@ on:
     # 01:30 UTC — 02:30 in Paris in winter, 03:30 in summer.
     #
     # Chosen to sit inside LuxuryEstate's 01:00–05:00 CET window in BOTH halves
-    # of the year. The obvious 03:00 UTC does not: in summer that is 05:00 local,
-    # the edge of what they asked for, and the window is enforced in run.ts
-    # rather than merely documented — so the source would be skipped rather than
-    # collected late.
+    # of the year. The obvious 03:00 UTC does not: in summer that is 05:00
+    # local, the edge of what they asked for.
+    #
+    # The schedule is what actually keeps that promise. run.ts WARNS when a
+    # pass falls outside the window and collects anyway — deliberately, so an
+    # operator can override it — which this comment used to claim was a refusal.
+    # It is not. On 2026-09-03 a manual `--source=luxuryestate` ran at 21:00
+    # Paris and the only thing that happened was a line in the log.
+    #
+    # So: this cron line, and nothing else, is why the nightly pass lands inside
+    # the hours they asked for.
     - cron: "30 1 * * *"
   workflow_dispatch:
     inputs:
