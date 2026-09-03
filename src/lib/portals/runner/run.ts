@@ -67,6 +67,24 @@ export type RunOptions = {
    * command, which is the only way a smoke test ever happens.
    */
   force?: boolean;
+  /**
+   * Wait LONGER than the agreed delay, for one pass, from the command line.
+   *
+   * Only upwards. The value joins the Math.max below, so it can never be used
+   * to crawl faster than the stored row or the adapter's declared delay. On two
+   * sources that delay is the term the access rests on, and a flag that could
+   * undercut it would be a way to break an agreement by typo.
+   *
+   * It exists for one question. On 2026-09-03 the same commune, the same code
+   * and the same hour returned 322 listings from a home connection and 84 from
+   * a Nuremberg server, which was refused from the fourth index page onward. A
+   * flat ban on the address would have refused the first page too; a refusal
+   * that arrives on the fourth looks instead like a score accumulating across a
+   * window. If that is what it is, arriving more slowly may be enough — and
+   * answering that needs a delay changeable for one run without touching a row
+   * the nightly pass reads.
+   */
+  minDelayMs?: number;
 };
 
 export type RunSummary = {
@@ -270,8 +288,15 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
    * we did learn.
    */
   const declared = adapter.defaultCrawlDelayMs;
-  const crawlDelayMs = Math.max(source.crawlDelayMs, declared);
-  if (crawlDelayMs !== source.crawlDelayMs) {
+  const requested = Number(opts.minDelayMs) > 0 ? Number(opts.minDelayMs) : 0;
+  const crawlDelayMs = Math.max(source.crawlDelayMs, declared, requested);
+  if (requested > 0 && crawlDelayMs === requested) {
+    console.log(`[run:${source.key}] crawl delay raised to ${requested / 1000}s for this pass only`);
+  }
+  // Compared against `declared`, not the effective delay: a --delay on the
+  // command line raises the latter for one pass and is not a row that has
+  // drifted, so it must not be reported as one.
+  if (declared !== source.crawlDelayMs) {
     console.warn(
       `[run:${source.key}] the stored crawl delay is ${source.crawlDelayMs}ms but this ` +
         `adapter asks for ${declared}ms — using ${declared}ms. ` +

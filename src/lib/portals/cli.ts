@@ -22,6 +22,7 @@ import { listAdapters } from "./registry";
  *
  *   npm run collect -- --source=smc --limit=20
  *   npm run collect -- --source=all
+ *   npm run collect -- --source=figaro --communes=83119 --delay=20
  *
  * The point of this existing separately from the scheduled path: the first run
  * against a live portal is where the surprises are, and you want to watch it
@@ -36,6 +37,8 @@ type Args = {
   communes?: string[];
   /** Take the N communes this source has gone longest without collecting. */
   stale?: number;
+  /** Seconds between requests, for this pass only. Raises, never lowers. */
+  delay?: number;
   skipResolve: boolean;
 };
 
@@ -46,12 +49,14 @@ function parseArgs(argv: string[]): Args {
   const limitRaw = get("limit");
   const communesRaw = get("communes");
   const staleRaw = get("stale");
+  const delayRaw = get("delay");
 
   return {
     source: get("source") ?? "all",
     limit: limitRaw ? Number(limitRaw) : undefined,
     communes: communesRaw ? communesRaw.split(",").map((c) => c.trim()) : undefined,
     stale: staleRaw ? Number(staleRaw) : undefined,
+    delay: delayRaw ? Number(delayRaw) : undefined,
     skipResolve: argv.includes("--skip-resolve"),
   };
 }
@@ -106,6 +111,10 @@ export async function collect(args: Args): Promise<void> {
       communeInsee: communes,
       mode: args.limit ? "manual" : "backfill",
       limit: args.limit,
+      // Seconds on the command line, milliseconds inside. Seconds because the
+      // thing being chosen is "how long to wait", and nobody thinks about that
+      // in thousandths.
+      minDelayMs: args.delay ? args.delay * 1000 : undefined,
       // Named on the command line means run it. The flag guards the scheduler.
       force: true,
     });
