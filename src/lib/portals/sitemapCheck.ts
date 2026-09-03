@@ -10,7 +10,8 @@ import { isSitemapIndex, parseSitemap, parseSitemapIndex, type SitemapEntry } fr
  *
  *   npm run sitemap:check
  *   npm run sitemap:check -- --source=figaro --shards=3
- *   npm run sitemap:check -- --source=green-acres --match=listing
+ *   npm run sitemap:check -- --source=green-acres --match=/listing/
+ *   npm run sitemap:check -- --source=figaro --root=https://proprietes.lefigaro.fr/sitemap.xml
  *
  * A sitemap that dates its entries honestly would let a night ask one question
  * — "what changed since yesterday?" — instead of walking a hundred index pages
@@ -106,6 +107,16 @@ async function main(): Promise<void> {
   const shardLimit = Math.max(0, Number(arg("shards") ?? 2) || 2);
   /** Substring a shard URL must contain to be opened. */
   const match = arg("match")?.toLowerCase();
+  /**
+   * A sitemap URL to read instead of discovering one.
+   *
+   * Figaro answers 403 to /robots.txt for us — browser or not — so discovery
+   * finds nothing and the source looks like it publishes no sitemap. Their
+   * robots.txt was read by hand on 2026-08-30 and its contents are quoted in
+   * the source's permission note, which is where a root can come from when the
+   * automatic route is closed.
+   */
+  const rootOverride = arg("root");
 
   const sources = await db.select().from(portalSources);
   const targets = only ? sources.filter((s) => s.key === only) : sources;
@@ -149,7 +160,9 @@ async function main(): Promise<void> {
     const fetch = (url: string): Promise<string> =>
       session && !SITEMAP_LIKE.test(url) ? session.fetch(url) : plain(url);
 
-    const found = await roots(source.baseUrl, cfg.sitemap as string | undefined, fetch);
+    const found = rootOverride
+      ? [rootOverride]
+      : await roots(source.baseUrl, cfg.sitemap as string | undefined, fetch);
     if (found.length === 0) {
       console.log(`   no sitemap in config and none declared in robots.txt`);
       continue;
@@ -173,9 +186,21 @@ async function main(): Promise<void> {
       const shards = parseSitemapIndex(xml);
       describe(`index of ${shards.length} shards — dates ON THE SHARDS`, shards);
 
-      console.log(`\n     shards (first 20 of ${shards.length}):`);
-      for (const sm of shards.slice(0, 20)) {
-        console.log(`       ${sm.loc.split("/").pop()}`);
+      /**
+       * Paths, not filenames. Green-Acres names every listing shard `1.xml.gz`,
+       * `2.xml.gz` and so on inside different directories, so a list of
+       * basenames is a list of duplicates and there is nothing to pick from —
+       * and nothing for --match to match, since it tests the whole URL.
+       */
+      console.log(`\n     shards (first 25 of ${shards.length}):`);
+      for (const sm of shards.slice(0, 25)) {
+        let path = sm.loc;
+        try {
+          path = new URL(sm.loc).pathname;
+        } catch {
+          /* keep the raw value; a malformed loc is worth seeing as it is */
+        }
+        console.log(`       ${path}`);
       }
 
       /**
