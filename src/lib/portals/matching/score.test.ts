@@ -500,3 +500,42 @@ test("but rounding between portals is not a disagreement", () => {
 
   assert.equal(scoreMatch(a, b).same, true);
 });
+
+test("two agencies measuring one villa differently still merge when the plot agrees", () => {
+  // Ramatuelle, 19 500 000 €: Michaël Zingraf says 430 m² on 11 000 m², Côte
+  // d'Azur Sotheby's says 400 m² on 10 653 m². One villa, two mandates.
+  const zingraf = candidate({
+    id: "a",
+    description: LONG_TEXT,
+    priceEur: 19_500_000,
+    areaM2: 430,
+    landM2: 11_000,
+  });
+  const sothebys = candidate({
+    id: "b",
+    sourceId: "s2",
+    description: LONG_TEXT,
+    priceEur: 19_500_000,
+    areaM2: 400,
+    landM2: 10_653,
+  });
+
+  assert.equal(scoreMatch(zingraf, sothebys).same, true);
+});
+
+test("without a plot to corroborate it, the same gap still splits", () => {
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 430 });
+  const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 400 });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.areaConflict, true);
+});
+
+test("an agreeing plot does not excuse a floor area from another house", () => {
+  // 480 against 355 at one price is the Ramatuelle weld that started this.
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 5_300_000, areaM2: 480, landM2: 13_000 });
+  const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 5_300_000, areaM2: 355, landM2: 13_100 });
+
+  assert.equal(scoreMatch(a, b).same, false);
+});

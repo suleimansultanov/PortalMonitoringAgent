@@ -66,6 +66,13 @@ export type MatchVerdict = {
 const AREA_TOLERANCE = 0.03;
 /** A flat's area is measured under the Carrez law, so it needs less room. */
 const FLAT_AREA_TOLERANCE = 0.015;
+/**
+ * And what a house's floor area is allowed to differ by once the plot under it
+ * has already agreed. Two agencies measure a villa differently — habitable,
+ * with the annexes, with the covered terrace — and the difference is a few per
+ * cent of a large number.
+ */
+const AREA_TOLERANCE_WITH_LAND = 0.1;
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
 /**
@@ -241,12 +248,43 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
    */
   if (a.areaM2 !== null && b.areaM2 !== null) {
     const delta = Math.abs(a.areaM2 - b.areaM2) / Math.max(a.areaM2, b.areaM2);
-    const tolerance = isFlat(a.propertyType) || isFlat(b.propertyType) ? FLAT_AREA_TOLERANCE : AREA_TOLERANCE;
+
+    /**
+     * The band widens when the PLOT agrees.
+     *
+     * Ramatuelle, 19 500 000 €, found on 2026-09-04: Michaël Zingraf publishes
+     * 430 m² on 11 000 m² of land, Côte d'Azur Sotheby's publishes 400 m² on
+     * 10 653 m², and the second one's own description says "terrain 11 000 m²".
+     * One villa, two agencies, two ways of measuring the same house — and a
+     * flat 3% rule split it in two.
+     *
+     * Two agencies inventing the same price to the euro AND the same plot to
+     * within a few hundred square metres, in the same commune, by coincidence,
+     * is not a thing that happens. When the plot corroborates, the floor area
+     * is allowed to disagree the way agencies actually disagree about floor
+     * area — which is by a few per cent of a big number, not by a third.
+     *
+     * Without that corroboration the narrow band stands, and it is what keeps
+     * 480 m² away from 355 m² at the same price.
+     */
+    const landKnown = a.landM2 !== null && b.landM2 !== null;
+    const landAgrees =
+      landKnown &&
+      Math.abs(a.landM2! - b.landM2!) / Math.max(a.landM2!, b.landM2!) <= LAND_TOLERANCE;
+
+    const flat = isFlat(a.propertyType) || isFlat(b.propertyType);
+    const tolerance = flat
+      ? FLAT_AREA_TOLERANCE
+      : landAgrees
+        ? AREA_TOLERANCE_WITH_LAND
+        : AREA_TOLERANCE;
+
     if (delta > tolerance) {
       signals.areaClose = false;
       signals.areaConflict = true;
       return { same: false, confidence: 0, signals };
     }
+    if (landAgrees) signals.landClose = true;
   }
 
   // ── 2b. The measurements, for when the prose cannot speak ──────────────
