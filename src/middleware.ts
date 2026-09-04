@@ -20,14 +20,20 @@ export const config = {
    * Everything except next-auth's own endpoints, the login page, the Inngest
    * webhook (it authenticates with a signing key and has no cookie), the
    * client-instance API (it authenticates with a key, and the lookup needs a
-   * database this edge runtime cannot reach — see lib/api/guard.ts) and static
-   * assets.
+   * database this edge runtime cannot reach — see lib/api/guard.ts), the API
+   * documentation, and static assets.
+   *
+   * `docs` is public deliberately. It describes an API that cannot be used
+   * without a key and contains no market data of its own — while the people who
+   * need it are developers building a client instance, who by definition have
+   * no account on this deployment. Documentation nobody can read is
+   * documentation that drifts.
    *
    * Note this is a denylist of paths to SKIP, not an allowlist of paths to
    * protect. A new screen is guarded the moment it exists, without anyone
    * touching this line — which is the whole point.
    */
   matcher: [
-    "/((?!api/auth|api/inngest|api/v1|login|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|txt|xml)$).*)",
+    "/((?!api/auth|api/inngest|api/v1|docs|login|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|txt|xml)$).*)",
   ],
 };
