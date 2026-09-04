@@ -96,6 +96,9 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       imageUrl: portalListings.imageUrl,
       imageUrls: portalListings.imageUrls,
       propertyId: portalListings.propertyId,
+      /** Read so a write that would change nothing can be recognised and skipped. */
+      matchConfidence: portalListings.matchConfidence,
+      matchSignals: portalListings.matchSignals,
       propertyType: portalListings.propertyType,
       landM2: portalListings.landM2,
       firstSeenAt: portalListings.firstSeenAt,
@@ -223,10 +226,81 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * earlier over-merge across commune boundaries — and must not be reused here.
    */
   const ownRows = await db
-    .select({ id: properties.id })
+    .select({
+      id: properties.id,
+      title: properties.title,
+      description: properties.description,
+      priceEur: properties.priceEur,
+      areaM2: properties.areaM2,
+      landM2: properties.landM2,
+      rooms: properties.rooms,
+      bedrooms: properties.bedrooms,
+      imageUrl: properties.imageUrl,
+      imageUrls: properties.imageUrls,
+      propertyType: properties.propertyType,
+      communeInsee: properties.communeInsee,
+      agencyId: properties.agencyId,
+      agencyRef: properties.agencyRef,
+      sourceCount: properties.sourceCount,
+      status: properties.status,
+      firstListedAt: properties.firstListedAt,
+      lastSeenAt: properties.lastSeenAt,
+    })
     .from(properties)
     .where(eq(properties.communeInsee, communeInsee));
   const ownedByThisCommune = new Set(ownRows.map((r) => r.id));
+  /** The rows as they stand, so a write that would change nothing can be skipped. */
+  const storedProperties = new Map(ownRows.map((r) => [r.id, r]));
+
+  /**
+   * WRITING ONLY WHAT CHANGED.
+   *
+   * This step used to issue one statement per property and one per listing,
+   * sequentially: about 2500 round trips for a commune of 1456 listings. From a
+   * runner in the United States to a database in Ireland that is a quarter of a
+   * second each, and it measured at eleven minutes per commune — 112 of the
+   * 131-minute night of 2026-09-04, against nineteen minutes of actual
+   * collection.
+   *
+   * Almost none of those writes changed anything. That night stored 32 new
+   * listings out of eleven thousand; the other ~2470 statements set columns to
+   * the values already in them. `last_seen_at` only moves for a listing that
+   * was actually fetched, so an untouched property really is byte-identical
+   * from one night to the next, and comparing is cheap and safe.
+   *
+   * The comparison must err towards writing. A false "unchanged" leaves a stale
+   * row and is invisible; a false "changed" costs one statement. So every
+   * column that gets written is compared, and anything unrecognised compares
+   * unequal.
+   */
+  const sameValue = (a: unknown, b: unknown): boolean => {
+    if (a === b) return true;
+    if (a == null || b == null) return a == null && b == null;
+    if (a instanceof Date || b instanceof Date) {
+      const ta = a instanceof Date ? a.getTime() : new Date(String(a)).getTime();
+      const tb = b instanceof Date ? b.getTime() : new Date(String(b)).getTime();
+      return Number.isFinite(ta) && Number.isFinite(tb) && ta === tb;
+    }
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+      return a.every((v, i) => sameValue(v, b[i]));
+    }
+    if (typeof a === "object" || typeof b === "object") {
+      try {
+        return JSON.stringify(a) === JSON.stringify(b);
+      } catch {
+        return false;
+      }
+    }
+    // Numeric columns come back as strings from pg; compare on the string form
+    // so 3 and "3" do not read as a change every single night.
+    return String(a) === String(b);
+  };
+
+  let propertyWrites = 0;
+  let propertyNoops = 0;
+  let listingWrites = 0;
+  let listingNoops = 0;
 
   /**
    * Biggest group first, so when a cluster splits the dominant half keeps the
@@ -296,28 +370,57 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
 
     let propertyId: string;
     if (existingId) {
-      await db.update(properties).set(values).where(eq(properties.id, existingId));
+      const stored = storedProperties.get(existingId);
+      // `updatedAt` is excluded deliberately: it is set BY the write, so
+      // including it would make every row differ from itself and skip nothing.
+      const unchanged =
+        stored !== undefined &&
+        (Object.keys(values) as (keyof typeof values)[]).every(
+          (k) => k === "updatedAt" || sameValue(values[k], (stored as Record<string, unknown>)[k]),
+        );
+      if (unchanged) {
+        propertyNoops += 1;
+      } else {
+        await db.update(properties).set(values).where(eq(properties.id, existingId));
+        propertyWrites += 1;
+      }
       propertyId = existingId;
     } else {
       const [created] = await db.insert(properties).values(values).returning({ id: properties.id });
       propertyId = created.id;
+      propertyWrites += 1;
     }
 
     for (const row of group) {
       const evidence = bestSignals.get(row.id);
+      // A single-listing group has nothing to be confident about — it is a
+      // property by default, not by evidence. Recording 1.0 there would make
+      // "confidence" meaningless the moment anyone filtered on it.
+      const matchConfidence = group.length > 1 ? String(evidence?.confidence ?? 1) : null;
+      const matchSignals = group.length > 1 ? (evidence?.signals ?? {}) : null;
+
+      if (
+        row.propertyId === propertyId &&
+        sameValue(row.matchConfidence, matchConfidence) &&
+        sameValue(row.matchSignals, matchSignals)
+      ) {
+        listingNoops += 1;
+        continue;
+      }
+
       await db
         .update(portalListings)
-        .set({
-          propertyId,
-          // A single-listing group has nothing to be confident about — it is a
-          // property by default, not by evidence. Recording 1.0 there would
-          // make "confidence" meaningless the moment anyone filtered on it.
-          matchConfidence: group.length > 1 ? String(evidence?.confidence ?? 1) : null,
-          matchSignals: group.length > 1 ? (evidence?.signals ?? {}) : null,
-          updatedAt: new Date(),
-        })
+        .set({ propertyId, matchConfidence, matchSignals, updatedAt: new Date() })
         .where(eq(portalListings.id, row.id));
+      listingWrites += 1;
     }
+  }
+
+  if (propertyNoops + listingNoops > 0) {
+    console.log(
+      `[resolve] ${communeInsee}: wrote ${propertyWrites} properties and ${listingWrites} listings; ` +
+        `${propertyNoops + listingNoops} rows were already correct and left alone`,
+    );
   }
 
   /**
