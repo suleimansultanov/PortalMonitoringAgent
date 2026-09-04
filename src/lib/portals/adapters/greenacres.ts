@@ -240,6 +240,27 @@ export const greenAcresAdapter: PortalAdapter = {
     // `icon-room` in the summary pills.
     listing.areaM2 = surface(byIcon($, ["habitablesurface", "advertsurface"]));
     listing.landM2 = surface(byIcon($, ["landsurface"]));
+
+    /**
+     * A PLOT HAS NO FLOOR AREA, and `advertsurface` is its size.
+     *
+     * The fallback above is right for a house: where the page omits
+     * `habitablesurface`, `advertsurface` carries the same number. A terrain has
+     * no habitable surface at all — there is no building — so the fallback picks
+     * up the size of the LAND and files it as living space.
+     *
+     * Forty-one listings were like this on 2026-09-04, and the fault is invisible
+     * from the value: 6922 m² is exactly what a building plot in Grimaud has. It
+     * shows up in the price per square metre, which comes out twenty times too
+     * low and is then averaged into the client's report.
+     *
+     * The type comes from the URL path a few lines down, which is why this reads
+     * the URL directly rather than waiting for it.
+     */
+    if (/\/(terrain|terrains|land)\//i.test(url) && listing.areaM2 !== null) {
+      listing.landM2 ??= listing.areaM2;
+      listing.areaM2 = null;
+    }
     listing.rooms = count(byIcon($, ["advertrooms", "room"]));
     listing.bedrooms = count(byIcon($, ["advertbedrooms", "bedroom"]));
 

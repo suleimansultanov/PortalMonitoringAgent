@@ -224,24 +224,80 @@ export const etreproprioAdapter: PortalAdapter = {
  * rather than class names: labels like "412 m²" and "8 chambres" survive a
  * restyle, whereas `.caracteristiques span:nth-child(2)` does not.
  */
+/**
+ * The two numbers with "m²" in an advert, told apart.
+ *
+ * Every listing here carries a floor area and a plot size in the same prose,
+ * and putting the plot in the floor-area column is not a visible fault: 2168 is
+ * an ordinary number, nothing rejects it, and the price per square metre it
+ * produces is wrong by a factor of twenty while looking entirely normal. Ninety
+ * eight listings were like this on 2026-09-04.
+ *
+ * Two things went wrong, and they are separate.
+ *
+ * THE PLOT IS NOT ALWAYS NAMED FIRST. The old pattern matched "Terrain de
+ * 11 479 m²" — the word, then the number. Agencies write it the other way round
+ * at least as often: "villa T3 sur 2168 m² de terrain", "sur un terrain de 900
+ * m²", "10 000 m² de terrain". Unmatched means uncut, and the first "N m²" left
+ * in the text is then the plot.
+ *
+ * A NUMBER MUST NOT START IN THE MIDDLE OF A WORD. French writes thousands with
+ * a space — "11 479 m²" — so the pattern has to allow a space inside a number.
+ * In "maison t6 110m²" that turns "6", space, "110" into 6110. The guard is
+ * that a number may not begin immediately after a letter or a digit.
+ *
+ * AND IT MUST START WITH A DIGIT. This is the one that had been running in
+ * production: the character class allowed a comma, so in "…de terrain, 95 m²"
+ * the match began at the comma and the value read back was ", 95" — which the
+ * number parser, seeing a comma, took for a decimal separator. 0.95 m².
+ *
+ * That is where the impossible areas in the data came from: 0,655 for a house
+ * of 655 m², 0,2006 for 200,6, 0,12 for 12. They looked like a unit confusion
+ * — ares against square metres — and they were a regular expression eating the
+ * punctuation in front of the number.
+ */
+export function sizesFromText(text: string): {
+  areaM2: number | null;
+  landM2: number | null;
+  remainder: string;
+} {
+  /** "terrain de 900 m²" and "900 m² de terrain", in that order of preference. */
+  const LAND_PATTERNS = [
+    /terrain\s*(?:de\s*)?(?<![\p{L}\d])(\d[\d\s.,]*\d|\d)\s*m²/iu,
+    /(?<![\p{L}\d])(\d[\d\s.,]*\d|\d)\s*m²\s*(?:de\s*)?(?:terrain|parcelle|jardin)/iu,
+    /sur\s*(?:un\s*terrain\s*de\s*)?(?<![\p{L}\d])(\d[\d\s.,]*\d|\d)\s*m²\s*(?:de\s*terrain)/iu,
+  ];
+
+  let landM2: number | null = null;
+  let remainder = text;
+  for (const pattern of LAND_PATTERNS) {
+    const m = remainder.match(pattern);
+    if (!m) continue;
+    const n = num(m[1]);
+    if (n === null || n <= 0) continue;
+    landM2 = n;
+    remainder = remainder.replace(m[0], " ");
+    break;
+  }
+
+  const area = remainder.match(/(?<![\p{L}\d])(\d[\d\s.,]*\d|\d)\s*m²/u);
+  const areaM2 = area ? num(area[1]) : null;
+
+  return {
+    areaM2: areaM2 !== null && areaM2 > 0 ? areaM2 : null,
+    landM2,
+    remainder,
+  };
+}
+
 function applyDomFields(html: string, listing: RawListing): void {
   const $ = cheerio.load(html);
   const text = $("body").text().replace(/\s+/g, " ");
 
-  // Land area is stated as "Terrain 11 479 m²" — match it first and cut it out,
-  // so the living-area pattern cannot pick it up by accident.
-  const land = text.match(/terrain\s*(?:de\s*)?([\d\s.,]+)\s*m²/i);
-  if (land) {
-    const n = num(land[1]);
-    if (n !== null && n > 0) listing.landM2 = n;
-  }
-  const withoutLand = land ? text.replace(land[0], " ") : text;
-
-  const area = withoutLand.match(/([\d\s.,]+)\s*m²/);
-  if (area) {
-    const n = num(area[1]);
-    if (n !== null && n > 0) listing.areaM2 = n;
-  }
+  const sizes = sizesFromText(text);
+  if (sizes.landM2 !== null) listing.landM2 = sizes.landM2;
+  if (sizes.areaM2 !== null) listing.areaM2 = sizes.areaM2;
+  const withoutLand = sizes.remainder;
 
   const rooms = withoutLand.match(/(\d+)\s*pièces?/i);
   if (rooms) listing.rooms = Number(rooms[1]);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { etreproprioAdapter } from "./etreproprio";
+import { etreproprioAdapter, sizesFromText } from "./etreproprio";
 import { resolveCommune } from "../communes";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -224,4 +224,53 @@ test("a page of nothing but neighbours does not read as the end of the commune",
 
   assert.equal(out.length, 2, "the listing on page three has to survive page two");
   assert.ok(out.some((u) => u.includes("immobilier-4-")));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TELLING THE FLOOR AREA FROM THE PLOT
+//
+// Ninety-eight listings across two portals were storing the plot as the floor
+// area on 2026-09-04. Nothing rejects 2168 m²; it is an ordinary number. It
+// shows up only in the price per square metre, twenty times too low, averaged
+// into a client's report.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("the plot named AFTER its number is still the plot", () => {
+  // "Sainte Maxime Villa T3 avec logement T2 indépendant sur 2168 m² de terrain"
+  const s = sizesFromText(
+    "Sainte Maxime Villa T3 avec logement T2 indépendant sur 2168 m² de terrain, 95 m² habitables",
+  );
+  assert.equal(s.landM2, 2168);
+  assert.equal(s.areaM2, 95);
+});
+
+test("the plot named BEFORE its number still works", () => {
+  const s = sizesFromText("Villa de 240 m² sur un terrain de 1 100 m²");
+  assert.equal(s.landM2, 1100);
+  assert.equal(s.areaM2, 240);
+});
+
+test("a number may not start in the middle of a word", () => {
+  // "maison t6 110m²" was read as 6110 m², because French writes thousands with
+  // a space and the pattern had to allow one inside a number.
+  const s = sizesFromText("A vendre : maison t6 110m² - grimaud");
+  assert.equal(s.areaM2, 110);
+});
+
+test("a French thousands separator is still a thousands separator", () => {
+  const s = sizesFromText("Propriété de 1 250 m² au calme");
+  assert.equal(s.areaM2, 1250);
+});
+
+test("a comma in front of the number is punctuation, not a decimal point", () => {
+  // This one was live: "…de terrain, 95 m²" matched from the comma, and the
+  // number parser read ", 95" as 0.95. It is where the 0,655 m² house and the
+  // 0,2006 m² house in the data came from.
+  const s = sizesFromText("Villa sur 2168 m² de terrain, 95 m² habitables");
+  assert.equal(s.areaM2, 95);
+});
+
+test("a real decimal is still a decimal", () => {
+  const s = sizesFromText("Appartement de 47,25 m² au centre");
+  assert.equal(s.areaM2, 47.25);
 });
