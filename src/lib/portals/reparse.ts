@@ -141,7 +141,29 @@ export async function reparse(args: Args): Promise<void> {
     let failed = 0;
     const changes = new Map<string, number>();
 
+    /**
+     * A line every hundred pages.
+     *
+     * Pages come back from object storage one at a time — a few tenths of a
+     * second each, and Green-Acres pages are 815 kB — so a source takes ten or
+     * twenty minutes. A run that prints nothing for twenty minutes is
+     * indistinguishable from a run that has hung, and the first thing anyone
+     * does is kill it and lose the work.
+     */
+    const startedAt = Date.now();
+    let seen = 0;
+
     for (const row of rows) {
+      seen += 1;
+      if (seen % 100 === 0) {
+        const secs = (Date.now() - startedAt) / 1000;
+        const rate = seen / secs;
+        const left = Math.round((rows.length - seen) / Math.max(rate, 0.01));
+        console.log(
+          `  ${source.key}: ${seen}/${rows.length}  ${updated} changed  ` +
+            `~${Math.max(left, 0)}s left`,
+        );
+      }
       const html = await findPage(source.id, row.externalId);
       if (!html) {
         missing++;
