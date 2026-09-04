@@ -63,6 +63,8 @@ async function main(): Promise<void> {
       areaM2: portalListings.areaM2,
       landM2: portalListings.landM2,
       rooms: portalListings.rooms,
+      bedrooms: portalListings.bedrooms,
+      propertyType: portalListings.propertyType,
       agencyId: portalListings.agencyId,
       agencyRef: portalListings.agencyRef,
       title: portalListings.title,
@@ -111,6 +113,8 @@ async function main(): Promise<void> {
       areaM2: r.areaM2 === null ? null : Number(r.areaM2),
       landM2: r.landM2 === null ? null : Number(r.landM2),
       rooms: r.rooms,
+      bedrooms: r.bedrooms,
+      propertyType: r.propertyType,
       agencyId: r.agencyId,
       agencyRef: r.agencyRef,
       title: r.title,
@@ -158,7 +162,9 @@ async function main(): Promise<void> {
       const m = ids.map((id) => byId.get(id)!);
       const out = new Set([
         ...incoherentMembers(m.map((x) => ({ id: x.id, priceEur: x.priceEur }))),
-        ...incoherentAreas(m.map((x) => ({ id: x.id, areaM2: x.areaM2 }))),
+        ...incoherentAreas(
+          m.map((x) => ({ id: x.id, areaM2: x.areaM2, propertyType: x.propertyType })),
+        ),
       ]);
       if (out.size === 0) continue;
       sizes.set(

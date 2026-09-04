@@ -17,6 +17,8 @@ export type Candidate = {
   areaM2: number | null;
   landM2: number | null;
   rooms: number | null;
+  bedrooms: number | null;
+  propertyType: string | null;
   agencyId: string | null;
   agencyRef: string | null;
   title: string | null;
@@ -40,6 +42,8 @@ export type MatchSignals = {
   textTooShort?: boolean;
   /** Prices too far apart to be one property, whatever the text says. */
   priceConflict?: boolean;
+  /** Floor areas too far apart to be one property, beyond how portals round. */
+  areaConflict?: boolean;
   /** Plots that disagree. Two listings on different land are different homes. */
   landConflict?: boolean;
   /**
@@ -60,6 +64,8 @@ export type MatchVerdict = {
 
 /** Portals round floor area differently — 240,62 becomes 241 or 240. */
 const AREA_TOLERANCE = 0.03;
+/** A flat's area is measured under the Carrez law, so it needs less room. */
+const FLAT_AREA_TOLERANCE = 0.015;
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
 /**
@@ -110,6 +116,30 @@ const MIN_SHINGLES = 12;
  * because they are words. A bare date is excluded too: "2025-09-12" has digits
  * and is still not a key.
  */
+/**
+ * Is this an apartment rather than a house?
+ *
+ * The distinction earns its place because a DEVELOPMENT breaks every rule this
+ * file relies on. Résidence Patio Ruben, Saint-Tropez, found on 2026-09-04:
+ * thirty-four listings across six portals became one property, and inside it
+ * were at least two different flats — a T3 of 81 m² at 2 350 000 € and a T4 of
+ * 85 m² at 2 450 000 €.
+ *
+ * Nothing in the prose separates them. The developer writes one description for
+ * the whole building, so text containment between two different flats is 1.0 —
+ * not a near-miss, a perfect score. Nothing in the measurements separates them
+ * either, once the areas are four square metres apart.
+ *
+ * A villa is unique; a flat in a block is one of many that are alike by design.
+ * So flats get two extra tests below, and the type has to be known to apply
+ * them. Each portal names the type in its own language, which is why this is a
+ * pattern and not an enum.
+ */
+export function isFlat(propertyType: string | null): boolean {
+  if (!propertyType) return false;
+  return /appart|apartment|flat|studio|duplex|loft|penthouse|triplex/i.test(propertyType);
+}
+
 export function looksLikeMandateRef(ref: string): boolean {
   const value = ref.trim();
   if (value.length < 3) return false;
@@ -149,6 +179,74 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   if (a.communeInsee && b.communeInsee && a.communeInsee !== b.communeInsee) {
     signals.communeConflict = true;
     return { same: false, confidence: 0, signals };
+  }
+
+  // ── 2a. The price is the identity ──────────────────────────────────────
+  /**
+   * TWO PRICES THAT DIFFER ARE TWO PROPERTIES. No exceptions below this line.
+   *
+   * The rule used to be softer, and the reasoning was sound in isolation: an
+   * agency updates one portal and forgets another, so the same villa genuinely
+   * sits at two prices for a fortnight, and vetoing on price would split
+   * exactly the properties whose price history is most worth having. The text
+   * rules therefore tolerated a gap of up to a third.
+   *
+   * What that reasoning missed is the development. Résidence Patio Ruben,
+   * Saint-Tropez, found on 2026-09-04: thirty-four listings across six portals
+   * in one property, holding at least two different flats — 81 m² at
+   * 2 350 000 € and 85 m² at 2 450 000 €. The developer writes ONE description
+   * for the whole building, so the text similarity between two different flats
+   * is not a near-miss, it is a perfect 1.0. Nothing in the prose can ever
+   * separate them, and the only thing that does is the asking price: a
+   * development prices a unit by its floor, its view, which way the terrace
+   * faces.
+   *
+   * So price equality is now a precondition for every merge except one, and
+   * the cost is accepted deliberately: a villa carrying a stale price on one
+   * portal will show as two cards until that portal catches up. That is a
+   * visible duplicate, which is the failure this project has always preferred
+   * — a wrong split shows something twice, a wrong merge hides it entirely.
+   *
+   * THE EXCEPTION IS THE MANDATE REFERENCE, and it is above this block rather
+   * than inside it: same agency, same mandate number is the agency itself
+   * telling us these are one property, and a price that has not been updated
+   * does not outrank that.
+   */
+  if (a.priceEur !== null && b.priceEur !== null && a.priceEur !== b.priceEur) {
+    signals.priceConflict = true;
+    signals.priceDelta = round(
+      Math.abs(a.priceEur - b.priceEur) / Math.max(a.priceEur, b.priceEur),
+    );
+    return { same: false, confidence: 0, signals };
+  }
+
+  // ── 2a bis. And the floor area ─────────────────────────────────────────
+  /**
+   * A DISAGREEING FLOOR AREA VETOES TOO, on the same footing as the price.
+   *
+   * Same reasoning, same building: the flats in a development share their
+   * description, and what separates them is the price and the size. Requiring
+   * both to agree is what makes "the text says they are the same" safe again.
+   *
+   * NOT exact to the square metre, and that is not a compromise — it is what
+   * the data is. One villa in Ramatuelle is published as 344,94 m² by the
+   * portal that read the mandate, 345 by the portal that rounded it and 350 by
+   * the portal that copied the headline. Demanding an exact match there would
+   * split one house into three properties, which is the failure we are trying
+   * to remove, not a stricter version of the rule.
+   *
+   * So: agreement inside the rounding, and nothing wider. Three per cent of a
+   * villa is a few square metres; a flat gets half that, because a flat's area
+   * is measured under the Carrez law and quoted identically everywhere.
+   */
+  if (a.areaM2 !== null && b.areaM2 !== null) {
+    const delta = Math.abs(a.areaM2 - b.areaM2) / Math.max(a.areaM2, b.areaM2);
+    const tolerance = isFlat(a.propertyType) || isFlat(b.propertyType) ? FLAT_AREA_TOLERANCE : AREA_TOLERANCE;
+    if (delta > tolerance) {
+      signals.areaClose = false;
+      signals.areaConflict = true;
+      return { same: false, confidence: 0, signals };
+    }
   }
 
   // ── 2b. The measurements, for when the prose cannot speak ──────────────
@@ -200,7 +298,8 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
         ? Math.abs(a.landM2! - b.landM2!) / Math.max(a.landM2!, b.landM2!)
         : null;
 
-      if (a.priceEur === b.priceEur && areaDelta <= AREA_TOLERANCE) {
+      // Both already checked above — a disagreement on either never gets here.
+    if (a.priceEur === b.priceEur && areaDelta <= AREA_TOLERANCE) {
         if (landDelta !== null && landDelta > LAND_TOLERANCE) {
           signals.landConflict = true;
         } else {
@@ -275,15 +374,9 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
     signals.priceDelta = round(delta);
     signals.priceEqual = a.priceEur === b.priceEur;
 
+    // Anything reaching here has two equal prices or a price on one side only:
+    // section 2a sent every disagreement home.
     if (a.priceEur === b.priceEur) support += 0.15;
-    else if (delta <= 0.02) support += 0.08;
-    /**
-     * A price disagreement does NOT veto. Agencies update one portal and forget
-     * another routinely, so the same villa genuinely sits at two prices for
-     * weeks. Vetoing on price would split exactly the properties whose price
-     * history we most want — the ones being repriced.
-     */
-    else if (delta > 0.25) support -= 0.1;
   }
 
   if (a.areaM2 !== null && b.areaM2 !== null) {
@@ -314,18 +407,6 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
    * nothing. A hard veto on strong conflicts sits below.
    */
   const corroborated = signals.priceEqual === true || signals.areaClose === true;
-
-  /**
-   * A large price gap vetoes outright, however similar the text.
-   *
-   * Softer than it sounds: an agency updating one portal and forgetting another
-   * moves a price by a few percent, and that still merges. A factor of two is
-   * not a stale listing — it is a different house sharing a template.
-   */
-  if (signals.priceDelta !== undefined && signals.priceDelta > 0.35) {
-    signals.priceConflict = true;
-    return { same: false, confidence: 0, signals };
-  }
 
   const same =
     corroborated && (cont >= TEXT_STRONG ? confidence >= 0.7 : confidence >= 0.8);
@@ -449,6 +530,9 @@ const CLUSTER_PRICE_SPAN = 0.35;
  */
 const CLUSTER_AREA_SPAN = 0.1;
 
+/** And for flats, where the number is measured rather than estimated. */
+const CLUSTER_FLAT_AREA_SPAN = 0.05;
+
 export function incoherentMembers(
   members: { id: string; priceEur: number | null }[],
 ): string[] {
@@ -474,11 +558,19 @@ export function incoherentMembers(
  * has to be coherent in both.
  */
 export function incoherentAreas(
-  members: { id: string; areaM2: number | null }[],
+  members: { id: string; areaM2: number | null; propertyType?: string | null }[],
 ): string[] {
+  /**
+   * Flats are held to the tighter figure, for the reason the pair rules give:
+   * a flat's area is measured under the Carrez law and quoted the same way
+   * everywhere, so a spread across a cluster of flats is a cluster holding
+   * more than one flat.
+   */
+  const allFlats =
+    members.length > 0 && members.every((m) => m.propertyType === undefined || isFlat(m.propertyType));
   return incoherentBy(
     members.map((m) => ({ id: m.id, value: m.areaM2 })),
-    CLUSTER_AREA_SPAN,
+    allFlats ? CLUSTER_FLAT_AREA_SPAN : CLUSTER_AREA_SPAN,
   );
 }
 

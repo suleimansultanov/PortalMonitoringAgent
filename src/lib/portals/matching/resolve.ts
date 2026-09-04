@@ -125,6 +125,8 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     areaM2: r.areaM2 === null ? null : Number(r.areaM2),
     landM2: r.landM2 === null ? null : Number(r.landM2),
     rooms: r.rooms,
+    bedrooms: r.bedrooms,
+    propertyType: r.propertyType,
     agencyId: r.agencyId,
     agencyRef: r.agencyRef,
     title: r.title,
@@ -194,7 +196,11 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     const outliers = [
       ...incoherentMembers(group.map((g) => ({ id: g.id, priceEur: g.priceEur }))),
       ...incoherentAreas(
-        group.map((g) => ({ id: g.id, areaM2: g.areaM2 === null ? null : Number(g.areaM2) })),
+        group.map((g) => ({
+          id: g.id,
+          areaM2: g.areaM2 === null ? null : Number(g.areaM2),
+          propertyType: g.propertyType,
+        })),
       ),
     ].filter((id, i, all) => all.indexOf(id) === i);
     if (outliers.length === 0) continue;

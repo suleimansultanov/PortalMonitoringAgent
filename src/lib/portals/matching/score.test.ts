@@ -32,6 +32,8 @@ const base: Omit<Candidate, "id"> = {
   areaM2: 320,
   landM2: null,
   rooms: 10,
+  bedrooms: 6,
+  propertyType: "Maison",
   agencyId: "ag1",
   agencyRef: null,
   title: "Ramatuelle",
@@ -137,10 +139,24 @@ test("different communes veto before any text is compared", () => {
   assert.equal(v.signals.communeConflict, true);
 });
 
-test("a stale price on one portal does not split the property", () => {
-  // Agencies update one portal and forget another for weeks. Vetoing on price
-  // would split exactly the listings whose price history matters most.
+test("a stale price on one portal splits the property, by decision", () => {
+  // This test asserted the opposite until 2026-09-04, and the reasoning was
+  // good: agencies update one portal and forget another for weeks, and vetoing
+  // on price splits exactly the listings whose price history matters most.
+  //
+  // A development overrules it. Identical flats a few percent apart in price,
+  // sharing one developer's description word for word, cannot be told apart by
+  // anything else — so price equality became a precondition, and a stale price
+  // now costs a duplicate card rather than a hidden property.
   const v = scoreMatch(c({ id: "a" }), c({ id: "b", sourceId: "s2", priceEur: 8_900_000 }));
+  assert.equal(v.same, false);
+  assert.equal(v.signals.priceConflict, true);
+});
+
+test("a price on one side only is not a disagreement", () => {
+  // Half the portals publish "prix sur demande". That is silence, not a
+  // different price, and it must not block a merge the text supports.
+  const v = scoreMatch(c({ id: "a" }), c({ id: "b", sourceId: "s2", priceEur: null }));
   assert.equal(v.same, true);
 });
 
@@ -197,11 +213,12 @@ const SHORT_A = "Villa vue mer proche plage Ramatuelle";
 const SHORT_B = "Villa vue mer proche plage Sainte-Maxime";
 
 test("a headline-length description cannot drive a merge", () => {
-  // Prices deliberately unequal: this test is about the text guard alone, and
-  // an identical price would let the structural rule merge them before the
-  // text is ever looked at — a different rule, tested below on its own terms.
+  // One side carries no figures at all, so nothing else can decide this: a
+  // disagreement would be vetoed before the text is read, and an agreement
+  // would be merged by the measurement rule. Silence leaves the text alone
+  // with the question, which is what this test is about.
   const a = candidate({ id: "a", description: SHORT_A, priceEur: 739_000, areaM2: 90 });
-  const b = candidate({ id: "b", description: SHORT_B, priceEur: 745_000, areaM2: 90 });
+  const b = candidate({ id: "b", description: SHORT_B, priceEur: null, areaM2: null });
 
   const v = scoreMatch(a, b);
   assert.equal(v.same, false, "39 characters is not evidence of anything");
@@ -225,7 +242,7 @@ test("identical prose plus an agreeing price does merge", () => {
   assert.equal(scoreMatch(a, b).same, true);
 });
 
-test("a price gap of more than a third vetoes, however similar the text", () => {
+test("any price gap vetoes, however similar the text", () => {
   const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 739_000, areaM2: 200 });
   const b = candidate({ id: "b", description: LONG_TEXT, priceEur: 7_800_000, areaM2: 200 });
 
@@ -234,12 +251,29 @@ test("a price gap of more than a third vetoes, however similar the text", () => 
   assert.equal(v.signals.priceConflict, true);
 });
 
-test("a stale price on one portal still merges — that is the normal case", () => {
-  // An agency updated one portal and forgot the other. 4% apart.
+test("a stale price on one portal now splits it — deliberately", () => {
+  // 4% apart, identical prose. This USED to merge, on the grounds that an
+  // agency updates one portal and forgets another. It no longer does, because
+  // a development prices identical flats a few percent apart and no text rule
+  // can tell those apart. The cost is a visible duplicate until the portal
+  // catches up, and that is the failure this project prefers.
   const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 2_000_000, areaM2: 200 });
   const b = candidate({ id: "b", description: LONG_TEXT, priceEur: 1_920_000, areaM2: 200 });
 
-  assert.equal(scoreMatch(a, b).same, true, "area agrees, price is merely stale");
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.priceConflict, true);
+});
+
+test("a mandate reference still outranks a price that disagrees", () => {
+  // The one exception: same agency, same mandate number is the agency saying
+  // these are one property.
+  const v = scoreMatch(
+    c({ id: "a", agencyRef: "313688", priceEur: 2_000_000 }),
+    c({ id: "b", sourceId: "s2", agencyRef: "313688", priceEur: 1_920_000 }),
+  );
+  assert.equal(v.same, true);
+  assert.equal(v.confidence, 1);
 });
 
 test("an incoherent cluster is broken apart after the fact", () => {
@@ -396,4 +430,73 @@ test("rounding differences between portals are not incoherence", () => {
     ]),
     [],
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A DEVELOPMENT
+//
+// Résidence Patio Ruben, Saint-Tropez, live on 2026-09-04: thirty-four listings
+// on six portals in one property, holding at least two different flats. The
+// developer writes one description for the building, so the text signal between
+// two different flats is a perfect 1.0.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PATIO_RUBEN = `Résidence Patio Ruben, au cœur de Saint-Tropez, à quelques pas de la place des Lices et des plages. Appartements neufs de standing avec terrasses, jardin privatif, piscine et stationnement en sous-sol. Prestations haut de gamme, livraison prévue au printemps.`;
+
+const flat = (over: Partial<Candidate> & { id: string }): Candidate =>
+  candidate({ propertyType: "Appartement", description: PATIO_RUBEN, ...over });
+
+test("differing bedroom counts do not stop a merge — portals disagree about those too", () => {
+  // 8 bedrooms on one portal and 10 on another is one house counted twice,
+  // not two houses. Rooms and bedrooms describe the same property differently
+  // on every portal; only the price is allowed to veto.
+  const a = candidate({ id: "a", priceEur: 4_400_000, areaM2: 345, rooms: 9, bedrooms: 8 });
+  const b = candidate({ id: "b", sourceId: "s2", priceEur: 4_400_000, areaM2: 345, rooms: 12, bedrooms: 10 });
+
+  assert.equal(scoreMatch(a, b).same, true);
+});
+
+test("two flats in one development do not merge on the developer's own prose", () => {
+  const t3 = flat({ id: "a", priceEur: 2_350_000, areaM2: 82, rooms: 3, bedrooms: 2 });
+  const t4 = flat({ id: "b", sourceId: "s2", priceEur: 2_450_000, areaM2: 85, rooms: 4, bedrooms: 3 });
+
+  const v = scoreMatch(t3, t4);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.priceConflict, true);
+});
+
+test("same size, same layout, different price — still two flats", () => {
+  // The pair that has no bedroom count on either side: identical title, one at
+  // 2 350 000 € and one at 2 450 000 €, four floors apart.
+  const lower = flat({ id: "a", priceEur: 2_350_000, areaM2: 82, rooms: 3, bedrooms: null });
+  const upper = flat({ id: "b", sourceId: "s2", priceEur: 2_450_000, areaM2: 82, rooms: 3, bedrooms: null });
+
+  const v = scoreMatch(lower, upper);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.priceConflict, true);
+});
+
+test("one flat on two portals still merges", () => {
+  const a = flat({ id: "a", priceEur: 2_350_000, areaM2: 81.5, rooms: 3, bedrooms: 2 });
+  const b = flat({ id: "b", sourceId: "s2", priceEur: 2_350_000, areaM2: 82, rooms: 4, bedrooms: 2 });
+
+  assert.equal(scoreMatch(a, b).same, true, "rooms disagree between portals; that is normal");
+});
+
+
+test("a floor area that disagrees beyond rounding vetoes, like the price", () => {
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 5_300_000, areaM2: 480 });
+  const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 5_300_000, areaM2: 355 });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.areaConflict, true);
+});
+
+test("but rounding between portals is not a disagreement", () => {
+  // The same Ramatuelle villa: 344,94 from the mandate, 350 from the headline.
+  const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 4_400_000, areaM2: 344.94 });
+  const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 4_400_000, areaM2: 350 });
+
+  assert.equal(scoreMatch(a, b).same, true);
 });

@@ -23,6 +23,7 @@
     "smc:pages": "tsx src/lib/portals/smcPages.ts",
     "quality": "tsx src/lib/portals/quality.ts",
     "merges": "tsx src/lib/portals/merges.ts",
+    "cluster": "tsx src/lib/portals/cluster.ts",
     "resolve": "tsx src/lib/portals/resolveCli.ts",
     "dedup:check": "tsx src/lib/portals/dedupCheck.ts",
     "photos:check": "tsx src/lib/portals/photoCheck.ts",
