@@ -2,6 +2,7 @@ import "server-only";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
+  portalAgencies,
   portalListingEvents,
   portalListings,
   portalRuns,
@@ -34,14 +35,78 @@ export type PropertyPayload = {
   imageUrl: string | null;
   imageUrls: string[];
   agencyRef: string | null;
+  /**
+   * Internal: which agency row to attach. Not part of the contract — the
+   * agency itself is sent as `agency` below, and this is stripped before the
+   * response leaves.
+   */
+  agencyId?: string | null;
   /** How many portals carry it. A proxy for how confident the deduplication is. */
   sourceCount: number;
   status: string;
   /** When WE first saw it. Not a publication date — see the caveat on responses. */
   firstListedAt: string | null;
   lastSeenAt: string | null;
-  /** One entry per portal carrying this property. */
-  listings: { source: string; url: string; externalId: string }[];
+  /**
+   * One entry per portal carrying this property, with what THAT portal says.
+   *
+   * The portals disagree, and the disagreement is the product: one lists 12
+   * rooms and another 10, one publishes an energy rating and another does not,
+   * one has carried the villa since June and another since last week. Sending
+   * only a link would leave a client with nothing to show but our own averaged
+   * view of a property, which is the one view they could have built themselves.
+   */
+  listings: ListingPayload[];
+  /** The agency behind the mandate, where the portals name one. */
+  agency: AgencyPayload | null;
+};
+
+export type ListingPayload = {
+  source: string;
+  /** Display name — "Propriétés Le Figaro", not "figaro". */
+  sourceName: string;
+  url: string;
+  externalId: string;
+  priceEur: number | null;
+  areaM2: number | null;
+  landM2: number | null;
+  rooms: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  agencyRef: string | null;
+  /**
+   * When the PORTAL published it. Only a few portals state this, and where they
+   * do, days-on-market is real rather than inferred from when we first looked.
+   */
+  publishedAt: string | null;
+  sourceUpdatedAt: string | null;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  /**
+   * What this portal prints about the property, as it prints it.
+   *
+   * Deliberately a list of label/value pairs rather than a fixed schema: the
+   * portals do not agree on what a characteristic is, and flattening "Terrain
+   * 2 730 m²" and "DPE A" into one normalised model would mean choosing which
+   * facts survive. The energy rating is lifted out because it is regulated,
+   * comparable, and the one field anyone filters on.
+   */
+  characteristics: { label: string; value: string }[];
+  /** Energy performance certificate, as published. */
+  dpe: string | null;
+  energyKwhM2Year: number | null;
+  ges: string | null;
+  ghgCo2M2Year: number | null;
+  /** The portal's own feature tags: "pool", "terrace", "airConditioning". */
+  flags: string[];
+};
+
+export type AgencyPayload = {
+  name: string;
+  address: string | null;
+  postalCode: string | null;
+  city: string | null;
+  phone: string | null;
 };
 
 /** Cursors are opaque on purpose: the encoding is ours to change. */
@@ -60,37 +125,146 @@ export function decodeCursor(raw: string): { occurredAt: Date; id: string } | nu
   }
 }
 
-/** Attach the portal links to a set of properties, in one extra query. */
+/**
+ * Attach what each portal says, and the agency, in two extra queries.
+ *
+ * Two queries for a page of properties rather than two per property: this is
+ * walked forty pages deep by every client that seeds, and a per-row query there
+ * is the difference between half a minute and a coffee break.
+ */
 async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]> {
   if (rows.length === 0) return rows;
+  const ids = rows.map((r) => r.id);
+
   const links = await db
     .select({
       propertyId: portalListings.propertyId,
       source: portalSources.key,
+      sourceName: portalSources.name,
       url: portalListings.url,
       externalId: portalListings.externalId,
+      priceEur: portalListings.priceEur,
+      areaM2: portalListings.areaM2,
+      landM2: portalListings.landM2,
+      rooms: portalListings.rooms,
+      bedrooms: portalListings.bedrooms,
+      bathrooms: portalListings.bathrooms,
+      agencyRef: portalListings.agencyRef,
+      publishedAt: portalListings.publishedAt,
+      sourceUpdatedAt: portalListings.sourceUpdatedAt,
+      firstSeenAt: portalListings.firstSeenAt,
+      lastSeenAt: portalListings.lastSeenAt,
+      raw: portalListings.raw,
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(
-      and(
-        inArray(
-          portalListings.propertyId,
-          rows.map((r) => r.id),
-        ),
-        eq(portalListings.status, "active"),
-      ),
-    );
+    .where(and(inArray(portalListings.propertyId, ids), eq(portalListings.status, "active")));
 
-  const byProperty = new Map<string, PropertyPayload["listings"]>();
+  const byProperty = new Map<string, ListingPayload[]>();
   for (const l of links) {
     if (!l.propertyId) continue;
     const list = byProperty.get(l.propertyId) ?? [];
-    list.push({ source: l.source, url: l.url, externalId: l.externalId });
+    list.push({
+      source: l.source,
+      sourceName: l.sourceName ?? l.source,
+      url: l.url,
+      externalId: l.externalId,
+      priceEur: l.priceEur,
+      areaM2: l.areaM2 === null ? null : Number(l.areaM2),
+      landM2: l.landM2 === null ? null : Number(l.landM2),
+      rooms: l.rooms,
+      bedrooms: l.bedrooms,
+      bathrooms: l.bathrooms,
+      agencyRef: l.agencyRef,
+      publishedAt: l.publishedAt?.toISOString() ?? null,
+      sourceUpdatedAt: l.sourceUpdatedAt?.toISOString() ?? null,
+      firstSeenAt: l.firstSeenAt?.toISOString() ?? null,
+      lastSeenAt: l.lastSeenAt?.toISOString() ?? null,
+      ...characteristicsOf(l.raw),
+    });
     byProperty.set(l.propertyId, list);
   }
   for (const r of rows) r.listings = byProperty.get(r.id) ?? [];
+
+  await withAgency(rows);
+  // Stripped rather than merely undocumented: an internal id in a payload is an
+  // id somebody eventually depends on.
+  for (const r of rows) delete r.agencyId;
   return rows;
+}
+
+/**
+ * The parsed page, reduced to what a client can display.
+ *
+ * `raw` itself is never sent. It is the whole structured markup of a portal
+ * page — kilobytes per listing, shaped differently by every adapter, and full
+ * of things that are ours for re-deriving fields rather than anyone else's to
+ * render. What goes out is the part that means something to a reader.
+ */
+function characteristicsOf(raw: Record<string, unknown> | null): {
+  characteristics: { label: string; value: string }[];
+  dpe: string | null;
+  energyKwhM2Year: number | null;
+  ges: string | null;
+  ghgCo2M2Year: number | null;
+  flags: string[];
+} {
+  const r = (raw ?? {}) as {
+    characteristics?: Record<string, unknown>;
+    flags?: unknown;
+    dpe?: unknown;
+    ges?: unknown;
+    energyKwhM2Year?: unknown;
+    ghgCo2M2Year?: unknown;
+  };
+
+  const characteristics = Object.entries(r.characteristics ?? {})
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map(([label, v]) => ({ label, value: String(v) }));
+
+  return {
+    characteristics,
+    dpe: typeof r.dpe === "string" ? r.dpe : null,
+    energyKwhM2Year: typeof r.energyKwhM2Year === "number" ? r.energyKwhM2Year : null,
+    ges: typeof r.ges === "string" ? r.ges : null,
+    ghgCo2M2Year: typeof r.ghgCo2M2Year === "number" ? r.ghgCo2M2Year : null,
+    flags: Array.isArray(r.flags) ? r.flags.filter((f): f is string => typeof f === "string") : [],
+  };
+}
+
+/** The agency on the property row, in one query for the whole page. */
+async function withAgency(rows: PropertyPayload[]): Promise<void> {
+  const ids = [...new Set(rows.map((r) => r.agencyId).filter((x): x is string => !!x))];
+  if (ids.length === 0) {
+    for (const r of rows) r.agency = null;
+    return;
+  }
+
+  const agencies = await db
+    .select({
+      id: portalAgencies.id,
+      name: portalAgencies.name,
+      address: portalAgencies.address,
+      postalCode: portalAgencies.postalCode,
+      city: portalAgencies.city,
+      phone: portalAgencies.phone,
+    })
+    .from(portalAgencies)
+    .where(inArray(portalAgencies.id, ids));
+
+  const byId = new Map(agencies.map((a) => [a.id, a]));
+  for (const r of rows) {
+    const a = r.agencyId ? byId.get(r.agencyId) : undefined;
+    r.agency = a
+      ? {
+          name: a.name,
+          address: a.address,
+          postalCode: a.postalCode,
+          city: a.city,
+          phone: a.phone,
+        }
+      : null;
+  }
 }
 
 const propertyColumns = {
@@ -106,6 +280,8 @@ const propertyColumns = {
   communeInsee: properties.communeInsee,
   imageUrl: properties.imageUrl,
   imageUrls: properties.imageUrls,
+  /** Not sent as-is — it selects the agency block below. */
+  agencyId: properties.agencyId,
   agencyRef: properties.agencyRef,
   sourceCount: properties.sourceCount,
   status: properties.status,
@@ -133,6 +309,8 @@ function toPayload(r: Record<string, unknown>): PropertyPayload {
     firstListedAt: (r.firstListedAt as Date | null)?.toISOString() ?? null,
     lastSeenAt: (r.lastSeenAt as Date | null)?.toISOString() ?? null,
     listings: [],
+    agency: null,
+    agencyId: (r.agencyId as string) ?? null,
   };
 }
 

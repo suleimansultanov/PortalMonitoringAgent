@@ -6,6 +6,7 @@ import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import {
   candidatePairs,
   cluster,
+  incoherentAreas,
   incoherentMembers,
   scoreMatch,
   type Candidate,
@@ -122,6 +123,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     communeInsee: r.communeInsee,
     priceEur: r.priceEur,
     areaM2: r.areaM2 === null ? null : Number(r.areaM2),
+    landM2: r.landM2 === null ? null : Number(r.landM2),
     rooms: r.rooms,
     agencyId: r.agencyId,
     agencyRef: r.agencyRef,
@@ -181,9 +183,20 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
   let evicted = 0;
   for (const [key, group] of [...groups]) {
     if (group.length < 2) continue;
-    const outliers = incoherentMembers(
-      group.map((g) => ({ id: g.id, priceEur: g.priceEur })),
-    );
+    /**
+     * Both dimensions, price first.
+     *
+     * A cluster welded together by measurement-only merges is coherent in
+     * price BY CONSTRUCTION — every such merge required the prices to be
+     * identical — so the price guard passes it and sees nothing. Area is what
+     * catches those, and a group has to survive both to stand.
+     */
+    const outliers = [
+      ...incoherentMembers(group.map((g) => ({ id: g.id, priceEur: g.priceEur }))),
+      ...incoherentAreas(
+        group.map((g) => ({ id: g.id, areaM2: g.areaM2 === null ? null : Number(g.areaM2) })),
+      ),
+    ].filter((id, i, all) => all.indexOf(id) === i);
     if (outliers.length === 0) continue;
 
     const keep = group.filter((g) => !outliers.includes(g.id));

@@ -15,6 +15,7 @@ export type Candidate = {
   communeInsee: string | null;
   priceEur: number | null;
   areaM2: number | null;
+  landM2: number | null;
   rooms: number | null;
   agencyId: string | null;
   agencyRef: string | null;
@@ -30,6 +31,7 @@ export type MatchSignals = {
   priceEqual?: boolean;
   priceDelta?: number;
   areaClose?: boolean;
+  landClose?: boolean;
   roomsEqual?: boolean;
   communeConflict?: boolean;
   /** Shingles on the shorter side — the divisor containment is computed over. */
@@ -38,6 +40,16 @@ export type MatchSignals = {
   textTooShort?: boolean;
   /** Prices too far apart to be one property, whatever the text says. */
   priceConflict?: boolean;
+  /** Plots that disagree. Two listings on different land are different homes. */
+  landConflict?: boolean;
+  /**
+   * Merged on measurements alone, with no help from the prose.
+   *
+   * Recorded rather than hidden: a merge reached this way rests on a different
+   * kind of evidence, and anyone auditing a cluster deserves to know which. It
+   * is also the flag to filter on when checking whether this rule is behaving.
+   */
+  structuralOnly?: boolean;
 };
 
 export type MatchVerdict = {
@@ -50,6 +62,13 @@ export type MatchVerdict = {
 const AREA_TOLERANCE = 0.03;
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
+/**
+ * Plot sizes are quoted from the cadastre, so they agree far more closely than
+ * floor areas — but they are still rounded, and "environ 2 700 m²" in the prose
+ * sits beside 2730 in the field. Wide enough for that, narrow enough that two
+ * neighbouring plots do not pass for one.
+ */
+const LAND_TOLERANCE = 0.05;
 /** Above this, the same prose is the same listing. */
 const TEXT_STRONG = 0.75;
 
@@ -132,6 +151,90 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
     return { same: false, confidence: 0, signals };
   }
 
+  // ── 2b. The measurements, for when the prose cannot speak ──────────────
+  /**
+   * THE SAME VILLA, DESCRIBED TWICE, MERGED ON ARITHMETIC ALONE.
+   *
+   * Everything below section 3 is gated behind a text similarity, and two
+   * portals carrying one property do not always share a sentence. Two ways
+   * that happens, both seen in the live data on 2026-09-04:
+   *
+   *   1. Different languages. LuxuryEstate publishes in English, every other
+   *      portal here in French. "10 room luxury Villa for sale in Ramatuelle"
+   *      and "Villa avec piscine et terrasse" have a containment of zero.
+   *   2. Different agencies on one mandate. Ramatuelle, 25 000 000 €, 600 m²
+   *      habitables, 2730 m² of land, 12 rooms, seven suites and a staff flat
+   *      in both texts — and two entirely different paragraphs, two different
+   *      photographs, two different mandate references, because two agencies
+   *      are selling it. No text rule will ever join those, and they are one
+   *      house.
+   *
+   * So wherever the text rules give up — too short to judge, or judged and
+   * found unalike — the measurements get their own say. The conjunction is
+   * what makes that safe: the price identical to the euro, the floor area
+   * inside the rounding tolerance, the same commune, and — where both portals
+   * state it — the same plot. A plot that disagrees is a veto rather than a
+   * missing point, because two villas can share a price and a floor area and
+   * cannot share the ground they stand on.
+   *
+   * Room counts deliberately do NOT veto. Portals disagree about what counts
+   * as a room routinely — the pair above is 10 rooms on one portal and 12 on
+   * another, and the same villa is "9 bedroom" on a third. Requiring them to
+   * agree was the first version of this rule and it merged almost nothing.
+   *
+   * The way this is wrong is two identical units in one development: same
+   * plot, same price, same size, genuinely different homes. That risk is real
+   * and it is priced in — a market report that counts one villa twice is wrong
+   * in a way the client sees immediately, and the flag below makes these
+   * merges countable rather than invisible.
+   */
+  function structuralMatch(): MatchVerdict | null {
+      const bothPriced = a.priceEur !== null && b.priceEur !== null;
+    const bothSized = a.areaM2 !== null && b.areaM2 !== null;
+    const placed = a.communeInsee !== null && b.communeInsee !== null;
+
+    if (bothPriced && bothSized && placed) {
+      const areaDelta = Math.abs(a.areaM2! - b.areaM2!) / Math.max(a.areaM2!, b.areaM2!);
+      const landKnown = a.landM2 !== null && b.landM2 !== null;
+      const landDelta = landKnown
+        ? Math.abs(a.landM2! - b.landM2!) / Math.max(a.landM2!, b.landM2!)
+        : null;
+
+      if (a.priceEur === b.priceEur && areaDelta <= AREA_TOLERANCE) {
+        if (landDelta !== null && landDelta > LAND_TOLERANCE) {
+          signals.landConflict = true;
+        } else {
+          signals.priceEqual = true;
+          signals.priceDelta = 0;
+          signals.areaClose = true;
+          signals.structuralOnly = true;
+          if (landDelta !== null) signals.landClose = true;
+
+          const roomsKnown = a.rooms !== null && b.rooms !== null;
+          if (roomsKnown) signals.roomsEqual = a.rooms === b.rooms;
+
+          /**
+           * These sit at and above the default threshold on purpose. Two prices
+           * equal to the euro and two floor areas inside the tolerance, in one
+           * commune, is not weak evidence — it is three independent measurements
+           * agreeing, which is more than most text-backed merges have.
+           *
+           * The plot is what lifts it: an agreeing plot is the strongest of the
+           * four, because it is the one thing two different houses cannot share.
+           * An operator who raises MATCH_THRESHOLD above 0.9 turns this rule off
+           * entirely, and that is the intended way to turn it off.
+           */
+          let confidence = 0.8;
+          if (signals.roomsEqual === true) confidence += 0.03;
+          if (signals.landClose === true) confidence += 0.07;
+
+          return { same: true, confidence: round(confidence), signals };
+        }
+      }
+    }
+    return null;
+  }
+
   // ── 3. Text ────────────────────────────────────────────────────────────
   const textA = [a.title, a.description].filter(Boolean).join(" ");
   const textB = [b.title, b.description].filter(Boolean).join(" ");
@@ -152,7 +255,7 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   signals.textShingles = shortest;
   if (shortest < MIN_SHINGLES) {
     signals.textTooShort = true;
-    return { same: false, confidence: 0, signals };
+    return structuralMatch() ?? { same: false, confidence: 0, signals };
   }
 
   const cont = containment(textA, textB);
@@ -160,7 +263,9 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   signals.textContainment = round(cont);
   signals.textJaccard = round(jac);
 
-  if (cont < TEXT_FLOOR) return { same: false, confidence: round(cont), signals };
+  if (cont < TEXT_FLOOR) {
+    return structuralMatch() ?? { same: false, confidence: round(cont), signals };
+  }
 
   // ── 4. Corroboration ───────────────────────────────────────────────────
   let support = 0;
@@ -224,6 +329,13 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
 
   const same =
     corroborated && (cont >= TEXT_STRONG ? confidence >= 0.7 : confidence >= 0.8);
+
+  /**
+   * Text first, measurements second. Where the prose does carry the merge it
+   * also scores it, and it scores it higher — the structural rule is the floor
+   * under the text rules, never a ceiling over them.
+   */
+  if (!same) return structuralMatch() ?? { same, confidence: round(confidence), signals };
 
   return { same, confidence: round(confidence), signals };
 }
@@ -327,25 +439,74 @@ export function cluster(
  */
 const CLUSTER_PRICE_SPAN = 0.35;
 
+/**
+ * And above this spread in floor area, whatever the prices say.
+ *
+ * Tighter than the price rule on purpose. A price legitimately differs between
+ * portals — one is stale, one is negotiated — while a villa's floor area is
+ * the same number everywhere, give or take how each portal rounds it. Ten per
+ * cent is far wider than any rounding and far narrower than 480 against 355.
+ */
+const CLUSTER_AREA_SPAN = 0.1;
+
 export function incoherentMembers(
   members: { id: string; priceEur: number | null }[],
 ): string[] {
-  const priced = members.filter((m) => m.priceEur !== null) as {
-    id: string;
-    priceEur: number;
-  }[];
-  if (priced.length < 2) return [];
+  return incoherentBy(
+    members.map((m) => ({ id: m.id, value: m.priceEur })),
+    CLUSTER_PRICE_SPAN,
+  );
+}
 
-  const sorted = priced.map((m) => m.priceEur).sort((a, b) => a - b);
+/**
+ * The same guard, on floor area, and it is not optional.
+ *
+ * Measurement-only merges made it necessary. Every pair they join agrees on
+ * price to the euro and on area to within the rounding tolerance — and pairwise
+ * agreement is not what union-find produces. Ramatuelle, 2026-09-04, one
+ * cluster of seventeen listings all priced 5 300 000 €, with floor areas of
+ * 480, 483, 482 and 355 m²: two different villas carrying one price, chained
+ * together through the listings in between. Another put 2000 m² and 270 m² in
+ * one property at 4 000 000 €.
+ *
+ * The price guard cannot see any of this — the prices are identical, which is
+ * exactly why the merges happened. Area is the second dimension, and a cluster
+ * has to be coherent in both.
+ */
+export function incoherentAreas(
+  members: { id: string; areaM2: number | null }[],
+): string[] {
+  return incoherentBy(
+    members.map((m) => ({ id: m.id, value: m.areaM2 })),
+    CLUSTER_AREA_SPAN,
+  );
+}
+
+/**
+ * Whatever the pairwise scores said, is this group internally plausible on one
+ * measurement? Returns the ids to split back out, keeping the largest coherent
+ * subgroup around the median.
+ *
+ * Splitting to singletons would be safer still, but would also discard the
+ * genuine merges caught in the same net.
+ */
+function incoherentBy(
+  members: { id: string; value: number | null }[],
+  tolerance: number,
+): string[] {
+  const known = members.filter((m) => m.value !== null) as { id: string; value: number }[];
+  if (known.length < 2) return [];
+
+  const sorted = known.map((m) => m.value).sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   if (median <= 0) return [];
 
   const span = (sorted[sorted.length - 1] - sorted[0]) / sorted[sorted.length - 1];
-  if (span <= CLUSTER_PRICE_SPAN) return [];
+  if (span <= tolerance) return [];
 
   // Keep what sits near the median; evict the rest to be properties of their own.
-  const outliers = priced
-    .filter((m) => Math.abs(m.priceEur - median) / Math.max(m.priceEur, median) > CLUSTER_PRICE_SPAN)
+  const outliers = known
+    .filter((m) => Math.abs(m.value - median) / Math.max(m.value, median) > tolerance)
     .map((m) => m.id);
   if (outliers.length > 0) return outliers;
 
@@ -372,8 +533,8 @@ export function incoherentMembers(
   }
 
   const medianIsAbove = median >= sorted[gapAt];
-  return priced
-    .filter((m) => (medianIsAbove ? m.priceEur < sorted[gapAt] : m.priceEur >= sorted[gapAt]))
+  return known
+    .filter((m) => (medianIsAbove ? m.value < sorted[gapAt] : m.value >= sorted[gapAt]))
     .map((m) => m.id);
 }
 

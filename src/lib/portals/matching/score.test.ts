@@ -4,6 +4,7 @@ import {
   scoreMatch,
   cluster,
   candidatePairs,
+  incoherentAreas,
   incoherentMembers,
   looksLikeMandateRef,
   type Candidate,
@@ -29,6 +30,7 @@ const base: Omit<Candidate, "id"> = {
   communeInsee: "83101",
   priceEur: 9_500_000,
   areaM2: 320,
+  landM2: null,
   rooms: 10,
   agencyId: "ag1",
   agencyRef: null,
@@ -195,8 +197,11 @@ const SHORT_A = "Villa vue mer proche plage Ramatuelle";
 const SHORT_B = "Villa vue mer proche plage Sainte-Maxime";
 
 test("a headline-length description cannot drive a merge", () => {
+  // Prices deliberately unequal: this test is about the text guard alone, and
+  // an identical price would let the structural rule merge them before the
+  // text is ever looked at — a different rule, tested below on its own terms.
   const a = candidate({ id: "a", description: SHORT_A, priceEur: 739_000, areaM2: 90 });
-  const b = candidate({ id: "b", description: SHORT_B, priceEur: 739_000, areaM2: 90 });
+  const b = candidate({ id: "b", description: SHORT_B, priceEur: 745_000, areaM2: 90 });
 
   const v = scoreMatch(a, b);
   assert.equal(v.same, false, "39 characters is not evidence of anything");
@@ -282,6 +287,112 @@ test("a cluster with no prices is not split — unknown is not a conflict", () =
     incoherentMembers([
       { id: "a", priceEur: null },
       { id: "b", priceEur: null },
+    ]),
+    [],
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEASUREMENTS WITHOUT PROSE
+//
+// Live on 2026-09-04: one Ramatuelle villa listed by two agencies, 25 000 000 €
+// and 600 m² on both, 2730 m² of land on both, twelve rooms on both, two
+// entirely different paragraphs and two different photographs. Nothing in the
+// text rules could ever join them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("one price, one floor area, one commune — merged without any shared prose", () => {
+  const a = candidate({
+    id: "a",
+    description: "Au cœur d'un des domaines les plus exclusifs de la presqu'île, face à Pampelonne.",
+    priceEur: 25_000_000,
+    areaM2: 600,
+    landM2: 2730,
+    rooms: 12,
+  });
+  const b = candidate({
+    id: "b",
+    sourceId: "s2",
+    description: "Villa with spectacular sea view, 7 suites and a staff apartment, secured domain.",
+    priceEur: 25_000_000,
+    areaM2: 600,
+    landM2: 2730,
+    rooms: 12,
+  });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, true);
+  assert.equal(v.signals.structuralOnly, true);
+  assert.ok(v.confidence >= 0.8, "must clear the default match threshold or it merges nothing");
+});
+
+test("a disagreeing room count does not stop it — portals count rooms differently", () => {
+  const a = candidate({ id: "a", priceEur: 25_000_000, areaM2: 600, rooms: 10, description: "x" });
+  const b = candidate({
+    id: "b",
+    sourceId: "s2",
+    priceEur: 25_000_000,
+    areaM2: 600,
+    rooms: 12,
+    description: "y",
+  });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, true);
+  assert.equal(v.signals.roomsEqual, false);
+});
+
+test("a disagreeing plot does stop it — two houses cannot share the ground", () => {
+  const a = candidate({ id: "a", priceEur: 25_000_000, areaM2: 600, landM2: 2730, description: "x" });
+  const b = candidate({
+    id: "b",
+    sourceId: "s2",
+    priceEur: 25_000_000,
+    areaM2: 600,
+    landM2: 8000,
+    description: "y",
+  });
+
+  const v = scoreMatch(a, b);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.landConflict, true);
+});
+
+test("a price that is merely close is not enough on measurements alone", () => {
+  // 1% apart. Enough to corroborate shared prose, not enough to stand in for it.
+  const a = candidate({ id: "a", priceEur: 25_000_000, areaM2: 600, description: "x" });
+  const b = candidate({ id: "b", sourceId: "s2", priceEur: 24_750_000, areaM2: 600, description: "y" });
+
+  assert.equal(scoreMatch(a, b).same, false);
+});
+
+test("two listings with no price agree on nothing", () => {
+  const a = candidate({ id: "a", priceEur: null, areaM2: null, description: "x" });
+  const b = candidate({ id: "b", sourceId: "s2", priceEur: null, areaM2: null, description: "y" });
+
+  assert.equal(scoreMatch(a, b).same, false);
+});
+
+test("a cluster incoherent in AREA is broken apart, however equal the prices", () => {
+  // Ramatuelle, live: one cluster of listings all priced 5 300 000 €, floor
+  // areas 480, 483, 482 and 355 m². Two villas sharing a price, chained
+  // together by measurement-only merges. The price guard cannot see it —
+  // the prices are identical, which is why the merges happened at all.
+  const outliers = incoherentAreas([
+    { id: "a", areaM2: 480 },
+    { id: "b", areaM2: 483 },
+    { id: "c", areaM2: 482 },
+    { id: "d", areaM2: 355 },
+  ]);
+  assert.deepEqual(outliers, ["d"]);
+});
+
+test("rounding differences between portals are not incoherence", () => {
+  assert.deepEqual(
+    incoherentAreas([
+      { id: "a", areaM2: 344.94 },
+      { id: "b", areaM2: 345 },
+      { id: "c", areaM2: 350 },
     ]),
     [],
   );

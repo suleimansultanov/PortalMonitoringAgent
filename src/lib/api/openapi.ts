@@ -38,14 +38,68 @@ const property = {
     lastSeenAt: { type: "string", format: "date-time", nullable: true },
     listings: {
       type: "array",
-      description: "One entry per portal currently carrying this property.",
+      description: [
+        "One entry per portal currently carrying this property, with what THAT",
+        "portal says. The portals disagree — on room counts, on whether an energy",
+        "rating exists, on how long the villa has been listed — and the",
+        "disagreement is the point: a single averaged view is the one thing a",
+        "client could have built without us.",
+      ].join(" "),
       items: {
         type: "object",
         properties: {
           source: { type: "string", example: "figaro" },
+          sourceName: { type: "string", example: "Propriétés Le Figaro" },
           url: { type: "string" },
           externalId: { type: "string" },
+          priceEur: { type: "integer", nullable: true },
+          areaM2: { type: "number", nullable: true },
+          landM2: { type: "number", nullable: true },
+          rooms: { type: "integer", nullable: true },
+          bedrooms: { type: "integer", nullable: true },
+          bathrooms: { type: "integer", nullable: true },
+          agencyRef: { type: "string", nullable: true, description: "The agency's mandate reference." },
+          publishedAt: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            description:
+              "When the PORTAL published it. Only a few portals state this; where they do, days-on-market is measured rather than inferred.",
+          },
+          sourceUpdatedAt: { type: "string", format: "date-time", nullable: true },
+          firstSeenAt: { type: "string", format: "date-time", nullable: true },
+          lastSeenAt: { type: "string", format: "date-time", nullable: true },
+          characteristics: {
+            type: "array",
+            description:
+              "What this portal prints about the property, as it prints it. Label/value pairs rather than a fixed schema, because the portals do not agree on what a characteristic is and normalising would mean choosing which facts survive.",
+            items: {
+              type: "object",
+              properties: { label: { type: "string" }, value: { type: "string" } },
+            },
+          },
+          dpe: { type: "string", nullable: true, example: "A" },
+          energyKwhM2Year: { type: "number", nullable: true },
+          ges: { type: "string", nullable: true },
+          ghgCo2M2Year: { type: "number", nullable: true },
+          flags: {
+            type: "array",
+            items: { type: "string" },
+            description: "The portal's own feature tags: pool, terrace, airConditioning.",
+          },
         },
+      },
+    },
+    agency: {
+      type: "object",
+      nullable: true,
+      description: "The agency behind the mandate, where the portals name one.",
+      properties: {
+        name: { type: "string" },
+        address: { type: "string", nullable: true },
+        postalCode: { type: "string", nullable: true },
+        city: { type: "string", nullable: true },
+        phone: { type: "string", nullable: true },
       },
     },
   },
@@ -55,7 +109,7 @@ export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "Portal Monitoring Agent — collector API",
-    version: "1.0.0",
+    version: "1.1.0",
     description: [
       "Market data for client instances: a snapshot to start from, and a stream of",
       "events to stay current.",

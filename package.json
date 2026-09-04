@@ -24,6 +24,8 @@
     "quality": "tsx src/lib/portals/quality.ts",
     "merges": "tsx src/lib/portals/merges.ts",
     "resolve": "tsx src/lib/portals/resolveCli.ts",
+    "dedup:check": "tsx src/lib/portals/dedupCheck.ts",
+    "photos:check": "tsx src/lib/portals/photoCheck.ts",
     "coverage": "tsx src/lib/portals/coverage.ts",
     "report": "tsx src/lib/reports/generate.ts",
     "reparse": "tsx src/lib/portals/reparse.ts",
