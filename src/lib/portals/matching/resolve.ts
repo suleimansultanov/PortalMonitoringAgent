@@ -212,7 +212,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
   if (evicted > 0) {
     console.warn(
       `[resolve] ${communeInsee}: ${evicted} listing(s) split out of incoherent clusters ` +
-        `(price spread too wide to be one property)`,
+        `(price or floor area spread too wide to be one property)`,
     );
   }
 
