@@ -151,7 +151,58 @@ async function main(): Promise<void> {
      limit 15
   `);
 
-  // ── 6. Listings from outside the communes we watch ──────────────────────
+  // ── 6. One price, one commune, two properties ───────────────────────────
+  /**
+   * THE REVIEW QUEUE.
+   *
+   * An identical price is the strongest hint the data offers. Two listings in
+   * one commune priced the same to the euro are usually one property — that is
+   * the whole basis of the matcher — so when they end up as two, either the
+   * measurements genuinely disagree (two flats in one development, two villas
+   * at a round number) or we have just split a property in half.
+   *
+   * The matcher cannot tell those apart, and it should not guess: it splits,
+   * because a visible duplicate is recoverable and a hidden property is not.
+   * But it also should not stay quiet about it. Everything here is a pair worth
+   * ten seconds and two browser tabs, and the column that differs says where to
+   * look.
+   *
+   * Same-source pairs are excluded: one portal carrying two listings at one
+   * price is ordinary — a development, or an agency's stock — and it would bury
+   * the cross-portal pairs, which are the interesting ones.
+   */
+  const review = await db.execute(sql`
+    with priced as (
+      select l.id, l.property_id, l.commune_insee, l.price_eur, l.area_m2,
+             l.land_m2, l.property_type, s.key as source, l.title, l.url
+        from portal_listings l
+        join portal_sources s on s.id = l.source_id
+       where l.status = 'active' and l.price_eur is not null
+    )
+    select a.commune_insee,
+           a.price_eur,
+           a.source          as source_a,
+           a.area_m2         as area_a,
+           a.land_m2         as land_a,
+           a.url             as url_a,
+           b.source          as source_b,
+           b.area_m2         as area_b,
+           b.land_m2         as land_b,
+           b.url             as url_b,
+           coalesce(a.property_type, '—') as type_a,
+           a.title
+      from priced a
+      join priced b
+        on b.commune_insee = a.commune_insee
+       and b.price_eur = a.price_eur
+       and b.source <> a.source
+       and b.property_id is distinct from a.property_id
+       and b.id > a.id
+     order by a.price_eur desc
+     limit 25
+  `);
+
+  // ── 7. Listings from outside the communes we watch ──────────────────────
   const strays = await db.execute(sql`
     select s.key as source, count(*)::int as n
       from portal_listings l
@@ -182,6 +233,17 @@ async function main(): Promise<void> {
 
   section("PRICE CHANGES TOO LARGE TO BE REPRICING", jumps.rows as Row[], (r) =>
     `  ${String(r.source).padEnd(14)} ${r.day}  ${r.price_from} € → ${r.price_to} €\n                 ${r.url}`,
+  );
+
+  section(
+    "ONE PRICE, ONE COMMUNE, TWO PROPERTIES — WORTH TEN SECONDS EACH",
+    review.rows as Row[],
+    (r) =>
+      `  ${r.commune_insee}  ${Number(r.price_eur).toLocaleString("fr-FR")} €  ${r.type_a}\n` +
+      `     ${String(r.source_a).padEnd(14)} ${String(r.area_a ?? "—").padStart(8)} m²  ` +
+      `land ${String(r.land_a ?? "—").padStart(7)}   ${r.url_a}\n` +
+      `     ${String(r.source_b).padEnd(14)} ${String(r.area_b ?? "—").padStart(8)} m²  ` +
+      `land ${String(r.land_b ?? "—").padStart(7)}   ${r.url_b}`,
   );
 
   section("ACTIVE LISTINGS WITH NO COMMUNE RESOLVED", strays.rows as Row[], (r) =>
