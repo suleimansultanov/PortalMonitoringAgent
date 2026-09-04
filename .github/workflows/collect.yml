@@ -35,7 +35,28 @@ on:
     #
     # So: this cron line, and nothing else, is why the nightly pass lands inside
     # the hours they asked for.
-    - cron: "30 1 * * *"
+    # Monday to Saturday.
+    - cron: "30 1 * * 1-6"
+
+    # Sunday, same hour: THE FULL SWEEP.
+    #
+    # A source with a delta stop reads the top of the list and stops once the
+    # portal is only showing it listings it already holds. That finds
+    # everything NEW — new listings appear at the top — and can never notice
+    # anything GONE, because a sold listing disappears from the middle of a
+    # list we no longer read to the end. Superimmo said so itself on
+    # 2026-09-04: "discovery incomplete — 2831 listings left active rather
+    # than delisted".
+    #
+    # Left alone that is not an optimisation but a slow corruption: sold
+    # properties stay `active` for ever and reach the client as available.
+    # Once a week the whole list gets walked and the delistings get written.
+    #
+    # Two crons at the same hour rather than one plus an offset: they are
+    # mutually exclusive by day, so they can never queue behind each other.
+    # `--full` does nothing on a source without a delta stop, so this stays
+    # correct as more of them get one.
+    - cron: "30 1 * * 0"
   workflow_dispatch:
     inputs:
       sources:
@@ -48,6 +69,11 @@ on:
       communes:
         description: "Comma-separated INSEE codes. Blank means every subscribed one. Use for a probe, not a night."
         required: false
+      full:
+        description: "Walk every list to the end, ignoring delta stops. This is what writes delistings."
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # Never two nights at once. Neither would corrupt anything — the diff and the
@@ -103,6 +129,11 @@ jobs:
           ARGS="--parallel=${{ inputs.parallel || '1' }}"
           if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
           if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
+          # Sunday's schedule, or a hand-triggered run that asked for it.
+          if [ "${{ github.event.schedule }}" = "30 1 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
+            ARGS="$ARGS --full"
+            echo "FULL SWEEP — every list walked to the end, so delistings get written."
+          fi
           npm run nightly -- $ARGS
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
