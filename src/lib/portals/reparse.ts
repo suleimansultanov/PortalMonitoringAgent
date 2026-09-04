@@ -125,11 +125,27 @@ export async function reparse(args: Args): Promise<void> {
       continue; // A source with no adapter written yet.
     }
 
+    /**
+     * The stored values come too, because a re-parse has to be able to answer
+     * "what would change" and not merely "what did the parser find".
+     *
+     * The first version counted every non-null field the parser produced. On a
+     * dry run that printed `title 1697, description 1697, raw 1697` — which
+     * says every listing has a title, not that a single one would change, and
+     * is worse than printing nothing: it looks like a report.
+     */
     const rows = await db
       .select({
         id: portalListings.id,
         externalId: portalListings.externalId,
         url: portalListings.url,
+        title: portalListings.title,
+        priceEur: portalListings.priceEur,
+        areaM2: portalListings.areaM2,
+        landM2: portalListings.landM2,
+        rooms: portalListings.rooms,
+        bedrooms: portalListings.bedrooms,
+        propertyType: portalListings.propertyType,
       })
       .from(portalListings)
       .where(eq(portalListings.sourceId, source.id));
@@ -140,6 +156,9 @@ export async function reparse(args: Args): Promise<void> {
     let missing = 0;
     let failed = 0;
     const changes = new Map<string, number>();
+    /** Fields whose value would actually change, and a few worked examples. */
+    const differs = new Map<string, number>();
+    const examples: string[] = [];
 
     /**
      * A line every hundred pages.
@@ -240,6 +259,46 @@ export async function reparse(args: Args): Promise<void> {
       consider("raw", p.raw);
       if (commune) consider("communeInsee", commune.insee);
 
+      /**
+       * What would actually change. Measured on the numbers, because those are
+       * what a parser fix is usually about and what a report is usually wrong
+       * about.
+       */
+      const before: Record<string, unknown> = {
+        areaM2: row.areaM2 === null ? null : Number(row.areaM2),
+        landM2: row.landM2 === null ? null : Number(row.landM2),
+        priceEur: row.priceEur,
+        rooms: row.rooms,
+        bedrooms: row.bedrooms,
+        propertyType: row.propertyType,
+      };
+      const after: Record<string, unknown> = {
+        areaM2: p.areaM2,
+        landM2: p.landM2,
+        priceEur: p.priceEur,
+        rooms: p.rooms,
+        bedrooms: p.bedrooms,
+        propertyType: p.propertyType,
+      };
+      const changed: string[] = [];
+      for (const key of Object.keys(before)) {
+        if (after[key] === null || after[key] === undefined) continue;
+        if (before[key] === after[key]) continue;
+        changed.push(key);
+        differs.set(key, (differs.get(key) ?? 0) + 1);
+      }
+      if (
+        examples.length < 8 &&
+        (changed.includes("areaM2") || changed.includes("landM2"))
+      ) {
+        examples.push(
+          `    ${(row.title ?? "").slice(0, 70)}\n` +
+            `      area ${String(before.areaM2 ?? "—")} → ${String(after.areaM2 ?? "—")}   ` +
+            `land ${String(before.landM2 ?? "—")} → ${String(after.landM2 ?? "—")}\n` +
+            `      ${row.url}`,
+        );
+      }
+
       if (Object.keys(patch).length === 0) continue;
 
       if (!args.dry) {
@@ -250,7 +309,20 @@ export async function reparse(args: Args): Promise<void> {
     }
 
     totalUpdated += updated;
-    console.log(`  ${source.key.padEnd(14)} ${updated} updated, ${missing} pages not on disk, ${failed} unparseable`);
+    console.log(
+      `  ${source.key.padEnd(14)} ${updated} re-parsed, ${missing} pages not on disk, ` +
+        `${failed} unparseable`,
+    );
+    const diffs = [...differs.entries()].sort((a, b) => b[1] - a[1]);
+    console.log(
+      diffs.length === 0
+        ? "    nothing would change"
+        : `    WOULD CHANGE: ${diffs.map(([k, n]) => `${k} ${n}`).join(", ")}`,
+    );
+    if (examples.length > 0) {
+      console.log("    examples:");
+      for (const e of examples) console.log(e);
+    }
     const top = [...changes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
     if (top.length > 0) {
       console.log(`    fields written: ${top.map(([k, n]) => `${k} ${n}`).join(", ")}`);
