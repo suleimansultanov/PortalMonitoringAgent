@@ -279,10 +279,25 @@ export async function status(scope: KeyScope): Promise<{
   properties: number;
   sources: { key: string; lastRunAt: string | null; lastOutcome: string }[];
 }> {
+  /**
+   * Scoped to the sources this key may read.
+   *
+   * "The last time collection succeeded" has to mean the last time it succeeded
+   * for YOU. A key that sees three portals should not be told the market is
+   * current because a fourth one it cannot read finished an hour ago.
+   */
   const [{ at }] = await db
     .select({ at: sql<Date | null>`max(${portalRuns.completedAt})` })
     .from(portalRuns)
-    .where(and(eq(portalRuns.status, "done"), isNull(portalRuns.error)));
+    .where(
+      and(
+        eq(portalRuns.status, "done"),
+        isNull(portalRuns.error),
+        scope.sourceIds.length > 0
+          ? inArray(portalRuns.sourceId, scope.sourceIds)
+          : sql`false`,
+      ),
+    );
 
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -296,23 +311,63 @@ export async function status(scope: KeyScope): Promise<{
       ),
     );
 
-  const runs = await db
-    .select({
-      key: portalSources.key,
-      lastRunAt: sql<Date | null>`max(${portalRuns.completedAt})`,
-      lastOutcome: sql<string>`
-        coalesce(
-          max(${portalRuns.status}) filter (where ${portalRuns.completedAt} is not null),
-          'never'
-        )`,
-    })
-    .from(portalSources)
-    .leftJoin(portalRuns, eq(portalRuns.sourceId, portalSources.id))
-    .where(
-      scope.sourceIds.length > 0 ? inArray(portalSources.id, scope.sourceIds) : sql`false`,
-    )
-    .groupBy(portalSources.key)
-    .orderBy(asc(portalSources.key));
+  /**
+   * THE LATEST RUN, AND ITS OWN OUTCOME.
+   *
+   * This was `max(completed_at)` and `max(status)` aggregated side by side,
+   * which is two different rows wearing one name. `max` on a status column
+   * sorts the words alphabetically over the source's WHOLE history, so:
+   *
+   *   Green-Acres reported `error` because it errored once, weeks ago —
+   *     'error' > 'done', and it would have said so for ever.
+   *   SMC reported `done` while every recent pass aborted — 'aborted' < 'done',
+   *     so one old success outvoted every current failure.
+   *
+   * Two of six sources reported the exact opposite of the truth, on the
+   * endpoint a client reads to decide whether to trust the data.
+   *
+   * A lateral join takes the newest completed run per source and reads its own
+   * status, so the timestamp and the outcome describe the same pass.
+   */
+  /**
+   * An empty scope means an empty answer, and it has to be checked HERE rather
+   * than inside the statement: `s.id in ()` is not valid SQL, where the
+   * previous aggregate could fall back to a `false` predicate. A key with no
+   * sources is a real state — one revoked source, or a client configured and
+   * not yet subscribed — and it must not throw.
+   */
+  const runRows = scope.sourceIds.length === 0 ? { rows: [] } : await db.execute<{
+    key: string;
+    last_run_at: string | null;
+    last_outcome: string;
+  }>(sql`
+    select
+      s.key,
+      r.completed_at as last_run_at,
+      coalesce(
+        -- A pass that finished and still recorded an error is not a success,
+        -- whatever its status column says.
+        case when r.error is not null then 'error' else r.status end,
+        'never'
+      ) as last_outcome
+    from ${portalSources} s
+    left join lateral (
+      select status, completed_at, error
+      from ${portalRuns}
+      where source_id = s.id and completed_at is not null
+      order by completed_at desc
+      limit 1
+    ) r on true
+    where s.id in (${sql.join(
+      scope.sourceIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+    order by s.key
+  `);
+
+  const runs = (runRows.rows as { key: string; last_run_at: string | null; last_outcome: string }[]).map(
+    (r) => ({ key: r.key, lastRunAt: r.last_run_at, lastOutcome: r.last_outcome }),
+  );
 
   return {
     lastSuccessfulCollectionAt: at ? new Date(at).toISOString() : null,
