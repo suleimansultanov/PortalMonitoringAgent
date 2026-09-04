@@ -22,6 +22,8 @@
     "probe:browser": "tsx src/lib/portals/browserProbe.ts",
     "smc:pages": "tsx src/lib/portals/smcPages.ts",
     "quality": "tsx src/lib/portals/quality.ts",
+    "sanity": "tsx src/lib/portals/sanity.ts",
+    "audit": "tsx src/lib/portals/audit.ts",
     "merges": "tsx src/lib/portals/merges.ts",
     "cluster": "tsx src/lib/portals/cluster.ts",
     "resolve": "tsx src/lib/portals/resolveCli.ts",

@@ -8,6 +8,7 @@ import { db } from "@/lib/db/client";
 import { portalListings, portalSources } from "@/lib/db/schema";
 import { collectionCommunes, communesForSource } from "./runner/run";
 import { resolveCommuneIdentities } from "./matching/resolve";
+import { sweepImpossibleValues } from "./sanity";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
 import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
 
@@ -819,8 +820,50 @@ async function main(): Promise<void> {
       : `deduplication: ${clusters} properties across the gulf, ${merged} merged this pass` +
         (resolveError ? ` — WITH ERRORS, last: ${resolveError}` : "");
 
+  /**
+   * And the values that cannot be true, every night, automatically.
+   *
+   * The ingest guard rejects these as they arrive, so in steady state this
+   * finds nothing. It exists for the two cases the guard cannot cover: rows
+   * collected before a guard was written, and rows a new adapter produces in a
+   * shape nobody anticipated. Neither is ever re-parsed on its own — a page
+   * whose content hash has not changed is skipped, correctly — so without a
+   * sweep the bad row stays until a person happens to see it. One did: a villa
+   * priced at 20 000 005 000 000 € sat at the top of the client's list, because
+   * sorting by price descending puts the worst row in the product first.
+   *
+   * It fixes rather than reports, and that is the same decision the ingest
+   * guard already makes on the way in — an impossible figure is dropped and the
+   * listing kept. Reporting only would mean a nightly line nobody acts on.
+   */
+  let sanityLine = "";
+  try {
+    const sanity = await sweepImpossibleValues(true);
+    sanityLine =
+      sanity.found === 0
+        ? "sanity: nothing impossible in the data"
+        : `sanity: ${sanity.found} impossible value(s) dropped from ` +
+          `${sanity.clearedListings} listing(s) and ${sanity.clearedProperties} propert(ies)`;
+    if (sanity.found > 0) {
+      console.warn(`[nightly] ${sanityLine}`);
+      for (const w of sanity.worst) console.warn(`[nightly]   ${w}`);
+    }
+  } catch (err) {
+    // Never fatal: this runs after every page is stored and every cluster
+    // written, and a failure here must not cost the night's summary.
+    sanityLine = `sanity: FAILED — ${(err as Error).message}`;
+    console.error(`[nightly] ${sanityLine}`);
+  }
+
   const finishedAt = new Date();
-  const summaryText = renderSummary(night, startedAt, finishedAt, outcomes, resolveLine, logDir);
+  const summaryText = renderSummary(
+    night,
+    startedAt,
+    finishedAt,
+    outcomes,
+    `${resolveLine}\n${sanityLine}`,
+    logDir,
+  );
   await fsp.writeFile(path.join(logDir, "summary.txt"), summaryText, "utf8");
   await fsp.writeFile(
     path.join(logDir, "summary.json"),

@@ -349,7 +349,24 @@ export type { RawListing };
  * point at the same number, so one constant serves for the plausibility check
  * and the storage check at once.
  */
-const MAX_PRICE_EUR = 2_000_000_000;
+/**
+ * The ceiling, set by the market rather than by what looks obviously absurd.
+ *
+ * Two billion was the first version, chosen to be impossible rather than to be
+ * right. Wide enough to be safe is also wide enough to admit the next accident
+ * of the same shape — a price read out of a range, a figure with a phone number
+ * glued to it — and the accident then reaches the client's screen sorted to the
+ * top, because a list ordered by price descending shows the worst row first.
+ *
+ * The most expensive property ever sold on this coast is around 200 million;
+ * the highest asking price we hold is 85 million. A quarter of a billion is far
+ * above anything real here and far below every parsing accident seen so far,
+ * which have all been off by six digits or more.
+ *
+ * A client watching a different market — Monaco, Dubai — turns this into a
+ * per-source setting. It stays a constant while every client watches one coast.
+ */
+const MAX_PRICE_EUR = 250_000_000;
 /** Versailles has 2 300 rooms. Anything past a thousand is a parsing accident. */
 const MAX_ROOMS = 1_000;
 
