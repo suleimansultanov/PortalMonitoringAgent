@@ -242,27 +242,27 @@ export const greenAcresAdapter: PortalAdapter = {
     listing.landM2 = surface(byIcon($, ["landsurface"]));
 
     /**
-     * A PLOT HAS NO FLOOR AREA, and `advertsurface` is its size.
+     * NOT CORRECTED HERE, DELIBERATELY — 2026-09-05.
      *
-     * The fallback above is right for a house: where the page omits
-     * `habitablesurface`, `advertsurface` carries the same number. A terrain has
-     * no habitable surface at all — there is no building — so the fallback picks
-     * up the size of the LAND and files it as living space.
+     * A terrain has no habitable surface, so the `advertsurface` fallback above
+     * picks up the size of the LAND and files it as living space. Forty-one
+     * listings were like that, and the fault is invisible from the value: 6922
+     * is exactly what a building plot in Grimaud has.
      *
-     * Forty-one listings were like this on 2026-09-04, and the fault is invisible
-     * from the value: 6922 m² is exactly what a building plot in Grimaud has. It
-     * shows up in the price per square metre, which comes out twenty times too
-     * low and is then averaged into the client's report.
+     * A fix was written and reverted unrun. Its sibling — the same idea applied
+     * to Etreproprio — turned 1010 into 10 and 2270 into 270 when measured
+     * against the saved pages, so neither had earned the trust to go into a
+     * nightly collection. The data was repaired instead, where the result can
+     * be listed and read before it is applied:
      *
-     * The type comes from the URL path a few lines down, which is why this reads
-     * the URL directly rather than waiting for it.
+     *   npm run land            — the listings whose floor area is their plot
+     *   npm run land -- --fix   — clears it, keeping the plot
+     *
+     * That is a patch: this parser will reproduce the fault on any page it
+     * re-reads. The repair is to read the labelled fields — the icons already
+     * name them — rather than to guess, and it should be done with a page in
+     * front of it rather than a rule in mind.
      */
-    if (/\/(terrain|terrains|land)\//i.test(url) && listing.areaM2 !== null) {
-      listing.landM2 ??= listing.areaM2;
-      listing.areaM2 = null;
-    }
-    listing.rooms = count(byIcon($, ["advertrooms", "room"]));
-    listing.bedrooms = count(byIcon($, ["advertbedrooms", "bedroom"]));
 
     // ── Where ─────────────────────────────────────────────────────────────
     // The commune is in the URL, which is more reliable than the page prose —

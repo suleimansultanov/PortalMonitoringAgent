@@ -24,6 +24,7 @@
     "quality": "tsx src/lib/portals/quality.ts",
     "sanity": "tsx src/lib/portals/sanity.ts",
     "audit": "tsx src/lib/portals/audit.ts",
+    "land": "tsx src/lib/portals/landInArea.ts",
     "merges": "tsx src/lib/portals/merges.ts",
     "cluster": "tsx src/lib/portals/cluster.ts",
     "resolve": "tsx src/lib/portals/resolveCli.ts",

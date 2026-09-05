@@ -42,3 +42,7 @@ backup-*.sql
 # else, and they name portals and URLs — the same reasoning as `.pages/`.
 # `logs/latest` is a symlink into today's directory.
 logs/
+
+# Files Claude sends to the operator land here. Not part of the collector,
+# and this repository is public.
+Claude outputs/
