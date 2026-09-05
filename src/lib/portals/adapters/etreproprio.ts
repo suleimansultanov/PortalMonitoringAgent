@@ -294,10 +294,39 @@ function applyDomFields(html: string, listing: RawListing): void {
   const $ = cheerio.load(html);
   const text = $("body").text().replace(/\s+/g, " ");
 
-  const sizes = sizesFromText(text);
-  if (sizes.landM2 !== null) listing.landM2 = sizes.landM2;
-  if (sizes.areaM2 !== null) listing.areaM2 = sizes.areaM2;
-  const withoutLand = sizes.remainder;
+  /**
+   * REVERTED to the older extraction on 2026-09-05, deliberately.
+   *
+   * `sizesFromText` below is the replacement, and it is wrong in a way the unit
+   * tests did not catch: run against the saved pages it turned 1010 into 10,
+   * 2270 into 270, 2409 into 409 — the first digit of the number goes missing.
+   * The tests pass on the sentences I wrote for them and fail on the pages the
+   * portal actually publishes, which is the difference between a fixture and
+   * the world.
+   *
+   * The old version's fault is known and bounded: it files a plot's size as the
+   * floor area on about 55 listings. The new one's fault is unbounded — it
+   * would corrupt an area on any listing where it fires, including the ones
+   * that are currently right, and the nightly would write those before anyone
+   * looked. Between a known wrong number and an unknown one, keep the known.
+   *
+   *   npm run reparse -- --source=etreproprio --explain=24070038
+   *
+   * prints what the page actually says around every "m²", which is what the
+   * next attempt should be built from.
+   */
+  const land = text.match(/terrain\s*(?:de\s*)?([\d\s.,]+)\s*m²/i);
+  if (land) {
+    const n = num(land[1]);
+    if (n !== null && n > 0) listing.landM2 = n;
+  }
+  const withoutLand = land ? text.replace(land[0], " ") : text;
+
+  const area = withoutLand.match(/([\d\s.,]+)\s*m²/);
+  if (area) {
+    const n = num(area[1]);
+    if (n !== null && n > 0) listing.areaM2 = n;
+  }
 
   const rooms = withoutLand.match(/(\d+)\s*pièces?/i);
   if (rooms) listing.rooms = Number(rooms[1]);

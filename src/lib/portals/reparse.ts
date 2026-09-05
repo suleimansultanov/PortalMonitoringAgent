@@ -34,12 +34,16 @@ import { resolveCommuneIdentities } from "./matching/resolve";
  * a listing that was never fetched. It re-derives; it does not discover.
  */
 
-type Args = { source?: string; dry: boolean };
+type Args = { source?: string; dry: boolean; explain?: string };
 
 function parseArgs(): Args {
   const get = (n: string) =>
     process.argv.find((a) => a.startsWith(`--${n}=`))?.split("=")[1];
-  return { source: get("source"), dry: process.argv.includes("--dry") };
+  return {
+    source: get("source"),
+    dry: process.argv.includes("--dry"),
+    explain: get("explain"),
+  };
 }
 
 /**
@@ -102,6 +106,63 @@ async function findPage(sourceId: string, externalId: string): Promise<string | 
   }
 }
 
+/**
+ * One listing, and what the parser actually sees.
+ *
+ *   npm run reparse -- --source=etreproprio --explain=23120189
+ *
+ * Written because a dry run reported an area changing from 1010 to 10 and no
+ * amount of re-reading the regular expression explained why. A parser argues
+ * with the page, not with the person reading it, so the page has to be quoted.
+ *
+ * Prints every "m²" in the text with the characters before it — which is where
+ * the answer lives when a number loses its first digit.
+ */
+async function explainOne(sourceKey: string, externalId: string): Promise<void> {
+  const [source] = await db
+    .select()
+    .from(portalSources)
+    .where(eq(portalSources.key, sourceKey))
+    .limit(1);
+  if (!source) throw new Error(`no source ${sourceKey}`);
+
+  const [row] = await db
+    .select()
+    .from(portalListings)
+    .where(and(eq(portalListings.sourceId, source.id), eq(portalListings.externalId, externalId)))
+    .limit(1);
+  if (!row) throw new Error(`no listing ${externalId} on ${sourceKey}`);
+
+  const html = await findPage(source.id, externalId);
+  if (!html) throw new Error("page not on disk");
+
+  const cheerio = await import("cheerio");
+  const $ = cheerio.load(html);
+  const text = $("body").text().replace(/\s+/g, " ");
+
+  console.log(`\n${row.title}`);
+  console.log(`stored: area ${row.areaM2 ?? "—"}  land ${row.landM2 ?? "—"}\n`);
+  console.log("every m² in the page text, with what precedes it:\n");
+
+  const re = /m²/gu;
+  let m: RegExpExecArray | null;
+  let n = 0;
+  while ((m = re.exec(text)) !== null && n < 40) {
+    n += 1;
+    const from = Math.max(0, m.index - 44);
+    console.log(`  ${JSON.stringify(text.slice(from, m.index + 2))}`);
+  }
+
+  const adapter = getAdapter(sourceKey);
+  const result = adapter.parse(html, row.url);
+  if ("listing" in result) {
+    console.log(
+      `\nparsed now: area ${result.listing.areaM2 ?? "—"}  land ${result.listing.landM2 ?? "—"}`,
+    );
+  }
+  process.exit(0);
+}
+
 export async function reparse(args: Args): Promise<void> {
   const sources = await db.select().from(portalSources);
   const wanted = args.source ? sources.filter((s) => s.key === args.source) : sources;
@@ -109,6 +170,11 @@ export async function reparse(args: Args): Promise<void> {
   if (wanted.length === 0) {
     console.error(`No source "${args.source}". Known: ${sources.map((s) => s.key).join(", ")}`);
     process.exit(1);
+  }
+
+  if (args.explain) {
+    await explainOne(args.source ?? "etreproprio", args.explain);
+    return;
   }
 
   console.log(`\nRe-parsing from ${storageDescription()} — no network, no traffic.`);
