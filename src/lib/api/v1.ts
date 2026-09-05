@@ -1,7 +1,8 @@
 import "server-only";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
+  marketReports,
   portalAgencies,
   portalListingEvents,
   portalListings,
@@ -555,5 +556,108 @@ export async function status(scope: KeyScope): Promise<{
       lastRunAt: r.lastRunAt ? new Date(r.lastRunAt).toISOString() : null,
       lastOutcome: r.lastOutcome,
     })),
+  };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reports — the market frozen, period by period
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A report is not a query, and that is the whole point of serving it.
+ *
+ * Every other endpoint here answers "what is true now". A report answers "what
+ * we could see in August, at the coverage we had, on the day it was written" —
+ * and those numbers cannot be recomputed later, because the market has moved
+ * and so has our reach into it. `npm run report` freezes them; this hands the
+ * frozen copy to the client instance rather than making it build a second
+ * reporting engine that would drift from the first.
+ *
+ * `coverage` and `warnings` travel with the figures deliberately. Switch a
+ * portal on between two periods and the later one shows a market that "grew" —
+ * a fact about us, not about the Var. A client comparing two reports has to be
+ * able to see that, so it is part of the payload rather than a footnote we hope
+ * someone reads.
+ */
+
+export type ReportSummaryPayload = {
+  id: string;
+  kind: string;
+  label: string;
+  periodStart: string;
+  periodEnd: string;
+  activeCount: number;
+  newCount: number;
+  delistedCount: number;
+  priceCutCount: number;
+  medianPriceEur: number | null;
+  medianPricePerM2: number | null;
+  medianDaysOnMarket: number | null;
+  warnings: string[];
+  generatedAt: string | null;
+};
+
+export type ReportPayload = ReportSummaryPayload & {
+  communes: Record<string, unknown>[];
+  agencies: Record<string, unknown>[];
+  movements: Record<string, unknown>[];
+  coverage: Record<string, unknown>;
+};
+
+function toSummary(r: Record<string, unknown>): ReportSummaryPayload {
+  return {
+    id: r.id as string,
+    kind: (r.kind as string) ?? "monthly",
+    label: (r.label as string) ?? "",
+    periodStart: (r.periodStart as Date).toISOString(),
+    periodEnd: (r.periodEnd as Date).toISOString(),
+    activeCount: (r.activeCount as number) ?? 0,
+    newCount: (r.newCount as number) ?? 0,
+    delistedCount: (r.delistedCount as number) ?? 0,
+    priceCutCount: (r.priceCutCount as number) ?? 0,
+    medianPriceEur: (r.medianPriceEur as number) ?? null,
+    medianPricePerM2: (r.medianPricePerM2 as number) ?? null,
+    medianDaysOnMarket: (r.medianDaysOnMarket as number) ?? null,
+    warnings: (r.warnings as string[]) ?? [],
+    generatedAt: (r.generatedAt as Date | null)?.toISOString() ?? null,
+  };
+}
+
+/** Every report written for this key's client, newest period first. */
+export async function reportList(scope: KeyScope): Promise<ReportSummaryPayload[]> {
+  const rows = await db
+    .select()
+    .from(marketReports)
+    .where(eq(marketReports.clientId, scope.clientId))
+    .orderBy(desc(marketReports.periodStart));
+
+  return rows.map((r) => toSummary(r as unknown as Record<string, unknown>));
+}
+
+/**
+ * One report in full, or null.
+ *
+ * Scoped by client as well as by id: a report id is a uuid a client could
+ * plausibly hold from elsewhere, and one client's market is not another's.
+ */
+export async function reportById(
+  scope: KeyScope,
+  id: string,
+): Promise<ReportPayload | null> {
+  const [row] = await db
+    .select()
+    .from(marketReports)
+    .where(and(eq(marketReports.id, id), eq(marketReports.clientId, scope.clientId)))
+    .limit(1);
+  if (!row) return null;
+
+  const r = row as unknown as Record<string, unknown>;
+  return {
+    ...toSummary(r),
+    communes: (r.communes as Record<string, unknown>[]) ?? [],
+    agencies: (r.agencies as Record<string, unknown>[]) ?? [],
+    movements: (r.movements as Record<string, unknown>[]) ?? [],
+    coverage: (r.coverage as Record<string, unknown>) ?? {},
   };
 }

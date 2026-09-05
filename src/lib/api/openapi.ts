@@ -105,11 +105,63 @@ const property = {
   },
 } as const;
 
+const REPORT_SUMMARY = {
+  type: "object",
+  properties: {
+    id: { type: "string", format: "uuid" },
+    kind: { type: "string", enum: ["monthly", "weekly", "adhoc"] },
+    label: { type: "string", example: "August 2026" },
+    periodStart: { type: "string", format: "date-time" },
+    periodEnd: { type: "string", format: "date-time" },
+    activeCount: { type: "integer" },
+    newCount: { type: "integer", description: "Listed during the period." },
+    delistedCount: {
+      type: "integer",
+      description:
+        "Disappeared during the period. NOT sold — a listing goes away when it is " +
+        "withdrawn, expires, or moves to another agency, and we cannot tell which.",
+    },
+    priceCutCount: { type: "integer" },
+    medianPriceEur: { type: "integer", nullable: true },
+    medianPricePerM2: { type: "integer", nullable: true },
+    medianDaysOnMarket: {
+      type: "integer",
+      nullable: true,
+      description:
+        "From when WE first saw the listing, unless the portal published a date. " +
+        "For anything already listed when collection began it is a lower bound.",
+    },
+    warnings: { type: "array", items: { type: "string" } },
+    generatedAt: { type: "string", format: "date-time", nullable: true },
+  },
+} as const;
+
+const REPORT = {
+  type: "object",
+  properties: {
+    ...REPORT_SUMMARY.properties,
+    communes: { type: "array", items: { type: "object" } },
+    agencies: { type: "array", items: { type: "object" } },
+    movements: {
+      type: "array",
+      items: { type: "object" },
+      description: "The price cuts and delistings worth reading, not all of them.",
+    },
+    coverage: {
+      type: "object",
+      description:
+        "What the numbers could not see: communes crawled, sources enabled, at " +
+        "generation time. Two reports with different coverage are not comparable " +
+        "without saying so.",
+    },
+  },
+} as const;
+
 export const openApiDocument = {
   openapi: "3.0.3",
   info: {
     title: "Portal Monitoring Agent — collector API",
-    version: "1.1.0",
+    version: "1.2.0",
     description: [
       "Market data for client instances: a snapshot to start from, and a stream of",
       "events to stay current.",
@@ -227,6 +279,76 @@ export const openApiDocument = {
       },
     },
 
+    "/api/v1/reports": {
+      get: {
+        tags: ["reports"],
+        summary: "The periods that have been frozen into reports",
+        description: [
+          "A report is not a query. Every other endpoint answers 'what is true now';",
+          "a report answers 'what we could see during August, at the coverage we had,",
+          "on the day it was written' — figures that cannot be recomputed later,",
+          "because both the market and our reach into it have moved since.",
+          "",
+          "`warnings` travels with the numbers. Switch a portal on between two periods",
+          "and the later one shows a market that grew: a fact about the collector, not",
+          "about the Var. Read them before drawing a trend from two reports.",
+        ].join(" "),
+        responses: {
+          "200": {
+            description: "Summaries, newest period first.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    reports: { type: "array", items: { $ref: "#/components/schemas/ReportSummary" } },
+                    caveat: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or unknown key." },
+        },
+      },
+    },
+    "/api/v1/reports/{id}": {
+      get: {
+        tags: ["reports"],
+        summary: "One report in full",
+        description:
+          "Adds the per-commune and per-agency tables, the notable movements, and " +
+          "`coverage` — how many communes were being crawled and which portals were " +
+          "enabled when the figures were written.",
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", format: "uuid" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "The report.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { report: { $ref: "#/components/schemas/Report" } },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or unknown key." },
+          "404": {
+            description:
+              "No such report for this client. Reports belonging to another client " +
+              "answer the same way — whether they exist is not this key's business.",
+          },
+        },
+      },
+    },
     "/api/v1/events": {
       get: {
         tags: ["market"],
@@ -335,6 +457,10 @@ export const openApiDocument = {
           },
         },
       },
+    },
+    schemas: {
+      ReportSummary: REPORT_SUMMARY,
+      Report: REPORT,
     },
   },
 } as const;
