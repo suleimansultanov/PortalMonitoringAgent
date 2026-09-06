@@ -7,6 +7,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalSources } from "@/lib/db/schema";
 import { collectionCommunes, communesForSource } from "./runner/run";
+import { communeSliceForDay } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { sweepImpossibleValues } from "./sanity";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
@@ -562,6 +563,28 @@ async function preflight(): Promise<number> {
   return 1;
 }
 
+/**
+ * Tonight's slice of a source's communes, or undefined for all of them.
+ *
+ * Deterministic from the date, so it cannot stick and anyone can check which
+ * communes a given night should have covered. The list is sorted first: the
+ * subscription order is whatever the rows came back in, and a rotation over an
+ * unstable order would revisit some communes twice a cycle and others never.
+ */
+async function rotatedCommunes(sourceId: string, perNight: number): Promise<string | undefined> {
+  if (perNight <= 0) return undefined;
+  const all = await communesForSource(sourceId);
+  if (all.length === 0 || all.length <= perNight) return undefined;
+
+  const now = new Date();
+  const dayOfYear = Math.floor(
+    (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) -
+      Date.UTC(now.getUTCFullYear(), 0, 0)) /
+      86_400_000,
+  );
+  return communeSliceForDay(all, perNight, dayOfYear).join(",");
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes("--check")) {
     console.log("\n[nightly] preflight — nothing is fetched\n");
@@ -608,13 +631,42 @@ async function main(): Promise<void> {
    */
   const communes = arg("communes");
   /**
+   * Collect N communes a night and rotate, instead of walking all of them.
+   *
+   * WHY THE CALENDAR AND NOT THE DATABASE. There is already a `--stale` in
+   * `npm run collect` that picks the communes longest without a completed run,
+   * and it is the obvious thing to reach for. It has a trap: it counts only
+   * runs that finished with no error, and a pass that spends its fetch budget
+   * records one. Superimmo will spend its budget most nights for the next
+   * week, so every night would qualify as "never collected", every night would
+   * pick the same first three communes, and the other nine would never come
+   * round. A rotation that silently sticks is exactly the failure this project
+   * has now hit twice in a day.
+   *
+   * The day of the year, modulo the number of slices, has no such state to
+   * corrupt. It cannot stick, a missed night costs that slice one cycle rather
+   * than forever, and anyone can work out from the date which communes a given
+   * night should have touched.
+   *
+   * What it buys: Superimmo's discovery is an hour for twelve communes and
+   * about a quarter of that for three, which is the difference between a pass
+   * that finishes and one that is killed. The listings it does not reach stay
+   * `added` and are collected when their slice comes round.
+   */
+  const communesPerNight = Math.max(0, Number(arg("rotate") ?? 0) || 0);
+  /**
    * The weekly whole-list pass. Delta sources stop early every other night and
    * therefore never delist; this is the night that does.
    */
   const fullSweep = process.argv.includes("--full");
 
   const all = await db
-    .select({ key: portalSources.key, enabled: portalSources.enabled, config: portalSources.config })
+    .select({
+      id: portalSources.id,
+      key: portalSources.key,
+      enabled: portalSources.enabled,
+      config: portalSources.config,
+    })
     .from(portalSources)
     .where(only || force ? undefined : eq(portalSources.enabled, true));
 
@@ -677,13 +729,19 @@ async function main(): Promise<void> {
     for (;;) {
       const next = queue.shift();
       if (!next) return;
-      console.log(`[nightly] → ${next.key}`);
+      /**
+       * An explicit `--communes` always wins: it is somebody probing, and a
+       * rotation that overrode them would answer a different question than the
+       * one asked.
+       */
+      const slice = communes ?? (await rotatedCommunes(next.id, communesPerNight));
+      console.log(`[nightly] → ${next.key}${slice && !communes ? ` (${slice})` : ""}`);
       const outcome = await runChild(
         next.key,
         path.join(logDir, `${next.key}.log`),
         force,
         timeoutMs,
-        communes,
+        slice,
         fullSweep,
       );
       outcomes.push(outcome);

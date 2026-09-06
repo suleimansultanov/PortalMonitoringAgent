@@ -187,3 +187,40 @@ const POSTCODE_TO_INSEE: Record<string, string> = {
    */
   "83680": "83063", // La Garde-Freinet
 };
+
+/**
+ * Tonight's slice of a commune list, chosen by the date.
+ *
+ * Pure, and here rather than in `nightly.ts`, because `nightly.ts` cannot be
+ * imported without a database and a rotation nobody can test is how a rotation
+ * silently sticks on the same three communes for a month.
+ *
+ * WHY THE CALENDAR AND NOT "WHICHEVER WAS COLLECTED LONGEST AGO". The obvious
+ * version reads the last completed run per commune, and there is already a
+ * `--stale` that does it. Its trap: it counts only runs that finished without
+ * an error, and a pass that spends its fetch budget records one. A source that
+ * spends its budget every night — which is Superimmo for the next week — would
+ * have every commune permanently "never collected", so the query would return
+ * the same first three every time and the rest would never come round.
+ *
+ * The day of the year has no state to corrupt. It cannot stick, a missed night
+ * costs a slice one cycle rather than forever, and anyone can work out from the
+ * date which communes a given night should have covered.
+ *
+ * Returns everything when the list is no longer than a night's worth, so a
+ * small source is never split for no reason.
+ */
+export function communeSliceForDay(
+  all: readonly string[],
+  perNight: number,
+  dayOfYear: number,
+): string[] {
+  if (perNight <= 0 || all.length === 0 || all.length <= perNight) return [...all];
+  // Sorted, because the subscription order is whatever the rows came back in,
+  // and a rotation over an unstable order revisits some communes twice a cycle
+  // and others never.
+  const ordered = [...all].sort();
+  const slices = Math.ceil(ordered.length / perNight);
+  const index = ((dayOfYear % slices) + slices) % slices;
+  return ordered.slice(index * perNight, index * perNight + perNight);
+}

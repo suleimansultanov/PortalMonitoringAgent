@@ -77,7 +77,13 @@ jobs:
 
       - name: Collect
         run: |
-          ARGS="--sources=superimmo --timeout=${{ inputs.timeout || '120' }}"
+          # Three communes a night, rotating by the date — see communeSliceForDay.
+          #
+          # Discovery here is an hour for twelve communes and about a quarter of
+          # that for three, and on 2026-09-06 that hour was most of a pass that
+          # then got killed in the fetch phase. Ignored when `communes` is given
+          # by hand, so a probe still asks exactly what it was asked to ask.
+          ARGS="--sources=superimmo --rotate=3 --timeout=${{ inputs.timeout || '120' }}"
           if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
           # NOT on the schedule, and that is the open question rather than an
           # oversight. A full sweep is the only thing that writes delistings,
