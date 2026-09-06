@@ -134,6 +134,17 @@ jobs:
             ARGS="$ARGS --full"
             echo "FULL SWEEP — every list walked to the end, so delistings get written."
           fi
+          # Superimmo is deliberately not part of this night — see superimmo.yml.
+          #
+          # It is throttled to roughly four requests a quarter of an hour, which
+          # is not slowness but a refusal expressed as delay. On 2026-09-06 it
+          # spent three hours discovering 1100 of its ~2800 listings, was killed
+          # by the 180-minute watchdog, and returned nothing — while the other
+          # five sources finished in twenty minutes between them and then waited.
+          #
+          # A subtraction rather than a hand-written list of the other five, so
+          # that a seventh portal is included by default rather than forgotten.
+          ARGS="$ARGS --exclude=superimmo"
           npm run nightly -- $ARGS
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

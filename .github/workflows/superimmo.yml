@@ -1,0 +1,126 @@
+name: Superimmo
+
+# WHY THIS PORTAL HAS A WORKFLOW OF ITS OWN
+#
+# Superimmo is not slow. It is refusing us in the form of a delay: measured on
+# 2026-09-06 it served roughly FOUR REQUESTS EVERY FIFTEEN MINUTES against a
+# configured crawl delay of ten seconds — about two hundred seconds a request,
+# twenty times the rate we set ourselves. In three hours it discovered 1100 of
+# its ~2800 listings, was killed by the watchdog, and returned nothing.
+#
+# In the shared night that cost the other five sources three hours of waiting to
+# gain nothing; they finish in twenty minutes between them. So it collects here,
+# on its own hours, where its failure is its own.
+#
+# ⚠ WHAT THIS DOES NOT FIX. A different runner is still a GitHub runner, and the
+# throttling is applied per address. The real routes out are a fixed address of
+# our own, or a raised limit from Superimmo — both of them conversations, not
+# code. This file only stops one portal's problem from being everyone's.
+
+on:
+  schedule:
+    # 05:00 UTC, well clear of the main night at 01:30. Not a preference: the
+    # two share a concurrency group, and a Superimmo pass that overlapped the
+    # main one would have two processes clustering the same communes at once —
+    # which is the bug that took a day to find on 29 August.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      communes:
+        description: "Comma-separated INSEE codes. Blank means every subscribed one."
+        required: false
+      full:
+        description: "Walk every list to the end. Only ever with --communes: the whole portal cannot be swept in one pass."
+        required: false
+        type: boolean
+        default: false
+      timeout:
+        description: "Minutes before the source is killed."
+        required: false
+        default: "120"
+
+concurrency:
+  # THE SAME GROUP AS THE MAIN NIGHT, deliberately. Clustering rewrites which
+  # property each listing belongs to, across every source, one commune at a
+  # time; two passes doing that together decide what is already claimed from a
+  # view the other is busy invalidating.
+  group: nightly-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Superimmo is fetched over plain HTTP, but nightly.ts checks for the
+      # browser in its preflight and the check is cheap. Left in so this file
+      # keeps working if the source ever needs one.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Collect
+        run: |
+          ARGS="--sources=superimmo --timeout=${{ inputs.timeout || '120' }}"
+          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
+          # NOT on the schedule, and that is the open question rather than an
+          # oversight. A full sweep is the only thing that writes delistings,
+          # and Superimmo cannot finish one: at its throttled rate the discovery
+          # alone is about seven hours. Six nights a week its delta stop reads
+          # the top of each list and finds what is new — sorted newest-first by
+          # their own `sort=created_at`, verified against the card dates on
+          # 2026-08-29 — and never notices anything gone.
+          #
+          # Until the sweep is split across the week by commune, delistings for
+          # this source are written by hand: run this workflow with `full` and a
+          # short `communes` list, a couple at a time.
+          if [ "${{ inputs.full }}" = "true" ]; then
+            if [ -z "${{ inputs.communes }}" ]; then
+              echo "::error::A full sweep of every commune cannot finish on this source. Pass communes= with two or three codes."
+              exit 1
+            fi
+            ARGS="$ARGS --full"
+            echo "FULL SWEEP of ${{ inputs.communes }} — delistings will be written for those communes."
+          fi
+          npm run nightly -- $ARGS
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+          COLLECTOR_HEADER: ${{ secrets.COLLECTOR_HEADER }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          if [ -f logs/latest/summary.txt ]; then
+            {
+              echo '```'
+              cat logs/latest/summary.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No summary was written — the run died before it got that far." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: superimmo-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+          if-no-files-found: warn

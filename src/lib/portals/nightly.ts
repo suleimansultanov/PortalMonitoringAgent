@@ -584,6 +584,21 @@ async function main(): Promise<void> {
   const timeoutMs = Math.max(1, Number(arg("timeout") ?? 180) || 180) * 60_000;
   const only = arg("sources")?.split(",").map((s) => s.trim()).filter(Boolean);
   /**
+   * Sources to leave out of an otherwise ordinary night.
+   *
+   * A subtraction rather than `--sources=<the other five>`, so that adding a
+   * seventh portal does not silently exclude it from every night by leaving it
+   * off a hand-written list. What is named here is the exception; everything
+   * else is included by default, which is the direction that fails safe.
+   *
+   * Superimmo is the one that needs it: throttled to roughly four requests a
+   * quarter of an hour, it cannot finish and it holds the night open while
+   * failing. It has its own workflow and its own hours.
+   */
+  const exclude = new Set(
+    arg("exclude")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+  );
+  /**
    * Passed straight through to each child, unparsed.
    *
    * Not a normal night's flag. It is here so the same one-commune probe can be
@@ -603,7 +618,12 @@ async function main(): Promise<void> {
     .from(portalSources)
     .where(only || force ? undefined : eq(portalSources.enabled, true));
 
-  let sources = all.filter((s) => (only ? only.includes(s.key) : true));
+  let sources = all
+    .filter((s) => (only ? only.includes(s.key) : true))
+    .filter((s) => !exclude.has(s.key));
+  if (exclude.size > 0) {
+    console.log(`[nightly] excluded by request: ${[...exclude].join(", ")}`);
+  }
 
   /**
    * Sources that asked for a window go first.
