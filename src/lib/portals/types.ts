@@ -141,6 +141,36 @@ export type DiscoverContext = {
    * suppression is no longer protecting the data, it is hiding it.
    */
   incomplete(communeInsee: string, reason: string): void;
+
+  /**
+   * The delta stop, present only on a pass that is allowed to end early.
+   *
+   * WHY THE ADAPTER AND NOT THE RUNNER. The runner sees one flat stream of
+   * listings and cannot tell where one commune ends and the next begins; the
+   * adapter owns the pagination and knows exactly. When the runner tried to do
+   * it — counting known listings globally and breaking out of the stream — the
+   * break killed the whole generator, so discovery stopped on the FIRST commune
+   * and the other eleven were never opened.
+   *
+   * That ran on 2026-09-06 and reported `ok` in twenty-three seconds: 17
+   * listings seen out of 2831, one commune touched, eleven silently frozen. A
+   * fast green night that checks a twelfth of the market is worse than a slow
+   * red one, because nothing about it asks to be looked at.
+   *
+   * So: count `knows()` hits consecutively WITHIN a commune, stop paginating
+   * THAT commune when the count reaches `after`, report it through
+   * `incomplete()` so nothing there is delisted, and carry on to the next one.
+   *
+   * Absent on a full sweep, and absent on every source whose list is not
+   * genuinely newest-first — where it would skip a new listing sitting in the
+   * middle of an unordered list, on a night that reports success.
+   */
+  delta?: {
+    /** True when this listing is already held, so it is not news. */
+    knows(externalId: string): boolean;
+    /** Consecutive known listings that mean the rest of this commune is older. */
+    after: number;
+  };
 };
 
 export type PortalAdapter = {

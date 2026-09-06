@@ -78,6 +78,20 @@ export const superimmoAdapter: PortalAdapter = {
       const seen = new Set<string>();
       /** Every exit from the loop that is not "the results ran out". */
       let cutShort: string | null = null;
+      /**
+       * Known listings met in a row, IN THIS COMMUNE.
+       *
+       * Per commune, and that word is the whole fix. The runner used to keep
+       * one counter for the entire pass and break out of the stream when it
+       * filled, which ended the generator — so discovery stopped inside the
+       * first commune and the other eleven were never opened. It reported `ok`
+       * in twenty-three seconds having looked at 17 listings out of 2831.
+       *
+       * Reset by any unseen listing: a listing edited today floats back up a
+       * date ordering, so a run of known ones can be a coincidence rather than
+       * the end of the news.
+       */
+      let consecutiveKnown = 0;
 
       for (let page = 1; page <= maxPages; page++) {
         const base = `${host}/achat/provence-alpes-cote-d-azur/var/${c.slug}-${c.postcode}`;
@@ -111,8 +125,29 @@ export const superimmoAdapter: PortalAdapter = {
         for (const u of fresh) {
           seen.add(u);
           const id = u.match(ID_FROM_URL)?.[1];
-          if (id) yield { externalId: id, url: u, communeHint: c.slug };
+          if (!id) continue;
+          yield { externalId: id, url: u, communeHint: c.slug };
+
+          if (!ctx.delta) continue;
+          if (ctx.delta.knows(id)) {
+            consecutiveKnown += 1;
+            if (consecutiveKnown >= ctx.delta.after) {
+              cutShort =
+                `delta stop — ${ctx.delta.after} listings we already hold in a row, ` +
+                `so the rest of this commune's list is older`;
+              break;
+            }
+          } else {
+            consecutiveKnown = 0;
+          }
         }
+
+        /**
+         * The delta stop ends THIS commune and nothing else. The loop over
+         * communes continues, which is the difference between reading the top
+         * of twelve lists and reading the top of one.
+         */
+        if (cutShort) break;
 
         if (page === maxPages) {
           cutShort = `hit the ${maxPages}-page ceiling with listings still arriving`;

@@ -494,13 +494,21 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       // make the log ambiguous about which one fired.
       !opts.limit;
     const knownIds = new Set(known.map((k) => k.externalId));
-    let consecutiveKnown = 0;
-    let deltaStopped = false;
 
     if (deltaEnabled) {
+      /**
+       * Set BEFORE discovery, not as a consequence of it.
+       *
+       * A delta pass reads the top of each list and stops; by definition it has
+       * not seen the whole market and must never delist. Deriving that from
+       * "did any commune actually stop early" would make the safety depend on
+       * an adapter remembering to report — and the one night no adapter
+       * reported would be the night 2831 listings were marked sold.
+       */
+      complete = false;
       console.log(
-        `[run:${source.key}] delta pass — stopping after ${deltaAfter} known listings ` +
-          `in a row; nothing will be delisted`,
+        `[run:${source.key}] delta pass — each commune stops after ${deltaAfter} known ` +
+          `listings in a row; nothing will be delisted`,
       );
     }
 
@@ -512,6 +520,13 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         incomplete: (insee, reason) => {
           if (!partialCommunes.has(insee)) partialCommunes.set(insee, reason);
         },
+        /**
+         * Handed to the adapter rather than applied here — see the note on
+         * `delta` in types.ts for what applying it here cost.
+         */
+        delta: deltaEnabled
+          ? { knows: (externalId) => knownIds.has(externalId), after: deltaAfter }
+          : undefined,
       })) {
         discovered.set(item.externalId, item);
 
@@ -530,21 +545,6 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
          */
         if (discovered.size % 100 === 0) {
           console.log(`[run:${source.key}] discovering… ${discovered.size} listings so far`);
-        }
-
-        if (deltaEnabled) {
-          if (knownIds.has(item.externalId)) {
-            consecutiveKnown += 1;
-            if (consecutiveKnown >= deltaAfter) {
-              deltaStopped = true;
-              complete = false;
-              break;
-            }
-          } else {
-            // One unseen listing means the run of known ones was a coincidence
-            // — a listing edited today can float back up a date ordering.
-            consecutiveKnown = 0;
-          }
         }
 
         if (opts.limit && discovered.size >= opts.limit) {
@@ -578,13 +578,31 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       complete
         ? `[run:${source.key}] discovery done — ${discovered.size} listings across ` +
             `${opts.communeInsee.length} communes; working out what is new`
-        : deltaStopped
-          ? `[run:${source.key}] delta stop — ${discovered.size} listings seen, then ` +
-            `${deltaAfter} already-known in a row; the rest of the list is older. ` +
-            `Nothing will be delisted from this pass.`
+        : deltaEnabled
+          ? `[run:${source.key}] delta pass done — ${discovered.size} listings seen across ` +
+            `${partialCommunes.size} of ${opts.communeInsee.length} communes that stopped ` +
+            `at ${deltaAfter} known in a row. Nothing will be delisted from this pass.`
           : `[run:${source.key}] discovery STOPPED EARLY — ${discovered.size} listings ` +
             `collected before it broke off; nothing will be delisted from this pass`,
     );
+
+    /**
+     * The delta stop is opt-in on the source and IMPLEMENTED IN THE ADAPTER, so
+     * the two can drift apart: set `deltaStopAfterKnown` on a source whose
+     * adapter ignores `ctx.delta` and the pass walks every list in full while
+     * declaring itself incomplete — slower than before AND never delisting,
+     * silently, for as long as nobody re-reads the config.
+     *
+     * Not fatal, because the safe direction is the one it fails in. Loud,
+     * because the whole point of the setting is the walking it saves.
+     */
+    if (deltaEnabled && known.length > 0 && partialCommunes.size === 0) {
+      console.warn(
+        `[run:${source.key}] deltaStopAfterKnown is set but no commune stopped early — ` +
+          `this adapter appears to ignore ctx.delta. The pass walked everything and will ` +
+          `still delist nothing.`,
+      );
+    }
 
     await db
       .update(portalRuns)
@@ -709,7 +727,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      * delta pass already declares itself incomplete, so nothing can be
      * delisted either way.
      */
-    if (verdict.abort && !deltaStopped) {
+    if (verdict.abort && !deltaEnabled) {
       const reason = discoveryError
         ? `${verdict.reason} Discovery also errored: ${discoveryError}`
         : verdict.reason;

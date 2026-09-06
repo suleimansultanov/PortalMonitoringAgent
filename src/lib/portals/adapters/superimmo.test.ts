@@ -201,3 +201,106 @@ test("a source configured without a sort asks for plain URLs", async () => {
   const { asked } = await discover({});
   for (const url of asked) assert.ok(!url.includes("?"), `unexpected query in ${url}`);
 });
+
+/**
+ * The delta stop, over two communes.
+ *
+ * This is the regression test for 2026-09-06, and the shape of the bug is the
+ * reason it needs TWO communes. The stop used to live in the runner, which
+ * counts a single flat stream of listings and broke out of it — ending the
+ * generator, so discovery finished inside the FIRST commune and every one after
+ * it was never opened. With one commune in the test, that bug passes.
+ *
+ * The night it ran, Superimmo reported `ok` in twenty-three seconds having seen
+ * 17 listings out of 2831, in one commune of twelve. Nothing failed; eleven
+ * communes were simply frozen, and would have stayed frozen indefinitely.
+ */
+async function discoverTwoCommunes(known: Set<string>) {
+  const asked: string[] = [];
+  const found: string[] = [];
+  const incomplete: Record<string, string> = {};
+  const card = (slug: string, id: string) =>
+    `<a href="https://www.superimmo.com/annonces/achat-maison-160m-${slug}-83350-${id}">x</a>`;
+
+  for await (const item of superimmoAdapter.discover({
+    fetch: async (url: string) => {
+      asked.push(url);
+      const slug = url.includes("/ramatuelle-") ? "ramatuelle" : "gassin";
+      // Page one carries listings; page two is empty, an ordinary ending.
+      if (/\/p\/2/.test(url)) return "<html></html>";
+      return Array.from({ length: 20 }, (_, i) => card(slug, `${slug}${i}`)).join("");
+    },
+    communeInsee: ["83101", "83065"],
+    config: {
+      host: "https://www.superimmo.com",
+      communes: [
+        { insee: "83101", slug: "ramatuelle", postcode: "83350" },
+        { insee: "83065", slug: "gassin", postcode: "83580" },
+      ],
+      maxPages: 5,
+    },
+    incomplete: (insee, reason) => {
+      incomplete[insee] ??= reason;
+    },
+    delta: { knows: (id) => known.has(id), after: 15 },
+  })) {
+    found.push(item.externalId);
+  }
+  return { asked, found, incomplete };
+}
+
+test("a delta stop in the first commune does not end the pass", async () => {
+  // Every Ramatuelle listing is already held; Gassin's are all new. The first
+  // commune must stop early AND the second must still be walked.
+  const known = new Set(Array.from({ length: 20 }, (_, i) => `ramatuelle${i}`));
+  const { found, asked, incomplete } = await discoverTwoCommunes(known);
+
+  assert.ok(
+    found.some((id) => id.startsWith("gassin")),
+    `the second commune was never opened — found: ${found.join(", ") || "(nothing)"}`,
+  );
+  assert.ok(
+    asked.some((u) => u.includes("/gassin-")),
+    "no request was made for the second commune",
+  );
+
+  // The first commune stopped after fifteen in a row, so it saw 15 of its 20…
+  assert.equal(found.filter((id) => id.startsWith("ramatuelle")).length, 15);
+  // …and said so, which is what keeps its listings from being delisted.
+  assert.match(incomplete["83101"] ?? "", /delta stop/);
+});
+
+test("the counter resets on an unseen listing, and does not leak between communes", async () => {
+  // Nothing is known: no commune may stop early, and both must be walked whole.
+  const { found, incomplete } = await discoverTwoCommunes(new Set());
+  assert.equal(found.filter((id) => id.startsWith("ramatuelle")).length, 20);
+  assert.equal(found.filter((id) => id.startsWith("gassin")).length, 20);
+  assert.equal(incomplete["83101"], undefined);
+  assert.equal(incomplete["83065"], undefined);
+});
+
+test("without a delta the whole list is walked, exactly as before", async () => {
+  // Every other source, and every full sweep, takes this path.
+  const asked: string[] = [];
+  const found: string[] = [];
+  const card = (id: string) =>
+    `<a href="https://www.superimmo.com/annonces/achat-maison-160m-ramatuelle-83350-${id}">x</a>`;
+  for await (const item of superimmoAdapter.discover({
+    fetch: async (url: string) => {
+      asked.push(url);
+      return /\/p\/2/.test(url)
+        ? "<html></html>"
+        : Array.from({ length: 20 }, (_, i) => card(`r${i}`)).join("");
+    },
+    communeInsee: ["83101"],
+    config: {
+      host: "https://www.superimmo.com",
+      communes: [{ insee: "83101", slug: "ramatuelle", postcode: "83350" }],
+      maxPages: 5,
+    },
+    incomplete: () => {},
+  })) {
+    found.push(item.externalId);
+  }
+  assert.equal(found.length, 20);
+});
