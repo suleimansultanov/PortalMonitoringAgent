@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 
@@ -197,4 +198,27 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-void main();
+/**
+ * ONLY WHEN THIS FILE IS THE ONE THAT WAS RUN.
+ *
+ * `void main()` on its own is how every other script in this folder ends, and
+ * it is fine for all of them: nothing imports them. This one is imported —
+ * `nightly.ts` uses `sweepImpossibleValues` — and an import runs the module,
+ * so `main()` was starting alongside the night's work and calling
+ * `process.exit(0)` the moment its query came back.
+ *
+ * That is what happened on 2026-09-06. The nightly pass printed its header,
+ * announced its first source, and died about two seconds later with exit code
+ * ZERO. GitHub marked the job green. Six portals were not touched, no summary
+ * was written, and the only visible trace was this file's own sign-off —
+ * "Nothing impossible in the listings." — printed in the middle of a collection
+ * run, where it made no sense and nobody read it as a symptom.
+ *
+ * The exit code is the sharp edge: a crash would have been obvious. A helper
+ * calling `process.exit(0)` inside somebody else's process is a silent,
+ * successful nothing — which is this project's oldest failure mode wearing a
+ * new hat.
+ */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main();
+}
