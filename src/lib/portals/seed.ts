@@ -227,6 +227,27 @@ function sourceSeeds(): SourceSeed[] {
          */
         discoveryOrder: "newest-first",
         deltaStopAfterKnown: 15,
+        /**
+         * Forty minutes of fetching, then stop and hand the rest to tomorrow.
+         *
+         * Measured 2026-09-06, and the numbers are the argument. The delta pass
+         * walks all twelve communes in about an hour and finds 103 listings we
+         * do not hold — a backlog, because this source has not completed in
+         * days. The runner estimated seventeen minutes for them at the
+         * configured ten-second delay; an hour later it was still going and the
+         * watchdog killed it, reporting nothing.
+         *
+         * The estimate is not wrong about our pacing, it is wrong about theirs:
+         * nearly every request here is throttled and retried, so a listing
+         * costs closer to two minutes than ten seconds.
+         *
+         * Forty minutes buys roughly twenty listings a night, which drains a
+         * backlog of a hundred in a working week and leaves the steady state —
+         * a handful of new listings a night — finishing comfortably. The
+         * alternative is not "collect them faster"; it is being killed at the
+         * same point every night and never reporting what landed.
+         */
+        fetchBudgetMinutes: 40,
       },
     },
     {

@@ -827,6 +827,33 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      * runs that already went wrong.
      */
     let cursor = 0;
+    /**
+     * How long the fetch phase may run before it stops and hands the rest to
+     * the next pass.
+     *
+     * The refresh budget above rations pages we ALREADY hold, and says in its
+     * own comment that new listings are never capped — `added` being the point
+     * of the pass. That is right for a portal that answers at the rate we ask.
+     * It is not right for one that does not.
+     *
+     * 2026-09-06: Superimmo's delta pass found 103 new listings and estimated
+     * seventeen minutes for them at its ten-second delay. An hour later it had
+     * not finished and the watchdog killed it — the real cost is nearer two
+     * minutes a listing, because almost every request is throttled and retried.
+     * Nothing was reported, the run row was left open, and the summary said
+     * "nothing was stored" about a pass that had been storing listings for an
+     * hour.
+     *
+     * A budget turns that into an ordinary outcome: take what fits, say how
+     * many did not, leave them for tomorrow. They are still `added`, so the
+     * next pass picks them up without being told.
+     *
+     * Absent by default. Every source that finishes inside its window keeps
+     * fetching everything it discovered, exactly as before.
+     */
+    const fetchBudgetMs =
+      Number(cfg.fetchBudgetMinutes) > 0 ? Number(cfg.fetchBudgetMinutes) * 60_000 : null;
+    const fetchStartedAt = Date.now();
     /** Set when a refusal streak is to be answered with a fresh session. */
     let restartWanted = false;
     /** Listings served since the current session opened, for the guard below. */
@@ -837,6 +864,19 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       restartWanted = false;
 
       for (; cursor < chunkEnd; cursor++) {
+        /**
+         * Checked per listing, not per chunk. A chunk is twenty-five, and on a
+         * source costing two minutes each that is fifty minutes of overshoot —
+         * which on this source is the difference between stopping cleanly and
+         * being killed.
+         */
+        if (fetchBudgetMs !== null && Date.now() - fetchStartedAt >= fetchBudgetMs) {
+          fetchStoppedEarly =
+            `the ${Math.round(fetchBudgetMs / 60_000)}-minute fetch budget was spent after ` +
+            `${ingested} stored; ${toFetch.length - cursor} roll over to the next pass`;
+          break;
+        }
+
         const externalId = toFetch[cursor];
         const target = discovered.get(externalId);
         if (!target) continue;
@@ -976,6 +1016,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         .update(portalRuns)
         .set({ fetchedCount: ingested, failedCount: failed })
         .where(eq(portalRuns.id, runId));
+
+      if (fetchStoppedEarly && !restartWanted) break;
 
       if (restartWanted) {
         await restartBrowserSession(restartPolicy?.waitMs ?? 30_000);

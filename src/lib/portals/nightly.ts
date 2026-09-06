@@ -726,10 +726,35 @@ async function main(): Promise<void> {
    * database three countries away it is most of the run.
    */
   const stored = outcomes.reduce((n, o) => n + (o.ingested ?? 0), 0);
-  if (stored === 0) {
+  /**
+   * A killed source reports NOTHING, which is not the same as reporting zero.
+   *
+   * `ingested` is undefined when the child never got to print its summary —
+   * because the watchdog killed it. But the child writes each listing as it
+   * fetches it, so an hour of storing followed by a kill leaves the rows in the
+   * database and no account of them here.
+   *
+   * On 2026-09-06 that produced a summary reading "nothing was stored" about a
+   * pass that had been storing for an hour, and clustering was skipped on that
+   * basis — which would have left those listings in the database and out of the
+   * product, invisible, until something else happened to touch their commune.
+   *
+   * So the skip needs certainty, not an absence. Clustering a corpus we did not
+   * change costs about twelve minutes; leaving collected listings unclustered
+   * costs them being missing, and nothing says so.
+   */
+  const unreported = outcomes.filter((o) => o.ingested === undefined).map((o) => o.sourceKey);
+  /** True only when we KNOW nothing landed — an absence of news is not zero. */
+  const certainlyNothingStored = stored === 0 && unreported.length === 0;
+  if (stored === 0 && unreported.length === 0) {
     console.log(
       "[nightly] nothing was stored — skipping deduplication, which would " +
         "recompute yesterday's answer over the whole corpus.",
+    );
+  } else if (stored === 0) {
+    console.log(
+      `[nightly] ${unreported.join(", ")} was killed before reporting, so whether it ` +
+        `stored anything is unknown — clustering rather than assuming it did not.`,
     );
   }
 
@@ -752,7 +777,7 @@ async function main(): Promise<void> {
    * have changed another.
    */
   const scoped = communes?.split(",").map((c) => c.trim()).filter(Boolean);
-  const watched = stored === 0 ? [] : await collectionCommunes();
+  const watched = certainlyNothingStored ? [] : await collectionCommunes();
   const narrowed = scoped?.length
     ? watched.filter((insee) => scoped.includes(insee))
     : watched;
@@ -835,7 +860,7 @@ async function main(): Promise<void> {
     }
   }
   const resolveLine =
-    stored === 0
+    certainlyNothingStored
       ? "deduplication: skipped — nothing was stored this pass"
       : `deduplication: ${clusters} properties across the gulf, ${merged} merged this pass` +
         (resolveError ? ` — WITH ERRORS, last: ${resolveError}` : "");
