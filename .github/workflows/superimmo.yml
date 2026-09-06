@@ -68,6 +68,13 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      # This workflow can be the only one that runs on a given day, so it cannot
+      # rely on the main night having applied a pending migration first.
+      - name: Apply migrations
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
       - name: Collect
         run: |
           ARGS="--sources=superimmo --timeout=${{ inputs.timeout || '120' }}"
