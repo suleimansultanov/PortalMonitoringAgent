@@ -1,0 +1,76 @@
+name: Probe one URL
+
+# THE SAME REQUEST, FROM HERE, SO IT CAN BE COMPARED WITH THE SAME REQUEST FROM
+# A LAPTOP.
+#
+# Every "are they blocking us, or blocking this address?" question this project
+# has asked was argued from two runs that were not the same run: a full nightly
+# pass here against a hand-typed command there, different code paths, different
+# volumes, different flags. On 2026-09-07 that produced a confident wrong answer
+# about SMC — the shared runner address was blamed, and a single command on the
+# operator's own machine disproved it in five minutes.
+#
+# This does one thing: fetch ONE url with the real collector, exactly as
+# `npm run fixture` does on a laptop, and say what came back. Same code, same
+# user-agent, same browser, one request. The only variable left is where it ran
+# from, which is the whole point.
+#
+# It touches no database and writes nothing. Safe to run whenever a portal's
+# behaviour needs explaining.
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "The one URL to fetch."
+        required: true
+      browser:
+        description: "Drive Chromium (as five of the six sources do) rather than the plain client."
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Chromium
+        if: ${{ inputs.browser }}
+        run: npx playwright install --with-deps chromium
+
+      - name: Where this ran from
+        run: |
+          echo "Runner address, so a block can be matched to it later:"
+          curl -s --max-time 10 https://api.ipify.org || echo "(could not determine)"
+          echo
+
+      - name: Fetch
+        run: |
+          ARGS="--url=${{ inputs.url }} --name=probe"
+          if [ "${{ inputs.browser }}" = "true" ]; then ARGS="$ARGS --browser"; fi
+          npm run fixture -- $ARGS
+        env:
+          COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+          COLLECTOR_HEADER: ${{ secrets.COLLECTOR_HEADER }}
+
+      # `always()`: a refused probe is a result, and its saved page — a
+      # Cloudflare block, a captcha, an empty shell — is the thing worth reading.
+      - name: Keep whatever came back
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ github.run_id }}
+          path: src/lib/portals/__fixtures__/probe.html
+          retention-days: 7
+          if-no-files-found: warn
