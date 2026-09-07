@@ -341,7 +341,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
          * moment of impatience.
          */
         if (res.status === 403) {
-          throw new BlockedError(url, "HTTP 403");
+          throw new BlockedError(url, `HTTP 403${await refusalDetail(res)}`);
         }
         if (res.status === 429) {
           const wait = retryAfterMs(res) ?? Math.max(delayMs, 5_000) * Math.pow(2, attempt);
@@ -448,4 +448,36 @@ async function readBody(res: Response, url: string): Promise<string> {
     // cheaper than failing a whole sitemap over a misconfigured header.
     return buf.toString("utf8");
   }
+}
+
+/**
+ * What a refusal actually said, in one line.
+ *
+ * We have been throwing away the body of every 403 and keeping only the
+ * number. On 2026-09-07 that left us guessing at SMC for a day: the address
+ * was ruled out, the pacing was ruled out, and the thing that would have said
+ * which of their systems was refusing us — and often why — had been discarded
+ * unread on every one of the fourteen refusals.
+ *
+ * Protection vendors identify themselves in the body or the headers almost
+ * without exception, and "this is DataDome" and "this is their own rule" are
+ * different problems with different answers.
+ *
+ * Deliberately short and deliberately safe: a truncated, whitespace-collapsed
+ * snippet, and any failure to read it is swallowed. A diagnostic that can throw
+ * turns a bad night into a worse one.
+ */
+async function refusalDetail(res: Response): Promise<string> {
+  const parts: string[] = [];
+  for (const header of ["server", "cf-ray", "x-datadome", "x-iinfo", "x-cdn", "via"]) {
+    const value = res.headers.get(header);
+    if (value) parts.push(`${header}: ${value}`);
+  }
+  try {
+    const body = (await res.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (body) parts.push(`body: ${body.slice(0, 200)}`);
+  } catch {
+    // The body is a nicety. The status is the fact.
+  }
+  return parts.length > 0 ? ` — ${parts.join(" | ")}` : "";
 }

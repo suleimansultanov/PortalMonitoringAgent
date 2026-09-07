@@ -165,7 +165,29 @@ export async function createBrowserSession(
       const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
       const status = response?.status() ?? 0;
 
-      if (status === 403 || status === 429) throw new BlockedError(url, `HTTP ${status}`);
+      if (status === 403 || status === 429) {
+        /**
+         * Read what the refusal says before throwing it away.
+         *
+         * The browser path discarded the body of every 403 exactly as the HTTP
+         * path did, and cost us the same day of guessing on SMC. Protection
+         * vendors name themselves; "DataDome" and "their own rule" want
+         * different answers. Wrapped, because a diagnostic that throws turns a
+         * bad night into a worse one.
+         */
+        let detail = "";
+        try {
+          const shown = (await page.content())
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (shown) detail = ` — page said: ${shown.slice(0, 200)}`;
+        } catch {
+          // Nothing to add. The status is the fact.
+        }
+        throw new BlockedError(url, `HTTP ${status}${detail}`);
+      }
       if (status === 404 || status === 410) {
         throw new FetchFailedError(url, status, `not found (${status})`);
       }
