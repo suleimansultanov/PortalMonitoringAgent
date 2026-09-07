@@ -93,11 +93,28 @@ export const figaroAdapter: PortalAdapter = {
   hosts: ["proprietes.lefigaro.fr", "properties.lefigaro.com"],
   discoveryMode: "index",
   /**
-   * Ours, not theirs — their robots.txt asks for nothing. Two seconds is the
-   * rate we would want a stranger to use on us, and these communes are small
-   * enough that it costs minutes rather than hours.
+   * Five seconds since 2026-09-07, up from two. Ours, not theirs — their
+   * robots.txt asks for nothing.
+   *
+   * WHY IT CHANGED, and it is a hypothesis rather than a measurement. On the
+   * night of 7 September discovery went perfectly: 1889 listings, twelve
+   * communes, per-commune counts within one or two of the portal's own
+   * `offerCount`. Then the fetch phase began and the first three listing pages
+   * answered 403, and the pass stopped.
+   *
+   * The obvious suspect was the address — GitHub's runners are shared
+   * datacentre ranges — and it was wrong. The same listing was fetched from a
+   * runner and from the operator's laptop, one request each, same code, same
+   * user-agent: BOTH were served normally. What differed on the failing night
+   * was volume, and the shape of it: about seventy requests in four minutes,
+   * with the fetch phase starting the instant discovery ended.
+   *
+   * So the variable we actually control is the rate, and two seconds was a
+   * number we picked, not one they asked for. Five is the polite adjustment to
+   * make before concluding anything about them. If it does not hold, the next
+   * step is a pause between discovery and fetching, not a smaller number.
    */
-  defaultCrawlDelayMs: 2_000,
+  defaultCrawlDelayMs: 5_000,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const host = (ctx.config.host as string) ?? "https://proprietes.lefigaro.fr";

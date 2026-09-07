@@ -427,7 +427,8 @@ function sourceSeeds(): SourceSeed[] {
        * this is the rate we would want a stranger to use on us — and at ~170
        * listings per commune it costs minutes, not hours.
        */
-      crawlDelayMs: 2_000,
+      /** Raised from 2s on 2026-09-07 — see the note in the adapter. */
+      crawlDelayMs: 5_000,
       permissionNote:
         "robots.txt read in full 2026-08-30. One `User-agent: *` group, which is " +
         "ours. It ALLOWS /sitemap/plf-fr/ explicitly — the route this adapter takes " +
