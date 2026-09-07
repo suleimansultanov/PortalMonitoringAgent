@@ -182,7 +182,17 @@ export async function createBrowserSession(
             .replace(/<[^>]+>/g, " ")
             .replace(/\s+/g, " ")
             .trim();
-          if (shown) detail = ` — page said: ${shown.slice(0, 200)}`;
+          /**
+           * The Ray ID first, because it is the one part of a Cloudflare block
+           * page that is worth anything to anybody. The site owner can paste it
+           * into their own dashboard and see exactly which rule fired on which
+           * request — which turns "your site blocks us" into a question they
+           * can answer in a minute. The prose around it is the same on every
+           * blocked request in the world.
+           */
+          const ray = shown.match(/Ray ID:\s*([0-9a-f]+)/i)?.[1];
+          if (ray) detail = ` — Cloudflare block, Ray ID ${ray}`;
+          else if (shown) detail = ` — page said: ${shown.slice(0, 200)}`;
         } catch {
           // Nothing to add. The status is the fact.
         }
