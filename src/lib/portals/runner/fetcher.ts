@@ -230,6 +230,11 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** Ceiling on the adaptive pacing. Past this a source is not worth waiting on. */
 const MAX_DELAY_MS = 120_000;
+/**
+ * Clean requests before the pacing is allowed to ease. Deliberately far more
+ * than the one bad request that raises it — see `cleanRequests`.
+ */
+const CLEAN_REQUESTS_BEFORE_EASING = 10;
 
 /**
  * Build a fetch that will not exceed one request per `delayMs` for this source.
@@ -272,6 +277,24 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
    * crawl-delay and only ever increases — see the 429 branch below.
    */
   let currentDelay = delayMs;
+  /**
+   * Consecutive requests served without a 429, for easing the pacing back down.
+   *
+   * The slowdown above is one-way: `currentDelay` only ever grows within a
+   * pass. That is right while a portal is saying "not this fast" and wrong for
+   * every request after it has stopped saying so — and on Superimmo it was
+   * most of the night. On 2026-09-07 its FIRST page, Saint-Tropez, drew four
+   * 429s and took the pacing from ten seconds to a hundred and twenty; every
+   * page afterwards paid that, including eleven communes that never complained
+   * once. Discovery took forty-five minutes to make about fifteen requests.
+   *
+   * So: come back down, slowly and only on evidence. Ten clean requests in a
+   * row buys a 25% cut, floored at the delay we chose in the first place. That
+   * is roughly a dozen good pages to undo one bad one — far more cautious than
+   * the 1.5× jump up, which is the right asymmetry when the cost of being
+   * wrong is annoying someone who has already asked us to slow down.
+   */
+  let cleanRequests = 0;
 
   return async function politeFetch(url: string): Promise<string> {
     const wait = nextAllowedAt - now();
@@ -334,6 +357,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
            */
           currentDelay = Math.min(Math.max(currentDelay * 1.5, wait), MAX_DELAY_MS);
 
+          cleanRequests = 0;
           rateLimitHits += 1;
           if (rateLimitHits >= rateLimitAttempts) {
             // Not a refusal — a rate we cannot meet right now. The listing
@@ -364,6 +388,22 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
 
         const signal = detectBlock(body);
         if (signal) throw new BlockedError(url, signal);
+
+        if (currentDelay > delayMs) {
+          cleanRequests += 1;
+          if (cleanRequests >= CLEAN_REQUESTS_BEFORE_EASING) {
+            cleanRequests = 0;
+            const eased = Math.max(delayMs, Math.round(currentDelay * 0.75));
+            if (eased !== currentDelay) {
+              currentDelay = eased;
+              console.log(
+                `[fetch] ${CLEAN_REQUESTS_BEFORE_EASING} clean requests — easing back to ` +
+                  `${Math.round(currentDelay / 1000)}s between requests` +
+                  (currentDelay === delayMs ? " (the configured rate)" : ""),
+              );
+            }
+          }
+        }
 
         return body;
       } catch (err) {
