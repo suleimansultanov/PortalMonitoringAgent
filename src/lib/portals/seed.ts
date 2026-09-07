@@ -47,7 +47,8 @@ function sourceSeeds(): SourceSeed[] {
         "www.residences-immobilier.com",
       ],
       baseUrl: "https://www.maisonsetappartements.fr",
-      crawlDelayMs: 1000,
+      /** Raised from 1s on 2026-09-07 — see the note in the adapter. */
+      crawlDelayMs: 10_000,
       permissionNote:
         "maisonsetappartements.fr: robots.txt permits current .html listing pages " +
         "(legacy .asp paths disallowed). residences-immobilier.com: robots.txt disallows " +

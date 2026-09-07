@@ -56,8 +56,27 @@ export const smcAdapter: PortalAdapter = {
     "www.residences-immobilier.com",
   ],
   discoveryMode: "sitemap",
-  /** robots.txt sets no delay; one second is the neighbourly default. */
-  defaultCrawlDelayMs: 1000,
+  /**
+   * Ten seconds since 2026-09-07, up from one, and the number is a hypothesis
+   * under test rather than a setting anyone measured.
+   *
+   * WHAT CHANGED. This source collected 372 listings on 30 August at one
+   * second. On 7 September every index page answered 403 — from a GitHub
+   * runner AND from the operator's own machine, which is what rules out the
+   * shared runner address and rules out us having been blocked as a client.
+   *
+   * WHAT THE LOG ACTUALLY SHOWS, and it is the whole reason for this number:
+   * the FIRST index page was served normally. Saint-Tropez page one came back;
+   * Saint-Tropez page two and all thirteen communes after it did not. A block
+   * on who we are refuses the first request too. A refusal that starts on the
+   * second is about how fast we asked.
+   *
+   * So the first thing to try is the polite one: ask more slowly. If ten
+   * seconds does not restore it, the next step is a conversation with SMC, not
+   * a smaller number — and certainly not a different address, which has now
+   * been tested and is not the problem.
+   */
+  defaultCrawlDelayMs: 10_000,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const sitemapRoot = ctx.config.sitemap as string | undefined;
