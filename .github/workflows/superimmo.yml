@@ -19,11 +19,23 @@ name: Superimmo
 
 on:
   schedule:
-    # 05:00 UTC, well clear of the main night at 01:30. Not a preference: the
-    # two share a concurrency group, and a Superimmo pass that overlapped the
-    # main one would have two processes clustering the same communes at once —
-    # which is the bug that took a day to find on 29 August.
-    - cron: "0 5 * * *"
+    # 20:00 UTC — 22:00 in Paris in summer, 21:00 in winter. BEFORE the main
+    # night, not after it.
+    #
+    # It used to be 05:00 UTC, which is 07:00 Paris, and with this portal's
+    # throttling a pass that starts then finishes around nine in the morning.
+    # The client's own screen reads "last successful collection" from the
+    # FINISH time, so the workspace announced a nine-a.m. collection every day —
+    # to an agency that opens it at nine expecting last night's market.
+    #
+    # WHY BEFORE AND NOT SIMPLY EARLIER. This workflow shares a concurrency
+    # group with the main night (see below), so the two cannot overlap — they
+    # queue. Put Superimmo at 01:00 and the main night at 01:30 waits behind up
+    # to three hours of it, starting around 04:00 and missing the 01:00-05:00
+    # CET window LuxuryEstate asked us to keep. Running first solves both: even
+    # a pass that burns its full 180-minute watchdog ends by 23:00 UTC, an hour
+    # before the main night begins at 00:00 UTC.
+    - cron: "0 20 * * *"
   workflow_dispatch:
     inputs:
       communes:

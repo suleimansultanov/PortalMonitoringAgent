@@ -21,11 +21,18 @@ name: Nightly collection
 
 on:
   schedule:
-    # 01:30 UTC — 02:30 in Paris in winter, 03:30 in summer.
+    # 00:00 UTC — 01:00 in Paris in winter, 02:00 in summer.
     #
-    # Chosen to sit inside LuxuryEstate's 01:00–05:00 CET window in BOTH halves
-    # of the year. The obvious 03:00 UTC does not: in summer that is 05:00
-    # local, the edge of what they asked for.
+    # Moved earlier from 01:30 UTC on 2026-09-09: the client reads "last
+    # successful collection" as a FINISH time, and an agency opening the screen
+    # at nine expects last night's market, not a timestamp from this morning.
+    #
+    # NOT 23:00 UTC, which would be 01:00 Paris in summer and is what "start at
+    # one" literally asks for. Cron has no daylight saving, so that same line
+    # becomes MIDNIGHT local in winter — outside the 01:00–05:00 CET window
+    # LuxuryEstate asked us to keep, for five months of the year, silently.
+    # 00:00 UTC is inside the window in both halves of the year, which is the
+    # same reasoning that put the old value at 01:30.
     #
     # The schedule is what actually keeps that promise. run.ts WARNS when a
     # pass falls outside the window and collects anyway — deliberately, so an
@@ -36,7 +43,7 @@ on:
     # So: this cron line, and nothing else, is why the nightly pass lands inside
     # the hours they asked for.
     # Monday to Saturday.
-    - cron: "30 1 * * 1-6"
+    - cron: "0 0 * * 1-6"
 
     # Sunday, same hour: THE FULL SWEEP.
     #
@@ -56,7 +63,7 @@ on:
     # mutually exclusive by day, so they can never queue behind each other.
     # `--full` does nothing on a source without a delta stop, so this stays
     # correct as more of them get one.
-    - cron: "30 1 * * 0"
+    - cron: "0 0 * * 0"
   workflow_dispatch:
     inputs:
       sources:
@@ -130,7 +137,7 @@ jobs:
           if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
           if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
           # Sunday's schedule, or a hand-triggered run that asked for it.
-          if [ "${{ github.event.schedule }}" = "30 1 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
+          if [ "${{ github.event.schedule }}" = "0 0 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
             ARGS="$ARGS --full"
             echo "FULL SWEEP — every list walked to the end, so delistings get written."
           fi
