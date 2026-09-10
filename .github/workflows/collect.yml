@@ -21,18 +21,30 @@ name: Nightly collection
 
 on:
   schedule:
-    # 00:00 UTC — 01:00 in Paris in winter, 02:00 in summer.
+    # 21:00 UTC — 23:00 in Paris in summer, 22:00 in winter.
     #
-    # Moved earlier from 01:30 UTC on 2026-09-09: the client reads "last
-    # successful collection" as a FINISH time, and an agency opening the screen
-    # at nine expects last night's market, not a timestamp from this morning.
+    # THE DEADLINE THIS SERVES IS NOT OURS. Med-Estates run their own CRM sync
+    # and matching from 03:00 Paris, so everything here has to be finished
+    # before then or their job spends two hours reading yesterday's market.
     #
-    # NOT 23:00 UTC, which would be 01:00 Paris in summer and is what "start at
-    # one" literally asks for. Cron has no daylight saving, so that same line
-    # becomes MIDNIGHT local in winter — outside the 01:00–05:00 CET window
-    # LuxuryEstate asked us to keep, for five months of the year, silently.
-    # 00:00 UTC is inside the window in both halves of the year, which is the
-    # same reasoning that put the old value at 01:30.
+    # The time is that deadline minus the two things between us and it:
+    #
+    #   03:00 Paris  deadline
+    #  -00:45        the collecting itself, measured 43-57 min
+    #  -02:30        GitHub's observed lateness starting a scheduled run
+    #   ------
+    #   23:45 Paris  the latest a start can be booked
+    #
+    # 23:00 rather than 23:45, because that lateness is a measurement and not a
+    # promise: 5-9 September it was four and three quarter hours.
+    #
+    # ⚠ WINTER. Cron has no daylight saving, so in CET this line is 00:00 local
+    # — an hour before the 01:00–05:00 window LuxuryEstate asked us to keep. In
+    # practice GitHub has been starting these runs 2.5 to 5 hours late (measured
+    # 5-9 September), which lands them inside the window anyway, but that is
+    # luck and not a plan. When the clocks change, either move this to 00:00 UTC
+    # or give LuxuryEstate a workflow of its own inside its hours, the way
+    # Superimmo already has one.
     #
     # The schedule is what actually keeps that promise. run.ts WARNS when a
     # pass falls outside the window and collects anyway — deliberately, so an
@@ -43,7 +55,7 @@ on:
     # So: this cron line, and nothing else, is why the nightly pass lands inside
     # the hours they asked for.
     # Monday to Saturday.
-    - cron: "0 0 * * 1-6"
+    - cron: "0 21 * * 1-6"
 
     # Sunday, same hour: THE FULL SWEEP.
     #
@@ -63,7 +75,7 @@ on:
     # mutually exclusive by day, so they can never queue behind each other.
     # `--full` does nothing on a source without a delta stop, so this stays
     # correct as more of them get one.
-    - cron: "0 0 * * 0"
+    - cron: "0 21 * * 0"
   workflow_dispatch:
     inputs:
       sources:
@@ -137,7 +149,7 @@ jobs:
           if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
           if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
           # Sunday's schedule, or a hand-triggered run that asked for it.
-          if [ "${{ github.event.schedule }}" = "0 0 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
+          if [ "${{ github.event.schedule }}" = "0 21 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
             ARGS="$ARGS --full"
             echo "FULL SWEEP — every list walked to the end, so delistings get written."
           fi

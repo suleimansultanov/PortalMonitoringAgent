@@ -19,8 +19,15 @@ name: Superimmo
 
 on:
   schedule:
-    # 20:00 UTC — 22:00 in Paris in summer, 21:00 in winter. BEFORE the main
+    # 15:00 UTC — 17:00 in Paris in summer, 16:00 in winter. BEFORE the main
     # night, not after it.
+    #
+    # Daytime, which is not where a crawler belongs. It is here because this
+    # portal throttles us to about four requests a quarter of an hour and burns
+    # its full 180-minute watchdog most nights, so it has to start three hours
+    # before anything else — and the main night now starts at 21:00 UTC to beat
+    # the client's 03:00 deadline. The load we add at 17:00 is four requests a
+    # quarter hour, which is the rate THEY chose for us.
     #
     # It used to be 05:00 UTC, which is 07:00 Paris, and with this portal's
     # throttling a pass that starts then finishes around nine in the morning.
@@ -33,9 +40,9 @@ on:
     # queue. Put Superimmo at 01:00 and the main night at 01:30 waits behind up
     # to three hours of it, starting around 04:00 and missing the 01:00-05:00
     # CET window LuxuryEstate asked us to keep. Running first solves both: even
-    # a pass that burns its full 180-minute watchdog ends by 23:00 UTC, an hour
-    # before the main night begins at 00:00 UTC.
-    - cron: "0 20 * * *"
+    # a pass that burns its full 180-minute watchdog ends by 18:00 UTC, three
+    # hours before the main night begins at 21:00 UTC.
+    - cron: "0 15 * * *"
   workflow_dispatch:
     inputs:
       communes:
