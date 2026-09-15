@@ -238,6 +238,59 @@ export type FigaroCommune = {
   portalInsee?: string;
 };
 
+export type JamesEditionCommune = { insee: string; slug: string; label: string };
+
+/**
+ * JamesEdition's area slugs — READ OFF THEIR OWN PAGE, not derived.
+ *
+ * Every one of these appears as a link in the "nearby areas" block of
+ * https://www.jamesedition.com/real_estate/saint-tropez-france, captured as a
+ * fixture on 2026-09-10. The pattern is `{commune}-france`, and it looks
+ * derivable — which is the trap. An area slug this portal does not know is
+ * answered with 200 and other stock, not a 404: from the outside that is a
+ * commune with nothing for sale, which is believable, and every listing
+ * previously collected there gets delisted on the strength of it. Figaro's
+ * `?ville=` taught this and Superimmo taught it twice.
+ *
+ * ⚠ LA MÔLE (83079) IS DELIBERATELY ABSENT, AND THE SEARCH FOR IT IS OVER.
+ * Their nearby block names eleven of our twelve and not that one. Looked for
+ * again on 2026-09-15 from Cogolin and from Rayol-Canadel-sur-Mer, both of
+ * which border La Môle: the block is not adjacency at all but the same fixed
+ * regional list on every page — Draguignan, Fréjus, Fayence, Seillans — and La
+ * Môle is in none of them.
+ *
+ * Then the guess itself was measured, so that nobody has to wonder again:
+ * `/real_estate/la-mole-france` answers HTTP 200 with the heading "Luxury
+ * Homes for Sale in France" and the whole country's stock. Not a 404, not a
+ * redirect. That is the trap this comment was written about, confirmed on the
+ * live site.
+ *
+ * So the commune stays uncollected on this portal, `coverageReport` keeps
+ * saying so, and the adapter now refuses any page whose heading is not the
+ * area it asked for — see `AREA_HEADING` in `adapters/jamesedition.ts`. The
+ * remaining route is JamesEdition's own location search, which their robots.txt
+ * disallows to us, or asking them.
+ */
+export const JAMESEDITION_COMMUNES: JamesEditionCommune[] = [
+  { insee: "83119", slug: "saint-tropez-france", label: "Saint-Tropez" },
+  { insee: "83101", slug: "ramatuelle-france", label: "Ramatuelle" },
+  { insee: "83065", slug: "gassin-france", label: "Gassin" },
+  { insee: "83068", slug: "grimaud-france", label: "Grimaud" },
+  { insee: "83115", slug: "sainte-maxime-france", label: "Sainte-Maxime" },
+  { insee: "83042", slug: "cogolin-france", label: "Cogolin" },
+  { insee: "83036", slug: "cavalaire-sur-mer-france", label: "Cavalaire-sur-Mer" },
+  { insee: "83048", slug: "la-croix-valmer-france", label: "La Croix-Valmer" },
+  { insee: "83063", slug: "la-garde-freinet-france", label: "La Garde-Freinet" },
+  { insee: "83094", slug: "le-plan-de-la-tour-france", label: "Le Plan-de-la-Tour" },
+  /**
+   * Their slug covers the WHOLE commune, while the client watches only the Les
+   * Issambres locality inside it. Enabled anyway — unlike Superimmo, where the
+   * same choice costs two minutes a listing, here it costs four seconds — and
+   * the extra stock is filtered on the listing rather than on the URL.
+   */
+  { insee: "83107", slug: "roquebrune-sur-argens-france", label: "Roquebrune-sur-Argens" },
+];
+
 export const FIGARO_COMMUNES: FigaroCommune[] = [
   { insee: "83119", ville: "st tropez", label: "Saint-Tropez" },
   { insee: "83101", ville: "ramatuelle", label: "Ramatuelle" },
@@ -342,6 +395,12 @@ export function coverageReport(): { portal: string; missing: string[] }[] {
       portal: "figaro",
       missing: all
         .filter((i) => !FIGARO_COMMUNES.some((c) => c.insee === i))
+        .map((i) => byInsee.get(i) ?? i),
+    },
+    {
+      portal: "jamesedition",
+      missing: all
+        .filter((i) => !JAMESEDITION_COMMUNES.some((c) => c.insee === i))
         .map((i) => byInsee.get(i) ?? i),
     },
   ];

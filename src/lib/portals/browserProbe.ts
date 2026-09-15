@@ -25,12 +25,28 @@ import { BlockedError, FetchFailedError, USER_AGENT } from "./runner/fetcher";
  * genuine no and the answer to it is a conversation, not a better disguise.
  *
  * Read-only, and about a dozen requests in total.
+ *
+ * WHAT BELONGS ON THE LIST: portals that are NOT collecting and were refused on
+ * a plain-client probe. Figaro and LuxuryEstate were both here until 2026-09-10
+ * and both have been collecting since 30 August — Figaro's "listing page" was
+ * still its `robots.txt`, carrying the note "nothing may be collected until it
+ * can be read", which stopped being true the day a browser read it. A target
+ * that is already answered turns this from a question into decoration, and
+ * spends requests at a site to learn something we know.
+ *
+ * So: when a portal starts collecting, take it out of here.
  */
 
 type Target = {
   portal: string;
   index: string;
-  listing: string;
+  /**
+   * Optional, because a portal can be worth asking about before anyone has a
+   * single listing URL for it. Inventing one would be worse than skipping it:
+   * these sites answer an unknown path with 200 and something else entirely,
+   * so a made-up URL returns a confident wrong answer.
+   */
+  listing?: string;
   /** Why it is on this list — printed, so a result is never read out of context. */
   note: string;
 };
@@ -44,23 +60,39 @@ const TARGETS: Target[] = [
     note: "AVIV. Written permission since 25 Aug, never once served. Two sites.",
   },
   {
+    portal: "vizzit",
+    index: "https://www.vizzit.fr/acheter/saint-tropez",
+    listing: "https://www.vizzit.fr/fr/property/maison/saint-tropez/A9vu8dlg951uktyn",
+    note:
+      "Green-Acres' platform under a second brand — its own listing footer says " +
+      "'Vizzit (Green-Acres network)' and its sitemap shards carry Green-Acres' " +
+      "exact filenames. Probed to find out whether the STOCK differs, not whether " +
+      "the door opens: if it is the same feed, an adapter buys 2700 duplicates for " +
+      "the deduplication to undo.",
+  },
+  {
+    portal: "zefir",
+    index: "https://www.zefir.fr/annonces/le-plan-de-la-tour/appartements",
+    listing: "https://www.zefir.fr/annonce-partenaire/00eddcb4-b9e4-4085-8ce0-543fcdb6a95a",
+    note:
+      "Never blocked — its robots.txt is empty, so this probe will say ok and that " +
+      "was never the question. Dropped on 29 Aug as 'nothing there to collect', " +
+      "which was too strong: a partner listing read on 10 Sep is a real property " +
+      "with a named agency (REMAX FRANCE), a mandate reference and an " +
+      "agent-written description. What is untrustworthy is the INDEX — a page " +
+      "titled '431 apartments in Le Plan-de-la-Tour' carrying stock from Cogolin " +
+      "and Grimaud, and the same commune answering under two slugs with different " +
+      "totals (429 vs 466). So the commune would have to be read off each listing " +
+      "rather than taken from the list it was found in, exactly as Figaro already " +
+      "does. The real risk here is duplicates: /annonce-partenaire/ says it " +
+      "republishes feeds we may already collect elsewhere.",
+  },
+  {
     portal: "jamesedition",
     index: "https://www.jamesedition.com/real_estate/ramatuelle-france",
     listing:
       "https://www.jamesedition.com/real_estate/saint-tropez-france/saint-tropez-magnificent-charming-property-with-sea-view-18071317",
     note: "403 to the plain client on both. Never tried with a browser.",
-  },
-  {
-    portal: "figaro",
-    index: "https://proprietes.lefigaro.fr/annonces/maison-var-provence+alpes+cote+d+azur-france/",
-    listing: "https://proprietes.lefigaro.fr/robots.txt",
-    note: "Their robots.txt itself answered 403. Nothing may be collected until it can be read.",
-  },
-  {
-    portal: "luxuryestate",
-    index: "https://www.luxuryestate.com/france/provence-alpes-cote-d-azur/var/arrondissement-de-draguignan/ramatuelle",
-    listing: "https://www.luxuryestate.com/p131935162-villa-for-sale-ramatuelle",
-    note: "Index served, listing pages 405 — already through a browser. Re-checked for the record.",
   },
 ];
 
@@ -82,10 +114,10 @@ async function main(): Promise<void> {
     for (const t of TARGETS) {
       console.log(`── ${t.portal}`);
       console.log(`   ${t.note}`);
-      for (const [label, url] of [
-        ["index  ", t.index],
-        ["listing", t.listing],
-      ] as const) {
+      const pages: [string, string][] = [["index  ", t.index]];
+      if (t.listing) pages.push(["listing", t.listing]);
+
+      for (const [label, url] of pages) {
         try {
           const html = await session.fetch(url);
           const kb = Math.round(html.length / 1024);

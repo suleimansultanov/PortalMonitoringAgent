@@ -20,6 +20,7 @@
     "nightly:one": "tsx src/lib/portals/nightlyOne.ts",
     "probe": "tsx src/lib/portals/probe.ts",
     "probe:browser": "tsx src/lib/portals/browserProbe.ts",
+    "probe:deep": "tsx src/lib/portals/deepProbe.ts",
     "smc:pages": "tsx src/lib/portals/smcPages.ts",
     "quality": "tsx src/lib/portals/quality.ts",
     "sanity": "tsx src/lib/portals/sanity.ts",

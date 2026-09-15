@@ -6,6 +6,7 @@ import { USER_AGENT } from "./runner/fetcher";
 import {
   ETREPROPRIO_SLUGS,
   FIGARO_COMMUNES,
+  JAMESEDITION_COMMUNES,
   GREEN_ACRES_COMMUNES,
   SMC_COMMUNES,
   SUPERIMMO_COMMUNES,
@@ -465,6 +466,50 @@ function sourceSeeds(): SourceSeed[] {
         fetchMode: "browser",
       },
     },
+    {
+      key: "jamesedition",
+      name: "JamesEdition",
+      hosts: ["www.jamesedition.com", "jamesedition.com"],
+      baseUrl: "https://www.jamesedition.com",
+      /**
+       * Ours. Their robots.txt states a Crawl-delay for PetalBot and Amazonbot
+       * and none for a generic crawler, so there is no number of theirs to
+       * honour — four seconds is the rate we would want a stranger to use on
+       * us. At ~456 listings in the largest commune that is half an hour.
+       */
+      crawlDelayMs: 4_000,
+      permissionNote:
+        "robots.txt read in full 2026-09-10, BEFORE the adapter was written — the " +
+        "order Figaro taught twice. `User-agent: *` carries `Allow: /` and " +
+        "disallows administrative and account paths (/admin, /auth/*, /login/*, " +
+        "/member/*, /seller/*, /buyer/*, /ajax, /search/suggestions) plus two " +
+        "real-estate routes this adapter does not use: /real_estate/map? and " +
+        "*/real_estate/show_more_nearby_listings. The /real_estate/ index and " +
+        "listing pages we crawl are open. One crawler is banned by name " +
+        "(trovitBot) and we are not it. Sitemap: /sitemap.xml.gz.\n\n" +
+        "NO WRITTEN PERMISSION IS ON FILE and, on the above, none is required. " +
+        "That is a weaker footing than Figaro or LuxuryEstate, where we hold a " +
+        "reply from a named person — so if they ever object, this note is the " +
+        "whole of what we relied on, and the answer is to stop and write.\n\n" +
+        "Their WAF answers 403 to the plain HTTP client and 200 to a browser " +
+        "carrying our own user-agent — measured 2026-08-30 and again 2026-09-10. " +
+        "Same shape as Etreproprio, SMC and Figaro: the rule is applied before " +
+        "anyone looks at who is asking, so it is not a refusal of us. No disguise " +
+        "is used.",
+      config: {
+        host: "https://www.jamesedition.com",
+        communes: JAMESEDITION_COMMUNES,
+        /**
+         * 32 cards a page and 15 pages in Saint-Tropez, their largest of ours.
+         * Generous on purpose: pagination ends when a page yields no new links,
+         * and reaching this ceiling reports the commune incomplete rather than
+         * passing for an ending.
+         */
+        maxPages: 30,
+        /** 403 to the plain client on every path. See `permissionNote`. */
+        fetchMode: "browser",
+      },
+    },
   ];
 }
 
@@ -570,7 +615,10 @@ export async function seed(): Promise<void> {
 
 function report(): void {
   console.log(`\n[seed] client med-estates → ${COLLECTION_INSEE.length} communes`);
-  console.log(`[seed] 5 sources, all DISABLED until switched on deliberately\n`);
+  console.log(
+    `[seed] ${sourceSeeds().length} sources described here; a new one arrives ` +
+      `DISABLED, and re-seeding never changes the flag on an existing one\n`,
+  );
 
   let gaps = 0;
   for (const { portal, missing } of coverageReport()) {
