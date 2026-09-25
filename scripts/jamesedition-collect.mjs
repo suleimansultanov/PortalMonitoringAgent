@@ -100,7 +100,27 @@ async function main() {
   console.log(`пауза ${DELAY_MS / 1000}s между запросами — наша, они её не просят`);
   console.log(`страницы в ${outDir}\n`);
 
-  const browser = await chromium.launch({ headless });
+  /**
+   * Egress through a proxy, when PMA_RESIDENTIAL_PROXY is set — the same
+   * variable the nightly runner reads (see `proxy` in runner/browser.ts). Only
+   * the address changes: the user-agent above still names us, nothing is
+   * patched. JamesEdition serves this exact script from a home connection and
+   * refuses datacentre ranges (403 from EC2 eu-central-1, 2026-09-25).
+   */
+  const rawProxy = process.env.PMA_RESIDENTIAL_PROXY?.trim();
+  let proxy;
+  if (rawProxy) {
+    const u = new URL(rawProxy.includes("://") ? rawProxy : `http://${rawProxy}`);
+    proxy = {
+      server: `${u.protocol}//${u.host}`,
+      ...(u.username ? { username: decodeURIComponent(u.username) } : {}),
+      ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
+    };
+    console.log(`выход через прокси ${u.host} (логин и пароль не печатаются)`);
+  } else {
+    console.log("прокси не задан: запросы идут с адреса этой машины");
+  }
+  const browser = await chromium.launch({ headless, ...(proxy ? { proxy } : {}) });
   const context = await browser.newContext({
     locale: "en-GB",
     timezoneId: "Europe/Paris",
