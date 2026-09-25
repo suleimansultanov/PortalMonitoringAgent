@@ -95,6 +95,31 @@ export type DiscoveredListing = {
   url: string;
   /** Commune as the discovery step understood it, for filtering before fetch. */
   communeHint?: string;
+  /**
+   * When the PORTAL says this listing last changed, if its index page says so.
+   *
+   * Optional, and absent on most sources: an adapter supplies it only where the
+   * listing list carries a per-listing timestamp. Figaro's Nuxt payload does;
+   * Superimmo's sitemap has `lastmod` and could.
+   *
+   * WHAT IT IS FOR, AND IT IS NOT A NICETY. Refreshing is the larger half of a
+   * settled night: pages older than REFRESH_AFTER_DAYS are re-fetched whether or
+   * not anything changed, because until the page is downloaded there is no way
+   * to know — the content hash in ingest.ts is only reached after the request.
+   * On 2026-09-15 Figaro spent 387 of its 919 fetches on exactly that, and
+   * almost all of those pages were identical to the copies we held.
+   *
+   * Where the portal states a date on the index, it has answered the question
+   * for free, in a page we were going to read anyway. `run.ts` uses it to drop
+   * those listings from the refresh queue.
+   *
+   * THE HONEST CAVEAT: this is the portal's claim about itself. A site that
+   * forgets to touch the field when a price changes would have us holding a
+   * stale price indefinitely, so the skip is bounded — see
+   * REFRESH_HARD_CEILING_DAYS in run.ts. Never let a portal's timestamp be the
+   * only thing standing between us and a page we have not read in a month.
+   */
+  sourceUpdatedAt?: Date | null;
 };
 
 /**

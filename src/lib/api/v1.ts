@@ -470,8 +470,22 @@ export async function status(scope: KeyScope): Promise<{
     .from(portalRuns)
     .where(
       and(
-        eq(portalRuns.status, "done"),
-        isNull(portalRuns.error),
+        /**
+         * 'partial' counts, and the reason is what this field is asked for.
+         *
+         * A client reads it to decide whether what it is about to pull is
+         * current. After a partial pass it is: discovery walked every commune,
+         * so the set of live listings is right and so is every removal. What is
+         * missing is freshness on some pages we already hold, which is a
+         * different question from the one asked here.
+         *
+         * Excluding it had a sharp edge. Figaro is refused after roughly six
+         * hundred pages in a session, so every pass it will ever run is partial
+         * — and this timestamp would have frozen on the last clean night and
+         * never moved again, while the data underneath it kept improving.
+         */
+        inArray(portalRuns.status, ["done", "partial"]),
+        or(isNull(portalRuns.error), eq(portalRuns.status, "partial")),
         scope.sourceIds.length > 0
           ? inArray(portalRuns.sourceId, scope.sourceIds)
           : sql`false`,
@@ -525,8 +539,16 @@ export async function status(scope: KeyScope): Promise<{
       r.completed_at as last_run_at,
       coalesce(
         -- A pass that finished and still recorded an error is not a success,
-        -- whatever its status column says.
-        case when r.error is not null then 'error' else r.status end,
+        -- whatever its status column says — EXCEPT the one case the status
+        -- column now names for itself. 'partial' is a complete discovery whose
+        -- fetching was cut short: the live picture is right and the removals
+        -- are sound, so reporting it as 'error' told the client to distrust a
+        -- market reading that was correct.
+        case
+          when r.status = 'partial' then 'partial'
+          when r.error is not null then 'error'
+          else r.status
+        end,
         'never'
       ) as last_outcome
     from ${portalSources} s

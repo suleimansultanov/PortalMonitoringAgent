@@ -143,3 +143,49 @@ export function shouldAbort({
       `Treating this as a blocked crawl, not an empty market — no delistings written.`,
   };
 }
+
+/** One listing already held, considered for a re-read. */
+export type RefreshCandidate = {
+  externalId: string;
+  /** When WE last fetched the page. */
+  fetchedAt: Date | null;
+  /** The portal's own "last edited", as it stood when we last read the listing. */
+  storedSourceUpdatedAt: Date | null;
+};
+
+/**
+ * Is this page worth spending a request on?
+ *
+ * Refreshing is the larger half of a settled night, and almost all of it is
+ * re-downloading pages that did not change: nothing in the pipeline can tell
+ * before the request, because the content hash in ingest.ts is only reached
+ * after the page has arrived. On a source whose INDEX states a per-listing
+ * "last edited" — Figaro publishes one in its Nuxt payload — discovery has
+ * already been handed the answer, in a page it was going to read anyway.
+ *
+ * `stated` is that answer for this listing, or null/undefined where the portal
+ * said nothing or discovery never saw the listing this pass.
+ *
+ * Every branch here defaults to fetching. Read the argument for each, because
+ * the cheap version of this function — "skip when the dates match" — is wrong
+ * in three separate ways:
+ *
+ *   - **Past the ceiling, always fetch.** The date is the portal's claim about
+ *     itself; a site that forgets to touch it when a price changes would freeze
+ *     that listing's price in our data forever. A month is an acceptable
+ *     exposure, "until they fix their CMS" is not.
+ *   - **No date on either side means fetch.** Absence is not freshness. This is
+ *     also what keeps every other source behaving exactly as before.
+ *   - **A listing discovery did not see is never skipped.** It may simply be
+ *     one the pass never reached — a delta stop, a truncated commune — and its
+ *     absence from this pass says nothing at all about whether it changed.
+ */
+export function needsRefresh(
+  row: RefreshCandidate,
+  stated: Date | null | undefined,
+  hardCeiling: Date,
+): boolean {
+  if (!row.fetchedAt || row.fetchedAt < hardCeiling) return true;
+  if (!stated || !row.storedSourceUpdatedAt) return true;
+  return stated.getTime() > row.storedSourceUpdatedAt.getTime();
+}

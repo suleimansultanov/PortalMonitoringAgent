@@ -194,7 +194,9 @@ export const greenAcresAdapter: PortalAdapter = {
     listing.description =
       firstText($, ".main-description-content, .main-description, [class*='description-content']") ??
       meta($, "og:description");
-    listing.imageUrl = meta($, "og:image");
+    // Same photograph as gallery[0]; the query string is their cache-buster and
+    // is the only thing that stopped the two comparing equal.
+    listing.imageUrl = meta($, "og:image")?.replace(/\?.*$/, "") ?? null;
 
     /**
      * The gallery, scoped by the listing's OWN id.
@@ -216,7 +218,23 @@ export const greenAcresAdapter: PortalAdapter = {
      * review. So: the dedicated element, and never a bare text scan.
      */
     const priceText = firstText($, ".price-detail, .price-container, .sticky-price");
-    listing.priceEur = toInt(priceText);
+    /**
+     * EUR only, and never converted. Found 2026-09-24 on a saved page from the
+     * GitHub runner: "Dès 456 687 $" for a programme whose lots the same page
+     * lists at 398 000 €. Green-Acres picks the display currency for the
+     * visitor, the runner sits in a US datacentre, and this parser read the
+     * number and called it euros — no currency check had ever been written
+     * here, because every page collected from the laptop was in euros (2 843
+     * of 2 869 local pages, the other 26 "Prix sur demande").
+     *
+     * The page states its own currency: the selected option in its currency
+     * picker is the one marked `primary`. Anything but EUR leaves the price
+     * null and keeps what was shown in `raw`, so it is visibly missing rather
+     * than wrong by 15%. Converting it back would put an exchange rate of our
+     * choosing into a figure the client compares against a notary's.
+     */
+    const shownCurrency = displayCurrency($);
+    listing.priceEur = shownCurrency === "EUR" ? toInt(priceText) : null;
 
     /**
      * "Prix sur demande" is information, not a parse failure.
@@ -227,7 +245,8 @@ export const greenAcresAdapter: PortalAdapter = {
      * missing. Without this flag the quality report cannot tell them apart, and
      * the screen has to print "—" where it should print "on request".
      */
-    const onRequest = priceText !== null && listing.priceEur === null;
+    const onRequest =
+      priceText !== null && shownCurrency === "EUR" && listing.priceEur === null;
 
     // ── Size, rooms ───────────────────────────────────────────────────────
     // Keyed off their icon classes, which name the thing they label
@@ -238,31 +257,53 @@ export const greenAcresAdapter: PortalAdapter = {
     // renders the same facts in three layouts and they do not use one name
     // throughout — rooms are `icon-advertrooms` in the spec list and
     // `icon-room` in the summary pills.
-    listing.areaM2 = surface(byIcon($, ["habitablesurface", "advertsurface"]));
-    listing.landM2 = surface(byIcon($, ["landsurface"]));
+    /**
+     * A plot has no floor area, whatever the page says. Measured 2026-09-24
+     * on a dry re-parse of every saved page: 30 rows would have got a floor
+     * area they do not have, all under `/terrain/` or `/neuf/`. The first
+     * version of this fix only dropped the `advertsurface` fallback for them,
+     * and `--explain` on a Grimaud plot showed why that was not enough — the
+     * page itself reads "4 331 m² de terrain  4 331 m² de surface habitable":
+     * Green-Acres copies the plot into the habitable field on plot pages, icon
+     * and all. So the rule keys on the URL's type segment, not on the icons:
+     * a `terrain` gets no floor area at all and every surface on it is land;
+     * a `neuf` programme takes only an explicit habitable surface, since its
+     * generic "surface" is the programme, not a home.
+     */
+    const kind = url.match(TYPE_AND_COMMUNE)?.[1]?.toLowerCase() ?? "";
+    const isPlot = /^(terrain|terrains|land)$/.test(kind);
+    const isProgramme = kind === "neuf";
+    if (isPlot) {
+      listing.areaM2 = null;
+      listing.landM2 = surface(byIcon($, ["landsurface", "advertsurface", "habitablesurface"]));
+    } else {
+      listing.areaM2 = surface(
+        byIcon($, isProgramme ? ["habitablesurface"] : ["habitablesurface", "advertsurface"]),
+      );
+      listing.landM2 = surface(byIcon($, ["landsurface"]));
+    }
+    const notABuilding = isPlot || isProgramme;
 
     /**
-     * NOT CORRECTED HERE, DELIBERATELY — 2026-09-05.
-     *
-     * A terrain has no habitable surface, so the `advertsurface` fallback above
-     * picks up the size of the LAND and files it as living space. Forty-one
-     * listings were like that, and the fault is invisible from the value: 6922
-     * is exactly what a building plot in Grimaud has.
-     *
-     * A fix was written and reverted unrun. Its sibling — the same idea applied
-     * to Etreproprio — turned 1010 into 10 and 2270 into 270 when measured
-     * against the saved pages, so neither had earned the trust to go into a
-     * nightly collection. The data was repaired instead, where the result can
-     * be listed and read before it is applied:
-     *
-     *   npm run land            — the listings whose floor area is their plot
-     *   npm run land -- --fix   — clears it, keeping the plot
-     *
-     * That is a patch: this parser will reproduce the fault on any page it
-     * re-reads. The repair is to read the labelled fields — the icons already
-     * name them — rather than to guess, and it should be done with a page in
-     * front of it rather than a rule in mind.
+     * History of the block above. On 2026-09-05 this was left uncorrected on
+     * purpose: a fix had been written and reverted unrun, because its sibling
+     * on Etreproprio turned 1010 into 10 when measured, and the data was
+     * repaired instead (`npm run land -- --fix`), with a note that the parser
+     * would reproduce the fault on any page it re-read. It did: the first dry
+     * re-parse (2026-09-24) listed the same 30 plots and programmes, with the
+     * same 6922 in Grimaud. This time the fix went in with those thirty pages
+     * as the measurement, and it keys on the URL's own type segment rather
+     * than on the size of the number — which is the guess the 09-05 note
+     * warned against.
      */
+
+    // Restored 2026-09-24. The 2026-09-05 commit that reverted the terrain fix
+    // above took these two lines out with it — the diff shows them leaving
+    // beside the `if (/terrain/)` block — and nothing put them back. Every
+    // Green-Acres page read since then arrived with rooms and bedrooms null,
+    // and the two tests that check them have been red the whole time.
+    listing.rooms = count(byIcon($, ["advertrooms", "room"]));
+    listing.bedrooms = count(byIcon($, ["advertbedrooms", "bedroom"]));
 
     // ── Where ─────────────────────────────────────────────────────────────
     // The commune is in the URL, which is more reliable than the page prose —
@@ -354,6 +395,11 @@ export const greenAcresAdapter: PortalAdapter = {
 
     listing.raw = {
       priceOnRequest: onRequest,
+      // Present only when the page was rendered in another currency; read by
+      // `reparse` as evidence that the stored price must be cleared.
+      ...(shownCurrency !== "EUR"
+        ? { foreignPrice: { currency: shownCurrency, shown: priceText } }
+        : {}),
       dpe: activeLetter("dpe-row"),
       ges: activeLetter("ges-row"),
       ...(isEmpty(characteristics)
@@ -384,7 +430,9 @@ export const greenAcresAdapter: PortalAdapter = {
 
     const missing: string[] = [];
     if (listing.priceEur === null) missing.push("priceEur");
-    if (listing.areaM2 === null) missing.push("areaM2");
+    // A plot with its land measured is complete; "no floor area" is the truth
+    // about it, not a field the parser failed to find.
+    if (listing.areaM2 === null && !(notABuilding && listing.landM2 !== null)) missing.push("areaM2");
     if (!listing.agencyName) missing.push("agencyName");
 
     return missing.length === 0
@@ -456,7 +504,22 @@ function galleryFor(html: string, externalId: string): string[] {
     `https://lb\\d+\\.green-acres\\.com/[^"'\\s)\\\\]*${escaped}[^"'\\s)\\\\]*\\.(?:jpg|jpeg|png|webp)`,
     "gi",
   );
-  const seen = new Set(html.match(pattern) ?? []);
+  /**
+   * Full-size photographs only. Their page also carries the FIRST photo's
+   * thumbnail under `/miniPhotos/`, and the id-matching pattern above collects
+   * it beside the full-size one. Measured 2026-09-24 on a saved Ramatuelle
+   * page: 17 entries — 16 photographs plus one thumbnail of photo 1. Together
+   * with `og:image` (photo 1 again, with a cache-buster query the gallery
+   * entries do not carry) that put the same picture on the dashboard three
+   * times in a row — the "first 2–3 images are copies" the client reported.
+   * The query string is dropped for the same reason: the cover has to compare
+   * equal to its own first photo, exactly.
+   */
+  const seen = new Set(
+    (html.match(pattern) ?? [])
+      .filter((u) => !/\/miniPhotos\//i.test(u))
+      .map((u) => u.replace(/\?.*$/, "")),
+  );
   return [...seen].sort((a, b) => order(a) - order(b));
 }
 
@@ -524,6 +587,13 @@ function byIcon($: cheerio.CheerioAPI, icons: string[]): string | null {
  */
 function surface(raw: string | null): number | null {
   if (!raw) return null;
+  /**
+   * "57 à 82 m²" is a range, and `num()` strips everything but digits and
+   * separators — so it came back as 5 782. Found 2026-09-24 on a Cavalaire
+   * programme with four flats of 57 to 82 m². A range is not one home's size;
+   * it is left null rather than picking an end of it.
+   */
+  if (/\d\s*(?:à|-|–|\bto\b)\s*\d/i.test(raw.replace(/(\d)[\s\u00a0\u202f](?=\d{3}\b)/g, "$1"))) return null;
   const value = num(raw);
   if (value === null) return null;
   // Word boundary: "ha" must be a unit, not the start of "habitable".
@@ -647,6 +717,26 @@ function capitalise(s: string): string {
 
 function titleCase(s: string): string {
   return s.replace(/\b[a-zà-ÿ]/g, (c) => c.toUpperCase());
+}
+
+/**
+ * The currency the page was rendered in, from its own currency picker: the
+ * option marked `primary` is the selected one (`currency-selection-EUR`).
+ * Falls back to the symbol printed beside the price, then to EUR — every
+ * page this project saved before 2026-09-24 carried the picker, so the last
+ * fallback is for a layout change, and it is logged by the caller as a
+ * missing price if it is ever wrong.
+ */
+function displayCurrency($: cheerio.CheerioAPI): string {
+  const picked = $('[id^="currency-selection-"].primary').first().attr("id");
+  const code = picked?.replace("currency-selection-", "").trim().toUpperCase();
+  if (code) return code;
+  const symbol = $(".price-container .symbol, .sticky-price .symbol").first().text().trim();
+  if (symbol === "€") return "EUR";
+  if (symbol === "$") return "USD";
+  if (symbol === "£") return "GBP";
+  if (symbol) return symbol;
+  return "EUR";
 }
 
 export type { RawListing };

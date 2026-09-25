@@ -3,6 +3,7 @@ import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
+import { coverFromGallery } from "../images";
 import {
   candidatePairs,
   cluster,
@@ -364,12 +365,23 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
        * The representative is chosen for completeness of fields, and the portal
        * with the best data is not always the one with a picture.
        */
-      imageUrl: best.imageUrl ?? group.find((g) => g.imageUrl)?.imageUrl ?? null,
-      /** The richest gallery among the merged listings, not the first one found. */
-      imageUrls: group.reduce<string[]>(
-        (best_, g) => (g.imageUrls.length > best_.length ? g.imageUrls : best_),
-        [],
+      ...coverFromGallery(
+        best.imageUrl ?? group.find((g) => g.imageUrl)?.imageUrl ?? null,
+        /** The richest gallery among the merged listings, not the first one found. */
+        group.reduce<string[]>(
+          (best_, g) => (g.imageUrls.length > best_.length ? g.imageUrls : best_),
+          [],
+        ),
       ),
+      /**
+       * `coverFromGallery` (2026-09-24): the cover and the gallery above can
+       * come from two different portals — the representative's photo and the
+       * richest gallery — so the cover was a URL the gallery did not contain,
+       * and the dashboard, which dedups by exact string, drew the same
+       * picture twice. 2,431 active properties have more than one source and
+       * were exposed to that. The cover is now a gallery member or the
+       * gallery's first photo.
+       */
       propertyType: best.propertyType,
       communeInsee,
       agencyId: best.agencyId,

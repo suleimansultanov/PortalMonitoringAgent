@@ -411,3 +411,145 @@ test("a commune that simply ran out of listings is reported as complete", async 
   assert.equal(urls.length, 48);
   assert.deepEqual(incomplete, {});
 });
+
+test("the gallery holds each photograph once, full-size, and the cover is its first entry", () => {
+  /**
+   * Measured 2026-09-24 on this very page: 17 gallery entries — 16
+   * photographs plus the `/miniPhotos/` thumbnail of photo 1 — and `og:image`
+   * was photo 1 once more, carrying a cache-buster the gallery did not. So the
+   * dashboard drew the same picture three times in a row. The client called it
+   * "first 2–3 images are copies", and that is exactly what it was.
+   */
+  const html = fs.readFileSync(path.join(FIXTURES, "green-acres-detail.html"), "utf8");
+  const url = html.match(/property="og:url" content="([^"]+)"/)![1];
+  const r = greenAcresAdapter.parse(html, url);
+  assert.ok(r.status !== "failed");
+  const l = r.listing;
+
+  assert.ok(l.imageUrls.length > 0, "a gallery was read");
+  for (const u of l.imageUrls) {
+    assert.doesNotMatch(u, /\/miniPhotos\//, "no thumbnails in the gallery");
+    assert.doesNotMatch(u, /\?/, "no cache-buster query strings");
+  }
+  assert.equal(new Set(l.imageUrls).size, l.imageUrls.length, "each photograph once");
+  assert.equal(l.imageUrl, l.imageUrls[0], "the cover is the gallery's own first photo, exactly");
+});
+
+/**
+ * A plot's "surface" is the plot. Measured 2026-09-24 on the first dry
+ * re-parse of every saved page: thirty rows would have received a floor area
+ * — all of them under `/terrain/` or `/neuf/`, e.g. 4 331 m² of "living space"
+ * on a building plot in Grimaud. The pages carry `advertsurface` (the generic
+ * size) and, for plots, `landsurface`; they carry no `habitablesurface`,
+ * because there is nothing to inhabit. The fixture is a house, so a plot is
+ * made from it the way their plot pages are built: the URL's type segment
+ * says `terrain`, and the habitable-surface tag is relabelled as the generic
+ * one.
+ */
+function asPlotPage(html: string): string {
+  const out = html.replace(/icon-habitablesurface/g, "icon-advertsurface");
+  assert.notEqual(out, html, "the fixture should carry a habitable-surface icon to relabel");
+  return out;
+}
+
+test("a plot page that copies the plot into 'surface habitable' still has no floor area", () => {
+  // What `--explain=Aaucmim9cqplr6l1` showed on 2026-09-24: the plot page carries
+  // the habitable-surface icon itself, with the plot's size in it. The fixture
+  // unchanged is exactly that shape — habitablesurface 599, landsurface 2730 —
+  // only the URL says plot.
+  const res = greenAcresAdapter.parse(fixture("green-acres-detail.html"), PLOT_URL);
+  assert.equal(res.status, "ok");
+  if (res.status !== "ok") return;
+  assert.equal(res.listing.areaM2, null);
+  assert.equal(res.listing.landM2, 2730);
+});
+const PLOT_URL = DETAIL_URL.replace("/maison/", "/terrain/");
+const NEUF_URL = DETAIL_URL.replace("/maison/", "/neuf/");
+
+test("a building plot's surface is land, never living space", () => {
+  const res = greenAcresAdapter.parse(asPlotPage(fixture("green-acres-detail.html")), PLOT_URL);
+  assert.equal(res.status, "ok");
+  if (res.status !== "ok") return;
+  assert.equal(res.listing.areaM2, null);
+  // `landsurface` is still on the page and still wins; 2 730 m² in the fixture.
+  assert.equal(res.listing.landM2, 2730);
+});
+
+test("a plot page with only the generic surface files it as land", () => {
+  const html = asPlotPage(fixture("green-acres-detail.html")).replace(/icon-landsurface/g, "icon-nothing");
+  const res = greenAcresAdapter.parse(html, PLOT_URL);
+  assert.equal(res.status, "ok");
+  if (res.status !== "ok") return;
+  assert.equal(res.listing.areaM2, null);
+  assert.equal(res.listing.landM2, 599);
+});
+
+test("a new-build programme's surface is not a floor area either", () => {
+  // Their programme pages carry the generic surface and no land (dry run:
+  // "SABBIA DI MAR  area — → 5782   land — → —"), so the land tag goes too.
+  const html = asPlotPage(fixture("green-acres-detail.html")).replace(/icon-landsurface/g, "icon-nothing");
+  const res = greenAcresAdapter.parse(html, NEUF_URL);
+  // A programme page has no per-unit floor area, and saying so is right:
+  // partial, with areaM2 named as what is missing — not 8 185 m² of "living space".
+  assert.equal(res.status, "partial");
+  if (res.status !== "partial") return;
+  assert.equal(res.listing.areaM2, null);
+  assert.deepEqual(res.missing, ["areaM2"]);
+});
+
+test("a house keeps the generic surface as its floor area, as before", () => {
+  const res = greenAcresAdapter.parse(asPlotPage(fixture("green-acres-detail.html")), DETAIL_URL);
+  assert.equal(res.status, "ok");
+  if (res.status !== "ok") return;
+  assert.equal(res.listing.areaM2, 599);
+  assert.equal(res.listing.landM2, 2730);
+});
+
+/**
+ * The price is euros or nothing. A page the runner saved on 2026-09-24 showed
+ * "Dès 456 687 $" — Green-Acres renders in the visitor's currency, and the
+ * runner is in a US datacentre. The page says which currency it chose: the
+ * picker's selected option carries `primary`.
+ */
+function inDollars(html: string): string {
+  const out = html
+    .replace(/(id="currency-selection-EUR" class="button-component) primary/, "$1 clear")
+    .replace(/(id="currency-selection-USD" class="button-component) clear/, "$1 primary")
+    .replace(/(<span class='symbol '>)&#160;€/g, "$1&#160;$");
+  assert.notEqual(out, html, "the fixture should carry the currency picker to flip");
+  return out;
+}
+
+test("a page rendered in euros gives its price, and says it saw euros", () => {
+  const res = greenAcresAdapter.parse(fixture("green-acres-detail.html"), DETAIL_URL);
+  if (res.status === "failed") return assert.fail(res.error);
+  assert.equal(res.listing.priceEur, 25_000_000);
+  assert.equal((res.listing.raw as Record<string, unknown>).foreignPrice, undefined);
+});
+
+test("a page rendered in dollars gives NO price, never the dollar figure", () => {
+  const res = greenAcresAdapter.parse(inDollars(fixture("green-acres-detail.html")), DETAIL_URL);
+  if (res.status === "failed") return assert.fail(res.error);
+  assert.equal(res.listing.priceEur, null);
+  const fp = (res.listing.raw as Record<string, unknown>).foreignPrice as { currency: string };
+  assert.equal(fp.currency, "USD");
+  // Not "price on request" — the agency published a price; we could not read it in euros.
+  assert.equal((res.listing.raw as Record<string, unknown>).priceOnRequest, false);
+});
+
+test("a size given as a range is not glued into one number", () => {
+  // "57 à 82 m²" came back as 5 782 on a Cavalaire programme.
+  const html = fixture("green-acres-detail.html").replace(
+    /(icon-habitablesurface[^>]*><\/em><span class="tag__label">)[^<]*/,
+    "$157 à 82 m²",
+  );
+  const res = greenAcresAdapter.parse(html, DETAIL_URL);
+  if (res.status === "failed") return assert.fail(res.error);
+  assert.notEqual(res.listing.areaM2, 5782);
+});
+
+test("a thousands separator is still not a range", () => {
+  const res = greenAcresAdapter.parse(fixture("green-acres-detail.html"), PLOT_URL);
+  if (res.status === "failed") return assert.fail(res.error);
+  assert.equal(res.listing.landM2, 2730); // "2 730 m²"
+});

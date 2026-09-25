@@ -260,3 +260,125 @@ test("a price RANGE is refused, not flattened into a number", () => {
   assert.equal(singlePrice("4700000"), 4_700_000);
   assert.equal(singlePrice("4 700 000"), 4_700_000);
 });
+
+/* ── The index carries dates, and the index is NOT sorted by them ─────────── */
+
+/** The freshest index capture available; both are commune page one. */
+const INDEX_FIXTURE = ["figaro-index-0915", "figaro-ramatuelle"].find((n) =>
+  fs.existsSync(path.join(FIXTURES, `${n}.html`)),
+)!;
+
+test("every card on the index states when the portal last edited it", () => {
+  /**
+   * This is what pays for the refresh skip in `runner/diff.ts`. The date sits
+   * in the payload of a page discovery reads anyway, so a listing this portal
+   * calls unchanged costs nothing to leave alone — see `needsRefresh`.
+   */
+  const cards = cardsOnPage(fixture(INDEX_FIXTURE), "https://proprietes.lefigaro.fr");
+
+  assert.ok(cards.length > 10, `expected a page of cards, got ${cards.length}`);
+  const dated = cards.filter((c) => c.sourceUpdatedAt instanceof Date);
+  assert.equal(dated.length, cards.length, "every card should carry a date");
+  for (const c of dated) {
+    const y = c.sourceUpdatedAt!.getFullYear();
+    assert.ok(
+      y >= 2015 && y <= 2100,
+      `${c.externalId} has an implausible date: ${String(c.sourceUpdatedAt)}`,
+    );
+  }
+});
+
+test("their index is not in date order, so no delta stop belongs here", () => {
+  /**
+   * MEASURED 2026-09-16 on two index captures taken two weeks apart, and kept
+   * as a test so nobody adds `discoveryOrder: "newest-first"` to this source on
+   * the strength of it feeling likely.
+   *
+   * Ramatuelle page one came back with publication dates running 2026-05-16,
+   * 2026-06-22, 2026-05-21, 2026-04-16 … — 14 of 32 steps going UP, and
+   * `updatedAt` is no better. Figaro exposes no sort parameter in its URLs
+   * either; the "Trier par" control is client-side and never reaches the query
+   * string, so there is nothing to ask for and nothing to verify.
+   *
+   * A delta stop is the claim that everything after a run of listings we
+   * already hold is older still. Here the claim is false, and what it buys is
+   * silent: a new listing sitting in the middle of an unordered list, never
+   * reached, on a night that reports success. Superimmo earned its delta stop
+   * by having its sort parameter checked against its own card dates. This
+   * source cannot.
+   *
+   * If this test ever fails, Figaro has started ordering its index — re-measure
+   * across several communes and several days before believing it, and only then
+   * is a delta stop on the table.
+   */
+  const dates = cardsOnPage(fixture(INDEX_FIXTURE), "https://proprietes.lefigaro.fr")
+    .map((c) => c.sourceUpdatedAt)
+    .filter((d): d is Date => d instanceof Date);
+
+  assert.ok(dates.length > 10);
+  let ascending = 0;
+  for (let i = 1; i < dates.length; i++) {
+    if (dates[i].getTime() > dates[i - 1].getTime()) ascending++;
+  }
+  assert.ok(ascending > 0, "the index came back newest-first — see the note above before acting on it");
+});
+
+test("discovery hands the date on to the runner", async () => {
+  /**
+   * The field is useless unless it survives the trip out of the adapter. It
+   * travels on `DiscoveredListing`, which is what `run.ts` keeps and what the
+   * refresh queue consults.
+   */
+  const html = fixture(INDEX_FIXTURE);
+  const out: DiscoveredListing[] = [];
+  const ctx: DiscoverContext = {
+    fetch: async () => html,
+    communeInsee: ["83101"],
+    config: {
+      host: "https://proprietes.lefigaro.fr",
+      communes: [{ insee: "83101", ville: "ramatuelle", label: "Ramatuelle" }],
+      maxPages: 1,
+    },
+    incomplete: () => {},
+  };
+  for await (const l of figaroAdapter.discover(ctx)) out.push(l);
+
+  assert.ok(out.length > 10, `expected listings, got ${out.length}`);
+  assert.ok(
+    out.every((l) => l.sourceUpdatedAt instanceof Date),
+    "every discovered listing should carry the portal's own date",
+  );
+});
+
+test("their holiday-rental branch never becomes a card, on either discovery path", () => {
+  /**
+   * CLAUDE.md has asked for `/location-vacances/` to be kept out since day
+   * one; measured 2026-09-24 the sale index payload carries none (0 of 42), and
+   * the eleven mentions on the page are all navigation. So the payload path is
+   * cheap insurance, and the anchor fallback — which reads every
+   * `a[href*="/annonces/"]` when the payload is missing — is where a nav link
+   * could be mistaken for a listing. Both are covered here.
+   */
+  const html = fixture(INDEX_FIXTURE);
+  const HOST = "https://proprietes.lefigaro.fr";
+
+  // Payload path: real page, must contain no rental cards.
+  for (const c of cardsOnPage(html, HOST)) {
+    assert.doesNotMatch(c.url, /\/location-vacances\//);
+  }
+
+  // Anchor fallback. cardsOnPage reads the payload, then the JSON-LD graph, and
+  // only then the anchors — so BOTH structured sources must be gone before a
+  // planted <a> is read at all. Stripping the payload alone left the JSON-LD
+  // path answering, and this test never reached the code it was written for.
+  const noPayload = html
+    .replace(/<script[^>]*id="__NUXT_DATA__"[^>]*>[\s\S]*?<\/script>/, "")
+    .replace(/<script[^>]*application\/ld\+json[^>]*>[\s\S]*?<\/script>/gi, "");
+  const planted =
+    noPayload +
+    '<a href="/location-vacances/villa-var-provence+alpes+cote+d+azur-france/900000001/">x</a>' +
+    '<a href="/annonces/villa-var-provence+alpes+cote+d+azur-france/900000002/">y</a>';
+  const ids = cardsOnPage(planted, HOST).map((c) => c.externalId);
+  assert.ok(!ids.includes("900000001"), "the rental link must not become a card");
+  assert.ok(ids.includes("900000002"), "and the sale link beside it still does");
+});

@@ -72,6 +72,9 @@ import { isPastLastPage } from "../runner/fetcher";
 /** `/annonces/villa-var-provence+alpes+cote+d+azur-france/103041455/` → `103041455` */
 const ID_FROM_URL = /\/annonces\/[^/?#]+\/(\d{5,})\/?(?:$|[?#])/;
 
+/** Figaro's holiday-rental branch — a different market, kept out entirely. */
+const isHolidayRental = (url: string): boolean => /\/location-vacances\//i.test(url);
+
 type FigaroCommuneConfig = {
   insee: string;
   ville: string;
@@ -93,26 +96,40 @@ export const figaroAdapter: PortalAdapter = {
   hosts: ["proprietes.lefigaro.fr", "properties.lefigaro.com"],
   discoveryMode: "index",
   /**
-   * Five seconds since 2026-09-07, up from two. Ours, not theirs — their
-   * robots.txt asks for nothing.
+   * Five seconds. Ours, not theirs — their robots.txt asks for nothing.
    *
-   * WHY IT CHANGED, and it is a hypothesis rather than a measurement. On the
-   * night of 7 September discovery went perfectly: 1889 listings, twelve
-   * communes, per-commune counts within one or two of the portal's own
-   * `offerCount`. Then the fetch phase began and the first three listing pages
-   * answered 403, and the pass stopped.
+   * THREE MEASUREMENTS, IN ORDER, BECAUSE EACH ONE CORRECTED THE LAST.
    *
-   * The obvious suspect was the address — GitHub's runners are shared
-   * datacentre ranges — and it was wrong. The same listing was fetched from a
-   * runner and from the operator's laptop, one request each, same code, same
-   * user-agent: BOTH were served normally. What differed on the failing night
-   * was volume, and the shape of it: about seventy requests in four minutes,
-   * with the fetch phase starting the instant discovery ended.
+   * 7 Sept — five seconds, on a wrong diagnosis. Discovery went perfectly, the
+   * fetch phase answered 403 on its first three pages, and the address was
+   * ruled out by fetching ONE listing from a runner and ONE from a laptop.
+   * Both were served, so the rate looked like the only variable left.
    *
-   * So the variable we actually control is the rate, and two seconds was a
-   * number we picked, not one they asked for. Five is the polite adjustment to
-   * make before concluding anything about them. If it does not hold, the next
-   * step is a pause between discovery and fetching, not a smaller number.
+   * 16 Sept, at volume — the address WAS the variable. From a GitHub runner:
+   * page one of the first commune refused, nothing collected, four seconds.
+   * From the operator's machine, same code, same five seconds: twelve communes
+   * discovered, 2142 listings, then 607 listing pages served consecutively
+   * with zero failures. That looked like permission to speed up, so this went
+   * to two seconds.
+   *
+   * 16 Sept, later the same day, at two seconds — and this is the correction.
+   * Nine communes came back clean, about seventy requests in all, and then the
+   * door shut: La Garde-Freinet page two, Le Plan-de-la-Tour page one, Les
+   * Issambres page one, and the first three listing pages of the fetch phase,
+   * all Cloudflare 403. Seventy requests against yesterday's twenty-seven
+   * hundred.
+   *
+   * WHAT THAT DOES AND DOES NOT ESTABLISH. Two things changed at once: the gap
+   * halved, and it was the second session of a day whose first session had
+   * ended in a refusal. Rate and cool-down cannot be separated from one run,
+   * so the number goes back to the one that demonstrably served 607 pages, and
+   * the next attempt waits for another day rather than stacking a third session
+   * on the same address. Do not read this comment as "two seconds is too fast";
+   * read it as "we do not know, and five is what has worked".
+   *
+   * If a smaller number is ever tried again, try it on a first session of the
+   * day, from an address that has not just been refused, and change nothing
+   * else.
    */
   defaultCrawlDelayMs: 5_000,
 
@@ -245,7 +262,18 @@ export const figaroAdapter: PortalAdapter = {
           kept++;
           if (yielded.has(card.externalId)) continue;
           yielded.add(card.externalId);
-          yield { externalId: card.externalId, url: card.url, communeHint: c.label };
+          /**
+           * The date rides along with the listing. It costs nothing here — the
+           * page was read for its links anyway — and it is what lets the
+           * refresh queue skip a page this portal says has not changed. See
+           * `sourceUpdatedAt` in types.ts.
+           */
+          yield {
+            externalId: card.externalId,
+            url: card.url,
+            communeHint: c.label,
+            sourceUpdatedAt: card.sourceUpdatedAt ?? null,
+          };
         }
 
         /**
@@ -489,6 +517,14 @@ export type IndexCard = {
   /** The portal's own INSEE code, when the payload could be read. */
   insee: string | null;
   locality: string | null;
+  /**
+   * Their own "last edited" for this listing, straight off the index page.
+   *
+   * Present only on the payload path — the JSON-LD and anchor fallbacks below
+   * carry no dates, and a missing date means "we do not know", which the
+   * refresh queue treats as "fetch it", never as "it is fresh".
+   */
+  sourceUpdatedAt?: Date | null;
 };
 
 /** Does this card belong to the commune whose page we asked for? */
@@ -522,7 +558,22 @@ export function cardsOnPage(
 
   for (const r of data.records) {
     if (!r.url) continue;
-    out.set(r.id, { externalId: r.id, url: r.url, insee: r.insee, locality: r.city });
+    /**
+     * Their holiday-rental branch, which CLAUDE.md has asked to keep out since
+     * the first day. Measured 2026-09-24: the sale index payload carries none of
+     * these (0 of 42 records) — the eleven `location-vacances` strings on the
+     * page are all site navigation — so on this path the guard is cheap
+     * insurance. It is the anchor fallback below where a nav link could be
+     * mistaken for a card, and the same test covers both.
+     */
+    if (isHolidayRental(r.url)) continue;
+    out.set(r.id, {
+      externalId: r.id,
+      url: r.url,
+      insee: r.insee,
+      locality: r.city,
+      sourceUpdatedAt: r.updatedAt,
+    });
   }
   if (out.size > 0) return [...out.values()];
 
@@ -551,6 +602,7 @@ export function cardsOnPage(
     const href = dom(el).attr("href");
     if (!href) return;
     const absolute = href.startsWith("http") ? href : new URL(href, host).toString();
+    if (isHolidayRental(absolute)) return;
     const id = absolute.match(ID_FROM_URL)?.[1];
     if (id && !out.has(id)) {
       out.set(id, { externalId: id, url: absolute, insee: null, locality: null });

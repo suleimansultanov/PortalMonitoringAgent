@@ -3,6 +3,14 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalSources } from "@/lib/db/schema";
 import { communesForSource, runSource, type RunSummary } from "./runner/run";
+import { grade, type Grade } from "./nightlyGrade";
+
+/**
+ * Re-exported so `nightly.ts` keeps its one import. The grading itself now
+ * lives in `nightlyGrade.ts`, a pure module — see the note there for why it
+ * moved out of a file that opens the database.
+ */
+export { grade, type Grade };
 
 /**
  * ONE SOURCE, ONE PROCESS. The unit `nightly.ts` spawns.
@@ -35,8 +43,6 @@ import { communesForSource, runSource, type RunSummary } from "./runner/run";
 
 export const SUMMARY_MARKER = "__NIGHTLY_SUMMARY__";
 
-export type Grade = "ok" | "warn" | "fail";
-
 export type SourceOutcome = Partial<RunSummary> & {
   sourceKey: string;
   grade: Grade;
@@ -47,34 +53,6 @@ export type SourceOutcome = Partial<RunSummary> & {
   durationMs: number;
 };
 
-/**
- * How bad is this?
- *
- * `fail` means the pass did not finish, so the picture of that portal is
- * incomplete and the diff for the next run will be working from a fragment.
- * That is the only condition worth waking someone for.
- *
- * `warn` means individual listings could not be fetched. Some of that is
- * ordinary — a URL that 404s between discovery and ingestion is a listing that
- * sold this afternoon. On the night of 2026-08-31 LuxuryEstate refused 43 of
- * 1688 and that was a good run. So failures are shown, never escalated on
- * count alone; the ratio is printed next to them so a person can judge.
- */
-export function grade(s: RunSummary): { grade: Grade; note: string } {
-  if (s.status === "error") return { grade: "fail", note: s.error ?? "the pass threw" };
-  if (s.status === "aborted") return { grade: "fail", note: s.abortedReason ?? "aborted" };
-  if (s.status === "disabled") {
-    return { grade: "warn", note: "source is switched off in portal_sources" };
-  }
-  if (s.fetchStoppedEarly) return { grade: "fail", note: s.fetchStoppedEarly };
-
-  if (s.failed > 0) {
-    const attempted = s.added + s.refreshed;
-    const pct = attempted > 0 ? Math.round((s.failed / attempted) * 100) : 100;
-    return { grade: "warn", note: `${s.failed} of ${attempted} listings failed (${pct}%)` };
-  }
-  return { grade: "ok", note: "" };
-}
 
 function arg(name: string): string | undefined {
   return process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=").slice(1).join("=");

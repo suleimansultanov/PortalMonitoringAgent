@@ -2,8 +2,11 @@ import "server-only";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalSnapshots, portalSources } from "@/lib/db/schema";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { getPage, storageDescription } from "@/lib/s3/pages";
 import { getAdapter } from "./registry";
+import { coverFromGallery } from "./images";
 import { resolveAgency } from "./agencies";
 import { resolveCommune } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
@@ -44,6 +47,56 @@ function parseArgs(): Args {
     dry: process.argv.includes("--dry"),
     explain: get("explain"),
   };
+}
+
+/**
+ * The most recent capture of a listing that shows a euro price, other than
+ * the current one — for pages the runner saved in another currency. Looks at
+ * older S3 snapshots first (at most three, newest first), then at the
+ * laptop-era files under `.pages/pages/<source>/<date>/<id>.html`. Reads only;
+ * nothing is fetched from the portal.
+ */
+async function lastEuroPrice(
+  sourceId: string,
+  sourceKey: string,
+  externalId: string,
+  url: string,
+  adapter: ReturnType<typeof getAdapter>,
+): Promise<{ price: number; at: string; where: "s3" | "local" } | null> {
+  const eurOf = (html: string): number | null => {
+    const r = adapter.parse(html, url);
+    return "listing" in r ? r.listing.priceEur : null;
+  };
+  const captures = await db
+    .select({ key: portalSnapshots.s3Key, at: portalSnapshots.fetchedAt })
+    .from(portalSnapshots)
+    .where(and(eq(portalSnapshots.sourceId, sourceId), eq(portalSnapshots.externalId, externalId)))
+    .orderBy(desc(portalSnapshots.fetchedAt))
+    .limit(4);
+  for (const c of captures.slice(1)) {
+    try {
+      const price = eurOf(await getPage(c.key));
+      if (price !== null) return { price, at: c.at.toISOString(), where: "s3" };
+    } catch {
+      // unreadable capture: try the next one
+    }
+  }
+  const root = path.join(process.cwd(), ".pages", "pages", sourceKey);
+  let days: string[] = [];
+  try {
+    days = (await fs.readdir(root)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse();
+  } catch {
+    return null;
+  }
+  for (const day of days) {
+    try {
+      const price = eurOf(await fs.readFile(path.join(root, day, `${externalId}.html`), "utf8"));
+      if (price !== null) return { price, at: `${day}T00:00:00.000Z`, where: "local" };
+    } catch {
+      // not captured that day
+    }
+  }
+  return null;
 }
 
 /**
@@ -159,6 +212,52 @@ async function explainOne(sourceKey: string, externalId: string): Promise<void> 
     console.log(
       `\nparsed now: area ${result.listing.areaM2 ?? "—"}  land ${result.listing.landM2 ?? "—"}`,
     );
+    const fp = (result.listing.raw as Record<string, unknown> | null)?.foreignPrice;
+    if (fp) {
+      /**
+       * A page in another currency: where else might the euro price be?
+       * Two places to look, printed rather than guessed at (2026-09-24):
+       * figures on this page that carry a euro sign or sit in a data
+       * attribute, and every earlier capture of the same listing — the
+       * laptop-era ones were rendered in euros.
+       */
+      console.log("\neuro candidates on this page:");
+      const seen = new Set<string>();
+      for (const m of html.matchAll(/data-default-value=["']?(\d{5,})/g)) {
+        if (!seen.has(m[1])) console.log(`  data-default-value ${m[1]}`);
+        seen.add(m[1]);
+      }
+      for (const m of text.matchAll(/(\d[\d\s\u00a0\u202f.]{4,})\s*€(?!\s*\/)/g)) {
+        const v = m[1].trim();
+        if (!seen.has(v)) console.log(`  "${text.slice(Math.max(0, m.index! - 40), m.index! + m[0].length)}"`);
+        seen.add(v);
+        if (seen.size > 20) break;
+      }
+      const captures = await db
+        .select({ key: portalSnapshots.s3Key, at: portalSnapshots.fetchedAt })
+        .from(portalSnapshots)
+        .where(and(eq(portalSnapshots.sourceId, source.id), eq(portalSnapshots.externalId, externalId)))
+        .orderBy(desc(portalSnapshots.fetchedAt));
+      console.log(`\n${captures.length} capture(s) of this listing:`);
+      for (const c of captures) {
+        let shown = "unreadable";
+        try {
+          const page = await getPage(c.key);
+          const r = adapter.parse(page, row.url);
+          if ("listing" in r) {
+            const f = (r.listing.raw as Record<string, unknown> | null)?.foreignPrice as { shown?: string } | undefined;
+            shown = r.listing.priceEur !== null ? `${r.listing.priceEur} EUR` : f ? `not EUR: ${f.shown}` : "no price";
+          }
+        } catch (err) {
+          shown = `unreadable: ${(err as Error).message}`;
+        }
+        console.log(`  ${c.at.toISOString().slice(0, 16)}  ${shown}`);
+      }
+    }
+    console.log(
+      `price: stored ${row.priceEur ?? "—"}  parsed ${result.listing.priceEur ?? "—"}` +
+        (fp ? `  (page not in EUR: ${JSON.stringify(fp)})` : ""),
+    );
   }
   process.exit(0);
 }
@@ -212,6 +311,8 @@ export async function reparse(args: Args): Promise<void> {
         rooms: portalListings.rooms,
         bedrooms: portalListings.bedrooms,
         propertyType: portalListings.propertyType,
+        imageUrl: portalListings.imageUrl,
+        imageUrls: portalListings.imageUrls,
       })
       .from(portalListings)
       .where(eq(portalListings.sourceId, source.id));
@@ -225,6 +326,7 @@ export async function reparse(args: Args): Promise<void> {
     /** Fields whose value would actually change, and a few worked examples. */
     const differs = new Map<string, number>();
     const examples: string[] = [];
+    const currencyExamples: string[] = [];
 
     /**
      * A line every hundred pages.
@@ -282,10 +384,15 @@ export async function reparse(args: Args): Promise<void> {
 
       consider("title", p.title);
       consider("description", p.description);
-      consider("imageUrl", p.imageUrl);
+      // Same rule as the ingest path (2026-09-24): the cover is a member of the
+      // gallery, or it becomes the gallery's first photo. Without this the
+      // re-parse would write exactly the pair the dashboard cannot dedup —
+      // 3,042 Superimmo rows and 1,021 Green-Acres rows measured that way.
+      const photos = coverFromGallery(p.imageUrl, p.imageUrls);
+      consider("imageUrl", photos.imageUrl);
       // An empty gallery is not evidence of no gallery — same rule as every
       // other field here, so only a non-empty array overwrites.
-      if (p.imageUrls.length > 0) consider("imageUrls", p.imageUrls);
+      if (photos.imageUrls.length > 0) consider("imageUrls", photos.imageUrls);
       consider("priceEur", p.priceEur);
       consider("areaM2", p.areaM2 === null ? null : String(p.areaM2));
       consider("landM2", p.landM2 === null ? null : String(p.landM2));
@@ -308,7 +415,15 @@ export async function reparse(args: Args): Promise<void> {
        * listing that is a foreign key rather than a value, so "re-parse the
        * fields" quietly means "re-parse everything except this".
        */
-      if (p.agencyName) {
+      /**
+       * Not in a dry run (2026-09-24). `resolveAgency` is not a lookup: it
+       * inserts agencies it has not seen and fills in their missing address
+       * and phone. So `--dry` printed "nothing will be written" and then wrote
+       * to `portal_agencies` — additively, never destructively, but a dry run
+       * that writes is not a dry run. The agency column is simply left out of
+       * the dry report.
+       */
+      if (p.agencyName && !args.dry) {
         const agencyId = await resolveAgency({
           name: p.agencyName,
           address: p.agencyAddress,
@@ -323,6 +438,55 @@ export async function reparse(args: Args): Promise<void> {
       consider("publishedAt", p.publishedAt);
       consider("sourceUpdatedAt", p.sourceUpdatedAt);
       consider("raw", p.raw);
+
+      /**
+       * The one place a re-parse writes a null, 2026-09-24.
+       *
+       * Everywhere else "the parser found nothing" is not evidence, so nothing
+       * is cleared. A page rendered in dollars is evidence: it proves the
+       * stored price was read off a dollar figure and filed as euros. Green-
+       * Acres picks the display currency by visitor, the nightly runner sits
+       * in a US datacentre, and the adapter had no currency check. Such a row
+       * is cleared — an honest gap instead of a price 15% too high — and the
+       * dry run counts them before anything is touched.
+       */
+      const foreign = (p.raw as Record<string, unknown> | null)?.foreignPrice as
+        | { currency?: string; shown?: string }
+        | undefined;
+      if (foreign) {
+        /**
+         * Recover before clearing. The same listing was usually captured
+         * earlier in euros — laptop-era pages are, and the four checked by
+         * hand all were, at exactly the converter's 1.1488 below the stored
+         * dollar figure. That capture's price is a real published euro price,
+         * only older, so it is used and dated in `raw.priceEurFrom`. No rate
+         * is applied anywhere: where no euro capture exists the price is
+         * cleared, which is an honest gap rather than a figure of our making.
+         */
+        const eur = await lastEuroPrice(source.id, source.key, row.externalId, row.url, adapter);
+        const bump = (k: string) => {
+          changes.set(k, (changes.get(k) ?? 0) + 1);
+          differs.set(k, (differs.get(k) ?? 0) + 1);
+        };
+        if (eur) {
+          if (row.priceEur !== eur.price) {
+            patch.priceEur = eur.price;
+            bump("priceEur from earlier EUR capture");
+          }
+          patch.raw = { ...(p.raw as Record<string, unknown>), priceEurFrom: { capturedAt: eur.at, where: eur.where } };
+        } else if (row.priceEur !== null) {
+          patch.priceEur = null;
+          bump("priceEur cleared (no EUR capture)");
+        }
+        if (currencyExamples.length < 6) {
+          currencyExamples.push(
+            `    ${(row.title ?? "").slice(0, 55)}\n` +
+              `      stored ${row.priceEur ?? "—"} · page "${foreign.shown ?? "?"}" · ` +
+              (eur ? `→ ${eur.price} € from ${eur.where} ${eur.at.slice(0, 10)}` : "→ cleared, no euro capture") +
+              `\n      ${row.url}`,
+          );
+        }
+      }
       if (commune) consider("communeInsee", commune.insee);
 
       /**
@@ -337,6 +501,12 @@ export async function reparse(args: Args): Promise<void> {
         rooms: row.rooms,
         bedrooms: row.bedrooms,
         propertyType: row.propertyType,
+        // The photo columns are compared as strings so the loop below can see
+        // them: the cover exactly, the gallery by its join. Added 2026-09-24,
+        // when the first dry run reported rooms and areas and said nothing
+        // about the 2 458 galleries it was about to rewrite.
+        imageUrl: row.imageUrl,
+        imageUrls: row.imageUrls.join("\n"),
       };
       const after: Record<string, unknown> = {
         areaM2: p.areaM2,
@@ -345,6 +515,8 @@ export async function reparse(args: Args): Promise<void> {
         rooms: p.rooms,
         bedrooms: p.bedrooms,
         propertyType: p.propertyType,
+        imageUrl: photos.imageUrl,
+        imageUrls: photos.imageUrls.length > 0 ? photos.imageUrls.join("\n") : null,
       };
       const changed: string[] = [];
       for (const key of Object.keys(before)) {
@@ -388,6 +560,10 @@ export async function reparse(args: Args): Promise<void> {
     if (examples.length > 0) {
       console.log("    examples:");
       for (const e of examples) console.log(e);
+    }
+    if (currencyExamples.length > 0) {
+      console.log("    prices read off a page in another currency:");
+      for (const e of currencyExamples) console.log(e);
     }
     const top = [...changes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
     if (top.length > 0) {

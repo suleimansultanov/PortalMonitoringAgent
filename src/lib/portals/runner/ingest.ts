@@ -1,4 +1,5 @@
 import "server-only";
+import { coverFromGallery } from "../images";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListingEvents, portalListings, portalSnapshots } from "@/lib/db/schema";
@@ -162,8 +163,13 @@ export async function ingestListing(
     url,
     title: parsed.title,
     description: parsed.description,
-    imageUrl: parsed.imageUrl,
-    imageUrls: parsed.imageUrls,
+    /**
+     * The cover is the gallery's first entry, never a separately-sourced
+     * `og:image` that merely depicts the same thing — see images.ts for the
+     * two portals where that difference put the same photograph on screen
+     * three times.
+     */
+    ...coverFromGallery(parsed.imageUrl, parsed.imageUrls),
     priceEur,
     pricePerM2,
     areaM2: parsed.areaM2 === null ? null : String(parsed.areaM2),

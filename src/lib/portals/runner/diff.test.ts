@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffListings, shouldAbort } from "./diff";
+import { diffListings, shouldAbort, needsRefresh } from "./diff";
 
 test("splits discovered ids into added and present", () => {
   const r = diffListings({ known: ["a", "b"], discovered: ["b", "c"], complete: true });
@@ -125,4 +125,115 @@ test("omitting the shield list leaves the old behaviour exactly as it was", () =
   const r = diffListings({ known: ["a", "b"], discovered: ["a"], complete: true });
   assert.deepEqual(r.removed, ["b"]);
   assert.deepEqual(r.suppressedRemovals, []);
+});
+
+/* ── The refresh skip ─────────────────────────────────────────────────────
+
+   Guarding a saving, so every test here is really asking "does this fetch a
+   page it should have fetched?" — the failure that matters is the one that
+   leaves a stale price on a client's screen, not the one that costs a request.
+*/
+
+const DAY = 86_400_000;
+const now = new Date("2026-09-16T12:00:00Z");
+const ceiling = new Date(now.getTime() - 30 * DAY);
+const fetchedRecently = new Date(now.getTime() - 8 * DAY);
+
+test("a listing the portal says is unchanged is not fetched again", () => {
+  const stored = new Date("2026-08-01T00:00:00Z");
+  assert.equal(
+    needsRefresh(
+      { externalId: "1", fetchedAt: fetchedRecently, storedSourceUpdatedAt: stored },
+      new Date("2026-08-01T00:00:00Z"),
+      ceiling,
+    ),
+    false,
+  );
+});
+
+test("a newer date from the portal means the page changed", () => {
+  assert.equal(
+    needsRefresh(
+      {
+        externalId: "1",
+        fetchedAt: fetchedRecently,
+        storedSourceUpdatedAt: new Date("2026-08-01T00:00:00Z"),
+      },
+      new Date("2026-09-14T00:00:00Z"),
+      ceiling,
+    ),
+    true,
+  );
+});
+
+test("a missing date on either side is never read as freshness", () => {
+  const stored = new Date("2026-08-01T00:00:00Z");
+  // The portal said nothing — most sources publish no dates at all, and they
+  // must behave exactly as they did before this existed.
+  assert.equal(
+    needsRefresh(
+      { externalId: "1", fetchedAt: fetchedRecently, storedSourceUpdatedAt: stored },
+      null,
+      ceiling,
+    ),
+    true,
+  );
+  // We hold no date to compare against.
+  assert.equal(
+    needsRefresh(
+      { externalId: "1", fetchedAt: fetchedRecently, storedSourceUpdatedAt: null },
+      stored,
+      ceiling,
+    ),
+    true,
+  );
+});
+
+test("a listing this pass never saw is not skipped on the strength of that", () => {
+  /**
+   * `undefined` is discovery not having reached it — a delta stop, a commune
+   * cut short, a page that failed. Absence from a pass says nothing about
+   * whether the listing changed, and reading it as "unchanged" would let one
+   * truncated night freeze a commune's prices.
+   */
+  assert.equal(
+    needsRefresh(
+      {
+        externalId: "1",
+        fetchedAt: fetchedRecently,
+        storedSourceUpdatedAt: new Date("2026-08-01T00:00:00Z"),
+      },
+      undefined,
+      ceiling,
+    ),
+    true,
+  );
+});
+
+test("past the ceiling the page is read again whatever the portal claims", () => {
+  /**
+   * The bound on trusting somebody else's timestamp. A portal that never
+   * touches the field when a price changes would otherwise freeze that price in
+   * our data permanently — and price history is the product.
+   */
+  const stale = new Date(now.getTime() - 40 * DAY);
+  assert.equal(
+    needsRefresh(
+      {
+        externalId: "1",
+        fetchedAt: stale,
+        storedSourceUpdatedAt: new Date("2026-08-01T00:00:00Z"),
+      },
+      new Date("2026-08-01T00:00:00Z"),
+      ceiling,
+    ),
+    true,
+  );
+});
+
+test("a listing we have never fetched is always fetched", () => {
+  assert.equal(
+    needsRefresh({ externalId: "1", fetchedAt: null, storedSourceUpdatedAt: null }, null, ceiling),
+    true,
+  );
 });

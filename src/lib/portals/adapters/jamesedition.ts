@@ -34,6 +34,31 @@ type CommuneConfig = { insee: string; slug: string; label: string };
 /** Their listing URLs: /real_estate/{area-slug}/{title-slug}-{id}. */
 const LISTING_HREF = /href="(\/real_estate\/[a-z0-9-]+\/[a-z0-9-]+-(\d{6,}))"/gi;
 
+/**
+ * A rental, told apart from a sale.
+ *
+ * JamesEdition files rentals under the same `/real_estate/{area}/` path as
+ * sales, with no structured flag anywhere: the JSON-LD Offer carries no
+ * `businessFunction`, and the breadcrumb does not say. What it DOES carry is
+ * its own title template, on two stable fields:
+ *
+ *   <title>… , Saint Tropez, France For Sale (18071317)</title>
+ *   href="/real_estate/ramatuelle-france/for-rent-exclusive-sea-view-…-17557981"
+ *
+ * The `<title>` ends "For Sale (id)" or "For Rent (id)" — theirs, not the
+ * agent's prose — and the URL slug is the same title lower-cased, so a rental's
+ * slug begins `for-rent-`. The slug is checked at discovery (no fetch spent),
+ * the title at parse (the net under it).
+ *
+ * WHY IT MATTERS, and why it is small. Measured 2026-09-24: 0 of 32 cards on
+ * Saint-Tropez page one were rentals; one was found in Ramatuelle. Rare — but
+ * a monthly rent stored as a sale price sits next to €5M villas looking like a
+ * wrong figure, and it never deduplicates against the sale of the same house,
+ * so each one is a phantom duplicate on the client's screen.
+ */
+const RENTAL_SLUG = /^for-rent-/i;
+const RENTAL_TITLE = /\bFor Rent\s*\(\d{6,}\)\s*<\/title>/i;
+
 /** "456 listings" — the portal stating its own total, as Figaro does. */
 const STATED_TOTAL = /([\d,]+)\s*listings/i;
 
@@ -76,6 +101,31 @@ const LOCATION_LABEL = /je2-listing-info__location[^>]*aria-label="([^"]+)"/i;
 
 /** A French postcode, for the runner's second signal. */
 const POSTCODE = /\b(8[0-9]{4})\b/;
+
+/**
+ * Labels the map button emits that name a REGION or DEPARTMENT, not a commune.
+ *
+ * MEASURED 2026-09-24. Twenty-one Ramatuelle listings — L'Escalet, Pampelonne, a
+ * seventeen-hectare olive estate — carried the label
+ * "Provence-Alpes-Côte d'Azur, France" with no commune in it at all. The parser
+ * took the part before "France", as it does for "Zone Ouest Urbaine,
+ * Saint-Tropez, France", and stored the region as the commune. The code never
+ * resolved, `commune_insee` stayed NULL, and the twenty-one could neither merge
+ * (so they showed as duplicates) nor ever be delisted.
+ *
+ * A label in this set means the portal stated NO commune, and the URL's area
+ * segment — the list the property was found under — becomes the best evidence
+ * we hold. That is the one case where the list is allowed to win, and `raw`
+ * records that it did, so the choice can be audited without a recrawl.
+ *
+ * "Var" is included as the department one level down their breadcrumb; it is
+ * the same shape and has not been seen yet. Nothing else is guessed.
+ */
+const NOT_A_COMMUNE = new Set(["provence-alpes-cote d'azur", "provence-alpes-côte d'azur", "var"]);
+const isRegionLabel = (s: string): boolean =>
+  NOT_A_COMMUNE.has(
+    s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim(),
+  ) || NOT_A_COMMUNE.has(s.toLowerCase().trim());
 
 /**
  * Their own answer to "which area is this?", server-rendered in the heading:
@@ -246,12 +296,26 @@ export const jameseditionAdapter: PortalAdapter = {
       let cutShort: string | null = null;
       let knownStreak = 0;
       let stated: number | null = null;
+      let rentals = 0;
 
       for (let page = 1; page <= maxPages; page++) {
-        const url =
-          page === 1
-            ? `${host}/real_estate/${c.slug}`
-            : `${host}/real_estate/${c.slug}?page=${page}`;
+        /**
+         * `order=recent` is THEIR "Newest homes for sale in Saint-Tropez" link
+         * — read off the index page's own "popular searches" block on the
+         * saved fixture (2026-09-25), not guessed. It is what makes a delta
+         * pass possible here: with the newest first, a run can stop after
+         * `deltaStopAfterKnown` listings it already holds, instead of walking
+         * fifteen pages of Saint-Tropez every night to find three new ones.
+         * robots.txt disallows only `map?` and `show_more_nearby_listings`
+         * under /real_estate/; a query on the index is open.
+         *
+         * A claim about their ordering, like Superimmo's `sort=created_at`,
+         * and it costs the same if wrong: a delta night never delists, so a
+         * mis-ordered list loses new listings only until Sunday's full sweep.
+         */
+        const params = new URLSearchParams({ order: "recent" });
+        if (page > 1) params.set("page", String(page));
+        const url = `${host}/real_estate/${c.slug}?${params.toString()}`;
 
         let html: string;
         try {
@@ -297,6 +361,13 @@ export const jameseditionAdapter: PortalAdapter = {
           const id = path.match(/-(\d{6,})$/)?.[1];
           if (!id) continue;
 
+          /** Not our market. Skipped here so no request is spent on it. */
+          const slug = path.split("/").pop() ?? "";
+          if (RENTAL_SLUG.test(slug)) {
+            rentals += 1;
+            continue;
+          }
+
           if (ctx.delta) {
             if (ctx.delta.knows(id)) {
               knownStreak += 1;
@@ -323,6 +394,10 @@ export const jameseditionAdapter: PortalAdapter = {
        * filter — but a LARGE one means pagination stopped early, and stopping
        * early silently is what delists a commune.
        */
+      if (rentals > 0) {
+        console.log(`[jamesedition] ${c.label}: skipped ${rentals} rental${rentals === 1 ? "" : "s"} — not for sale`);
+      }
+
       if (!cutShort && stated !== null && seen.size < stated * 0.9) {
         cutShort = `found ${seen.size} of the ${stated} this portal states`;
       }
@@ -360,6 +435,16 @@ export const jameseditionAdapter: PortalAdapter = {
 
     const listing: RawListing = emptyListing(id, url);
     const missing: string[] = [];
+
+    /**
+     * The net under the discovery filter. A rental that reached parse — via
+     * a slug that did not start `for-rent-`, or a page fetched for a refresh
+     * from before the filter existed — is refused here on the portal's own
+     * title template, and never stored.
+     */
+    if (RENTAL_TITLE.test(html)) {
+      return { status: "failed", error: "rental listing, not for sale — outside the sale corpus" };
+    }
 
     listing.title = typeof product.name === "string" ? product.name.trim() : null;
     listing.description =
@@ -445,8 +530,22 @@ export const jameseditionAdapter: PortalAdapter = {
      */
     const label = html.match(LOCATION_LABEL)?.[1];
     const parts = label?.split(",").map((x) => x.trim()).filter(Boolean) ?? [];
-    listing.communeRaw =
-      parts.length >= 2 ? parts[parts.length - 2] : (communeFromUrl(url) ?? null);
+    const stated = parts.length >= 2 ? parts[parts.length - 2] : null;
+
+    /**
+     * The listing's own label wins whenever it names a commune. When it names
+     * only a region — see NOT_A_COMMUNE — the portal has stated nothing, and
+     * the list the property was found under is the best evidence left. Which
+     * of the two was used is recorded in `raw.communeSource`.
+     */
+    let communeSource: "listing" | "list" | "none";
+    if (stated && !isRegionLabel(stated)) {
+      listing.communeRaw = stated;
+      communeSource = "listing";
+    } else {
+      listing.communeRaw = communeFromUrl(url) ?? null;
+      communeSource = listing.communeRaw ? "list" : "none";
+    }
     if (!listing.communeRaw) missing.push("commune");
 
     listing.postalCode =
@@ -460,6 +559,10 @@ export const jameseditionAdapter: PortalAdapter = {
       breadcrumb: breadcrumbTrail(blocks),
       /** What the list filed it under, kept so a mismatch can be audited. */
       listedUnder: communeFromUrl(url),
+      /** Which evidence set `communeRaw` — the listing's own label, or the list. */
+      communeSource,
+      /** The map label verbatim, so a region-only label is visible after the fact. */
+      locationLabel: label ?? null,
       specs: items,
     };
 

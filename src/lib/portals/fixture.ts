@@ -45,13 +45,22 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const useBrowser = process.argv.includes("--browser");
+  const useBrowser = process.argv.includes("--browser") || process.argv.includes("--headful");
 
   console.log(`fetching ${url}${useBrowser ? " (through a browser)" : ""}`);
 
   let session: BrowserSession | null = null;
   if (useBrowser) {
-    session = await createBrowserSession({ delayMs: delay, userAgent: USER_AGENT });
+    /**
+     * `--headful` draws the window. Same user-agent, nothing patched — it is a
+     * measurement of whether a portal's rule keys on headless signals, not a
+     * way past one. See `headless` in runner/browser.ts.
+     */
+    session = await createBrowserSession({
+      delayMs: delay,
+      userAgent: USER_AGENT,
+      headless: !process.argv.includes("--headful"),
+    });
   }
   const fetcher = session?.fetch ?? createFetcher({ delayMs: delay, attempts: 2 });
 

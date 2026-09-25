@@ -141,7 +141,14 @@ export const portalRuns = pgTable(
       .references(() => portalSources.id, { onDelete: "cascade" }),
     /** 'scheduled' | 'manual' | 'backfill' */
     mode: text("mode").notNull().default("scheduled"),
-    /** 'running' | 'done' | 'error' | 'aborted' */
+    /**
+     * 'running' | 'done' | 'partial' | 'error' | 'aborted'
+     *
+     * `partial`: discovery finished, fetching did not. The market picture is
+     * complete and the delistings are sound; some pages are simply older than
+     * we would like and are queued for the next pass. See RunSummary in
+     * portals/runner/run.ts.
+     */
     status: text("status").notNull().default("running"),
     communeInsee: text("commune_insee").array().notNull().default([]),
     seenCount: integer("seen_count").notNull().default(0),

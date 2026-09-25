@@ -428,7 +428,14 @@ function sourceSeeds(): SourceSeed[] {
        * this is the rate we would want a stranger to use on us — and at ~170
        * listings per commune it costs minutes, not hours.
        */
-      /** Raised from 2s on 2026-09-07 — see the note in the adapter. */
+      /**
+       * 2s was tried on 2026-09-16 and reverted the same evening: the pass got
+       * through nine communes and about seventy requests before Cloudflare shut
+       * the door, against twenty-seven hundred served at five seconds earlier
+       * that day. Rate and cool-down could not be separated from one run, so
+       * this is the number that has demonstrably worked. The adapter's comment
+       * carries all three measurements.
+       */
       crawlDelayMs: 5_000,
       permissionNote:
         "robots.txt read in full 2026-08-30. One `User-agent: *` group, which is " +
@@ -508,6 +515,16 @@ function sourceSeeds(): SourceSeed[] {
         maxPages: 30,
         /** 403 to the plain client on every path. See `permissionNote`. */
         fetchMode: "browser",
+        /**
+         * Delta nights, 2026-09-25. The index is requested with their own
+         * `order=recent` (see the adapter), so a weeknight stops each commune
+         * after fifteen listings we already hold in a row; Sunday's `--full`
+         * walks everything and is the only night that delists. Fifteen, not
+         * five: promoted listings sit above the newest ones on their first
+         * page, and a short streak would stop before reaching the real top.
+         */
+        discoveryOrder: "newest-first",
+        deltaStopAfterKnown: 15,
       },
     },
   ];

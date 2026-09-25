@@ -292,7 +292,7 @@ test("an area slug they do not know is refused, not collected", async () => {
     "</body></html>";
 
   const { ids, incomplete } = await discoverAgainst(
-    { "https://www.jamesedition.com/real_estate/la-mole-france": nationalFallback },
+    { "https://www.jamesedition.com/real_estate/la-mole-france?order=recent": nationalFallback },
     [{ insee: "83079", slug: "la-mole-france", label: "La Môle" }],
   );
 
@@ -309,7 +309,7 @@ test("the real page passes the same check", async () => {
    * portal — a far larger fault than the one it was written to prevent.
    */
   const { ids, incomplete } = await discoverAgainst(
-    { "https://www.jamesedition.com/real_estate/saint-tropez-france": index },
+    { "https://www.jamesedition.com/real_estate/saint-tropez-france?order=recent": index },
     [{ insee: "83119", slug: "saint-tropez-france", label: "Saint-Tropez" }],
   );
 
@@ -318,4 +318,104 @@ test("the real page passes the same check", async () => {
     !incomplete.some((i) => /not an area they know/.test(i.reason)),
     `the guard rejected a genuine page: ${incomplete.map((i) => i.reason).join("; ")}`,
   );
+});
+
+test("a region-only label is not a commune — the list steps in, and says so", () => {
+  /**
+   * MEASURED 2026-09-24. Twenty-one Ramatuelle listings carried the map label
+   * "Provence-Alpes-Côte d'Azur, France" — a region, no commune. The parser
+   * took the part before "France" and stored the region; `commune_insee` never
+   * resolved, so they could neither merge (duplicates on the dashboard) nor
+   * ever be delisted.
+   *
+   * When the label names no commune the portal has stated nothing, and the
+   * list the property was found under is the best evidence we hold. That is
+   * the ONE case the list may win — and `raw.communeSource` records that it
+   * did, so it can be audited without a recrawl.
+   */
+  const regionOnly = listing.replace(
+    /aria-label="Zone Ouest Urbaine, Saint-Tropez, France"/,
+    'aria-label="Provence-Alpes-Côte d\'Azur, France"',
+  );
+  assert.notEqual(regionOnly, listing, "the mutation has to actually change the page");
+
+  const r = jameseditionAdapter.parse(regionOnly, URL_);
+  assert.ok(r.status !== "failed");
+  assert.equal(r.listing.communeRaw, "Saint-Tropez", "falls back to the URL's area");
+  const raw = r.listing.raw as Record<string, unknown>;
+  assert.equal(raw.communeSource, "list", "and records that the list decided it");
+  assert.equal(raw.locationLabel, "Provence-Alpes-Côte d'Azur, France", "with the label kept verbatim");
+  assert.ok(!("commune" in (r.status === "partial" ? r.missing : [])), "not reported missing");
+});
+
+test("a real commune in the label still beats the list — the fallback is narrow", () => {
+  /**
+   * The fix above must not reopen the fault it sits next to: a villa labelled
+   * Gassin on the Saint-Tropez index is still Gassin. Only a region label
+   * yields to the URL.
+   */
+  const gassin = listing.replace(
+    /aria-label="Zone Ouest Urbaine, Saint-Tropez, France"/,
+    'aria-label="Gassin, France"',
+  );
+  const r = jameseditionAdapter.parse(gassin, URL_);
+  assert.ok(r.status !== "failed");
+  assert.equal(r.listing.communeRaw, "Gassin");
+  assert.equal((r.listing.raw as Record<string, unknown>).communeSource, "listing");
+});
+
+/* ── Rentals are a different market ──────────────────────────────────────── */
+
+test("a rental is refused at parse on the portal's own title template, never stored", () => {
+  /**
+   * JamesEdition files rentals under the same path as sales with no structured
+   * flag; the only stable signal is their `<title>` template ending
+   * "For Rent (id)". A monthly rent stored as a sale price sits beside €5M
+   * villas looking like a wrong figure, and never deduplicates against the
+   * sale of the same house — a phantom duplicate. Measured 2026-09-24: rare
+   * (0 of 32 on Saint-Tropez page one, one found in Ramatuelle), real.
+   */
+  const rental = listing.replace(/For Sale \((\d+)\)<\/title>/, "For Rent ($1)</title>");
+  assert.notEqual(rental, listing, "the mutation has to actually change the page");
+  const r = jameseditionAdapter.parse(rental, URL_);
+  assert.equal(r.status, "failed");
+  assert.match(r.status === "failed" ? r.error : "", /rental/i);
+});
+
+test("a rental slug is skipped at discovery, so no request is spent on it", async () => {
+  const withRental =
+    index +
+    '<a href="/real_estate/saint-tropez-france/for-rent-sea-view-retreat-99999901"></a>' +
+    '<a href="/real_estate/saint-tropez-france/for-sale-sea-view-villa-99999902"></a>';
+  const { ids } = await discoverAgainst(
+    { "https://www.jamesedition.com/real_estate/saint-tropez-france?order=recent": withRental },
+    [{ insee: "83119", slug: "saint-tropez-france", label: "Saint-Tropez" }],
+  );
+  assert.ok(!ids.includes("99999901"), "the for-rent slug must not be yielded");
+  assert.ok(ids.includes("99999902"), "and a sale beside it still is");
+});
+
+test("the index is asked newest-first, with their own `order=recent`, on every page", async () => {
+  /**
+   * `order=recent` is the portal's "Newest homes for sale in Saint-Tropez"
+   * link, read off the saved index page. The delta stop in the runner is only
+   * sound if the list really is newest-first, so the request must carry it on
+   * page one AND on every following page — a paginated request that dropped
+   * the order would silently walk relevance order and stop at the wrong place.
+   */
+  const communes = [{ insee: "83119", slug: "saint-tropez-france", label: "Saint-Tropez" }];
+  const page = (ids: string[]) =>
+    "<html><body><h1>Luxury Homes for Sale in Saint-Tropez</h1>" +
+    ids.map((id) => `<a href="/real_estate/saint-tropez-france/villa-${id}"></a>`).join("") +
+    "</body></html>";
+  const { asked, ids } = await discoverAgainst(
+    {
+      "https://www.jamesedition.com/real_estate/saint-tropez-france?order=recent": page(["10000001", "10000002"]),
+      "https://www.jamesedition.com/real_estate/saint-tropez-france?order=recent&page=2": page(["10000003"]),
+      "https://www.jamesedition.com/real_estate/saint-tropez-france?order=recent&page=3": page([]),
+    },
+    communes,
+  );
+  assert.deepEqual(ids, ["10000001", "10000002", "10000003"]);
+  for (const url of asked) assert.match(url, /[?&]order=recent(&|$)/, url);
 });

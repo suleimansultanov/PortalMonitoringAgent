@@ -5,9 +5,9 @@ import { portalListings, portalRuns, portalSources } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing, PoliteFetch } from "../types";
-import { diffListings, shouldAbort } from "./diff";
+import { diffListings, needsRefresh, shouldAbort } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
-import { createBrowserSession, type BrowserSession } from "./browser";
+import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
 
 /**
  * A refusal, as opposed to a rate limit.
@@ -37,6 +37,22 @@ import { delistListings, ingestListing } from "./ingest";
 const DEFAULT_ABORT_THRESHOLD = 0.5;
 /** How old a stored page may be before we refetch it even if nothing looks new. */
 const REFRESH_AFTER_DAYS = 7;
+
+/**
+ * However confidently a portal says nothing has changed, read the page again
+ * after this long.
+ *
+ * The skip below trusts a timestamp the portal publishes about itself, and that
+ * trust has one failure mode worth bounding: a site that does not touch the
+ * field when a price changes would keep telling us the listing is unchanged
+ * forever, and we would keep believing it. The whole product is price history,
+ * so "forever" is not an acceptable exposure and "a month" is.
+ *
+ * Deliberately far above REFRESH_AFTER_DAYS. If these two were close the skip
+ * would buy nothing; the point is to replace a weekly re-read of an unchanged
+ * page with a monthly one.
+ */
+const REFRESH_HARD_CEILING_DAYS = 30;
 /**
  * How long one pass may spend re-fetching pages that are merely old.
  *
@@ -98,7 +114,23 @@ export type RunOptions = {
 
 export type RunSummary = {
   runId: string;
-  status: "done" | "aborted" | "error" | "disabled";
+  /**
+   * `partial` is a COMPLETE discovery whose fetching ran out of road.
+   *
+   * The distinction it draws is the one the whole delisting apparatus turns on.
+   * Discovery decides what is live; fetching only decides how fresh the copy of
+   * each page is. So a pass that walked every commune to the end and then had
+   * its downloads cut short has a correct picture of the market — its
+   * delistings are sound, its new listings are real — and the pages it did not
+   * reach are on the next pass's queue, not lost.
+   *
+   * Reported separately because it used to be indistinguishable from a failure:
+   * a Figaro pass that discovered 2142 listings, stored 607 and delisted 132
+   * reached the client's dashboard as "error", next to a source that had been
+   * refused at the door and collected nothing. Both said the same word, and one
+   * of them was a good night's work.
+   */
+  status: "done" | "partial" | "aborted" | "error" | "disabled";
   discovered: number;
   added: number;
   refreshed: number;
@@ -121,6 +153,19 @@ export type RunSummary = {
   refreshBacklog?: number;
   /** Why the fetch phase ended before it reached the end of its list. */
   fetchStoppedEarly?: string;
+  /**
+   * How many communes the pass set out to read, and how many of those reported
+   * themselves incomplete through `ctx.incomplete()`.
+   *
+   * Carried so the grade can tell "found nothing because the market is empty"
+   * from "found nothing because every door was shut". The abort guard cannot:
+   * it compares against yesterday's baseline, and a source that has never
+   * collected has a baseline of zero — zero against zero trips nothing. That
+   * is how a JamesEdition pass refused on page one of its first commune reached
+   * the summary as `ok` on 2026-09-15, and the night said "all clear".
+   */
+  communesVisited?: number;
+  communesIncomplete?: number;
   abortedReason?: string;
   error?: string;
   /**
@@ -337,10 +382,44 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     | { maxSessions?: number; waitMs?: number }
     | undefined;
 
+  /**
+   * Egress for this source, 2026-09-24.
+   *
+   * `config.proxyEnv` names an ENVIRONMENT VARIABLE — `"PMA_RESIDENTIAL_PROXY"`
+   * — and that variable holds the proxy URL with its credentials. The URL
+   * itself never goes in the database: `portal_sources.config` is read by the
+   * dashboard, printed by `db:info`, and copied into fixtures, and a secret in
+   * any of those places is a secret in all of them.
+   *
+   * Set and missing is an error, not a fallback. A source configured for a
+   * residential address that quietly went out from the datacentre one would
+   * get the 403 this exists to avoid — and, worse, would record it as the
+   * portal refusing us, which is a different problem with a different answer.
+   * Better a run that says "PMA_RESIDENTIAL_PROXY is not set" and stops.
+   *
+   * Read the note on `proxy` in browser.ts before adding this key to any
+   * source: it is for portals that filter by address class, never for portals
+   * that have refused our identity.
+   */
+  const proxyEnv = (cfg.proxyEnv as string | undefined)?.trim();
+  let proxy: { server: string; username?: string; password?: string } | undefined;
+  if (proxyEnv) {
+    const raw = process.env[proxyEnv]?.trim();
+    if (!raw) {
+      throw new Error(
+        `${source.key} is configured to go out through ${proxyEnv}, and ${proxyEnv} is not set. ` +
+          `Refusing to run it from this machine's own address.`,
+      );
+    }
+    proxy = parseProxyUrl(raw);
+    console.log(`[run:${source.key}] egress via ${proxyEnv} (${proxyHost(proxy.server)})`);
+  }
+
   const browserOptions = {
     delayMs: crawlDelayMs,
     userAgent: agent,
     extraHeaders,
+    ...(proxy ? { proxy } : {}),
     /** See `readySelector` in browser.ts — six SMC pages a night, silently. */
     readySelector: (cfg.readySelector as string | undefined)?.trim() || undefined,
   };
@@ -680,18 +759,72 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         : DEFAULT_REFRESH_BUDGET_MINUTES;
     const refreshLimit = Math.max(1, Math.floor((budgetMinutes * 60_000) / crawlDelayMs));
 
-    const [dueRow] = await db
-      .select({ due: sql<number>`count(*)::int` })
-      .from(portalListings)
-      .where(staleWhere);
-    const refreshDue = dueRow?.due ?? 0;
-
-    const staleRows = await db
-      .select({ externalId: portalListings.externalId })
+    /**
+     * Every candidate, ids and dates only, before the budget is applied.
+     *
+     * Unbounded on purpose: the count query below scanned the same set anyway,
+     * and the rows are two columns. Taking the budget first and filtering after
+     * would be the bug — it would spend the night's allowance on listings that
+     * are then dropped, and refresh far fewer pages than the budget allows.
+     */
+    const staleCandidates = await db
+      .select({
+        externalId: portalListings.externalId,
+        sourceUpdatedAt: portalListings.sourceUpdatedAt,
+        updatedAt: portalListings.updatedAt,
+      })
       .from(portalListings)
       .where(staleWhere)
-      .orderBy(asc(portalListings.updatedAt))
-      .limit(refreshLimit);
+      .orderBy(asc(portalListings.updatedAt));
+
+    /**
+     * THE PORTAL'S OWN ANSWER, USED BEFORE SPENDING A REQUEST ON IT.
+     *
+     * Discovery has just read the index, and on a source whose index states a
+     * per-listing "last edited" — Figaro's payload does — that page already
+     * answered the question this whole queue exists to ask. A listing whose
+     * stated date is no newer than the one we stored has not changed since we
+     * read it, so re-fetching it buys a byte-identical page at the cost of a
+     * request, a crawl delay, and a slot in tonight's budget.
+     *
+     * The three ways this stays conservative, all of which matter more than the
+     * saving:
+     *
+     *   - No date from the portal, or none stored by us, means fetch. Absence
+     *     is never read as freshness. Sources that publish no dates behave
+     *     exactly as they did before this existed.
+     *   - A listing discovery did NOT see this pass is never skipped. It may be
+     *     one the delta stop never reached, and its absence says nothing.
+     *   - REFRESH_HARD_CEILING_DAYS caps the whole thing: past that, the page is
+     *     read again whatever the portal claims.
+     */
+    const hardCeiling = new Date(Date.now() - REFRESH_HARD_CEILING_DAYS * 86_400_000);
+    let skippedUnchanged = 0;
+
+    const staleQueue = staleCandidates.filter((row) => {
+      const keep = needsRefresh(
+        {
+          externalId: row.externalId,
+          fetchedAt: row.updatedAt,
+          storedSourceUpdatedAt: row.sourceUpdatedAt,
+        },
+        discovered.get(row.externalId)?.sourceUpdatedAt,
+        hardCeiling,
+      );
+      if (!keep) skippedUnchanged++;
+      return keep;
+    });
+
+    const refreshDue = staleQueue.length;
+    const staleRows = staleQueue.slice(0, refreshLimit);
+
+    if (skippedUnchanged > 0) {
+      console.log(
+        `[run:${source.key}] ${skippedUnchanged} listings past the refresh window were left ` +
+          `alone — this portal's index says they have not changed since we read them. ` +
+          `They are re-read anyway after ${REFRESH_HARD_CEILING_DAYS} days.`,
+      );
+    }
 
     if (refreshDue > staleRows.length) {
       /**
@@ -1049,10 +1182,27 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     const delisted = await delistListings(source.id, diff.removed, runId);
 
     // ── 7. Close ──────────────────────────────────────────────────────────
+    /**
+     * Only a pass that saw the whole market may call itself partial; one that
+     * did not stays plain `done` with the reason in `error`, exactly as
+     * before. Incomplete discovery is the serious case and keeps the older,
+     * blunter reporting.
+     *
+     * BOTH conditions are needed, and the second is the one that is easy to
+     * miss. `complete` is false only when discovery threw or was capped by
+     * `--limit`; a single commune that ended early reports itself through
+     * `ctx.incomplete()` and lands in `partialCommunes`, leaving `complete`
+     * true. Checking only the flag would have let Superimmo — whose
+     * Le Plan-de-la-Tour index was rate-limited away on 2026-09-16 while the
+     * other two communes finished — describe a pass with a hole in its market
+     * picture as merely short on downloads.
+     */
+    const discoverySaw = complete && partialCommunes.size === 0;
+    const finalStatus = discoverySaw && fetchStoppedEarly ? "partial" : "done";
     await db
       .update(portalRuns)
       .set({
-        status: "done",
+        status: finalStatus,
         newCount: diff.added.length,
         goneCount: delisted,
         fetchedCount: ingested,
@@ -1072,7 +1222,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
 
     return {
       runId,
-      status: "done",
+      status: finalStatus,
       discovered: discovered.size,
       added: diff.added.length,
       refreshed: diff.refresh.length,
@@ -1081,6 +1231,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       failed,
       ingested,
       fetchStoppedEarly: fetchStoppedEarly ?? undefined,
+      communesVisited: opts.communeInsee.length,
+      communesIncomplete: partialCommunes.size,
       failureSamples: failureSamples.length > 0 ? failureSamples : undefined,
     };
   } catch (err) {

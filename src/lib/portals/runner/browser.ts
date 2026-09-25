@@ -55,6 +55,51 @@ export type BrowserFetcherOptions = {
    * attaches them to sub-resource requests too, not only to `page.goto`.
    */
   extraHeaders?: Record<string, string>;
+  /**
+   * Show the window instead of running headless. Off everywhere by default.
+   *
+   * NOT A DISGUISE, and the distinction is the whole reason this is a separate
+   * flag rather than a change to the default. The user-agent still names us,
+   * `navigator.webdriver` is still true, nothing is patched — a site can pick
+   * this traffic out and refuse it exactly as before. The only thing that
+   * changes is whether Chromium draws to a screen.
+   *
+   * It exists because one variable behind SMC's Cloudflare block has never been
+   * measured. Their challenge refuses the collector from a datacentre address
+   * and from the operator's own home address alike, which rules out the address
+   * and rules out our identity as the trigger. Whether it keys on headless
+   * signals is the remaining question, and this answers it in one run.
+   *
+   * WHERE THIS STOPS. If the page comes back as a challenge that wants a click,
+   * that is the answer and the run ends there. Solving it, waiting it out, or
+   * dressing the browser up as a person is the thing this project does not do —
+   * see the note at the top of this file, and LuxuryEstate's permission_note,
+   * which we hold precisely because we can be identified and refused.
+   */
+  headless?: boolean;
+  /**
+   * Route this session's traffic through a proxy. Added 2026-09-24 for the
+   * two portals that refuse datacentre address ranges wholesale.
+   *
+   * WHAT THIS CHANGES AND WHAT IT DOES NOT. It changes the address the request
+   * leaves from. Nothing else: the user-agent still names us, the headers a
+   * portal asked for are still sent, `navigator.webdriver` is still true. Both
+   * portals this is for — Figaro and JamesEdition — serve this exact code from
+   * a home connection (607 and 581 pages, zero failures, 16 Sep) and refuse it
+   * from GitHub's ranges. So what they filter is the class of address, not us,
+   * and an address of the class they serve is a route to the front door, not
+   * a way around it.
+   *
+   * WHERE IT MUST NOT BE USED, and `run.ts` does not stop you, so read this:
+   * on any portal that has refused our identity. SMC challenges every address
+   * including a normal browser; SeLoger returns 403 to a browser carrying our
+   * name. Changing the address there would be asking again after being told
+   * no — that is circumvention, and the answer to those two is a letter.
+   *
+   * Credentials come from the environment, never from `portal_sources.config`
+   * — see `proxyEnv` in run.ts. Only the host is ever logged.
+   */
+  proxy?: { server: string; username?: string; password?: string };
   timeoutMs?: number;
   /**
    * 'domcontentloaded' rather than 'networkidle'.
@@ -132,7 +177,15 @@ export async function createBrowserSession(
     );
   }
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: opts.headless !== false,
+    ...(opts.proxy ? { proxy: opts.proxy } : {}),
+  });
+  if (opts.proxy) {
+    // Host only. The username on a residential proxy often encodes the plan,
+    // the session and the country; none of that belongs in a run log.
+    console.log(`[browser] egress via proxy ${proxyHost(opts.proxy.server)}`);
+  }
   const context = await browser.newContext({
     locale: "fr-FR",
     timezoneId: "Europe/Paris",
@@ -239,4 +292,29 @@ export async function createBrowserSession(
       await browser.close();
     },
   };
+}
+
+/** The host of a proxy URL, for logging. Never the credentials. */
+export function proxyHost(server: string): string {
+  try {
+    return new URL(server.includes("://") ? server : `http://${server}`).host;
+  } catch {
+    return "<unparseable proxy url>";
+  }
+}
+
+/**
+ * Split a proxy URL into what Playwright's `launch({ proxy })` wants.
+ *
+ * `http://user:pass@host:port` → `{ server: "http://host:port", username,
+ * password }`. Providers hand out exactly that form, and keeping it as one
+ * environment variable means one secret to rotate rather than three.
+ */
+export function parseProxyUrl(raw: string): { server: string; username?: string; password?: string } {
+  const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+  if (!url.hostname) throw new Error("proxy url has no host");
+  const server = `${url.protocol}//${url.host}`;
+  const username = url.username ? decodeURIComponent(url.username) : undefined;
+  const password = url.password ? decodeURIComponent(url.password) : undefined;
+  return { server, ...(username ? { username } : {}), ...(password ? { password } : {}) };
 }
