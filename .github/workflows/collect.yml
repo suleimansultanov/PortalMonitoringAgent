@@ -103,7 +103,9 @@ concurrency:
 
 jobs:
   collect:
-    runs-on: ubuntu-latest
+    # `PMA_RUNNER` (repo variable) = `self-hosted` moves the pass to our EU box
+    # — see scripts/aws/README.md. Unset, it runs on GitHub's runners as before.
+    runs-on: ${{ vars.PMA_RUNNER || 'ubuntu-latest' }}
     # Below GitHub's own 6-hour ceiling on purpose. Being killed by the platform
     # leaves a `running` row in portal_runs and no summary; being killed by this
     # leaves the same, but at a time we chose and can reason about.
@@ -126,7 +128,15 @@ jobs:
       # Five of the six sources need a real one, and without this each of them
       # walks its entire discovery phase and then fails on its first listing.
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        # `--with-deps` needs root: fine on GitHub's image, not on our own box,
+        # where the bootstrap installed the libraries once and the runner user
+        # has no sudo. Same browser build either way.
+        run: |
+          if [ "${{ runner.environment }}" = "github-hosted" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
 
       - name: Apply migrations
         run: npm run db:migrate
@@ -175,6 +185,10 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          # Residential egress for the sources whose config names it (Figaro,
+          # JamesEdition). Empty until the secret exists; a source configured
+          # for it then refuses to run rather than going out direct.
+          PMA_RESIDENTIAL_PROXY: ${{ secrets.PMA_RESIDENTIAL_PROXY }}
 
       # `always()`, because the summary matters most on the night that failed.
       - name: Publish the summary

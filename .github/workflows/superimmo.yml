@@ -68,7 +68,8 @@ concurrency:
 
 jobs:
   collect:
-    runs-on: ubuntu-latest
+    # Same switch as collect.yml — see scripts/aws/README.md.
+    runs-on: ${{ vars.PMA_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
 
     steps:
@@ -85,7 +86,12 @@ jobs:
       # browser in its preflight and the check is cheap. Left in so this file
       # keeps working if the source ever needs one.
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: |
+          if [ "${{ runner.environment }}" = "github-hosted" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
 
       # This workflow can be the only one that runs on a given day, so it cannot
       # rely on the main night having applied a pending migration first.
