@@ -37,14 +37,16 @@ export type IngestOutcome = {
 
 export async function ingestListing(
   deps: IngestDeps,
-  target: { externalId: string; url: string },
+  target: { externalId: string; url: string; document?: string },
 ): Promise<IngestOutcome> {
   const { externalId, url } = target;
 
   // ── 1. Fetch ────────────────────────────────────────────────────────────
   let html: string;
   try {
-    html = await deps.fetch(url);
+    // Unless discovery already holds the record (DiscoveredListing.document):
+    // then there is nothing to ask the portal for.
+    html = target.document ?? (await deps.fetch(url));
   } catch (err) {
     // A failed fetch is NOT a delisting. The caller decides what a missing page
     // means; here it is only a failure to look.

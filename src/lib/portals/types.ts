@@ -120,6 +120,15 @@ export type DiscoveredListing = {
    * only thing standing between us and a page we have not read in a month.
    */
   sourceUpdatedAt?: Date | null;
+  /**
+   * The listing's full record, when the index already returned it. Added
+   * 2026-09-28 for Bien'ici, whose search endpoint answers with complete
+   * JSON records — description, photos, agency, dates — so fetching each
+   * listing page afterwards would be a second request for the same bytes.
+   * When present, ingest stores and parses THIS instead of fetching `url`;
+   * `url` stays the human page, which is what the dashboard links to.
+   */
+  document?: string;
 };
 
 /**

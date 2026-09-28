@@ -527,6 +527,33 @@ function sourceSeeds(): SourceSeed[] {
         deltaStopAfterKnown: 15,
       },
     },
+    {
+      key: "bienici",
+      name: "Bien'ici",
+      hosts: ["www.bienici.com", "bienici.com"],
+      baseUrl: "https://www.bienici.com",
+      /** Ours; no Crawl-delay in their robots.txt. ~25 requests a night. */
+      crawlDelayMs: 3_000,
+      permissionNote:
+        "robots.txt read 2026-09-24: `User-agent: *` disallows /annonces-*, /*?mode=*, " +
+        "/recherche/*&*, /recherche/*,*, /*tri=*, contact forms and sold-price pages. " +
+        "realEstateAds.json (the endpoint their own search page calls) and single " +
+        "listings under /annonce/ are not disallowed. No Crawl-delay.\n\n" +
+        "Measured 2026-09-28: search page and realEstateAds.json both answer 200 to " +
+        "our named user-agent from a home connection. NO WRITTEN PERMISSION IS ON " +
+        "FILE and, on the above, none is required; if they object, stop and write.\n\n" +
+        "One request per commune per hundred listings, no listing pages fetched: the " +
+        "search records are complete. Coordinates are not stored (theirs are blurred).",
+      config: {
+        /**
+         * No delta stop. Their `publicationDate` sort puts most gulf records
+         * last with the epoch as date (18 of 28 in La Môle, 2026-09-28), so
+         * "newest first" would stop before reaching them. A full pass is
+         * about 25 requests anyway.
+         */
+        maxPages: 20,
+      },
+    },
   ];
 }
 
