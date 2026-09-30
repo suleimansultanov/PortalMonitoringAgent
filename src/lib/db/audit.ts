@@ -167,6 +167,23 @@ async function main(): Promise<void> {
   );
 
   await block(
+    "6b. Green-Acres prices by currency — did the dollar repair land? (added 2026-09-30)",
+    sql`
+      select l.status,
+             count(*)::int as n,
+             count(*) filter (where l.raw ? 'foreignPrice')::int as page_not_in_eur,
+             count(*) filter (where l.raw ? 'priceEurFrom')::int as euro_from_earlier_capture,
+             count(*) filter (where l.raw ? 'foreignPrice' and l.price_eur is null)::int as price_cleared,
+             count(*) filter (where l.raw ? 'foreignPrice' and l.price_eur is not null
+                                and not (l.raw ? 'priceEurFrom'))::int as SUSPECT_dollar_still_stored,
+             count(*) filter (where l.price_eur is null)::int as no_price_total
+      from portal_listings l join portal_sources s on s.id = l.source_id
+      where s.key = 'green-acres'
+      group by 1 order by 1
+    `,
+  );
+
+  await block(
     "7. Properties (merged view the client sees) — how many, how many without a commune, how many with more than one source",
     sql`
       select status, count(*)::int as n,

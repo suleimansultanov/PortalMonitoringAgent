@@ -280,8 +280,101 @@ async function diagnose(insee: string): Promise<void> {
   }
 }
 
+/**
+ * How many fresh gulf listings each source actually contributes — counts only,
+ * so it costs nothing. Added 2026-09-29.
+ *
+ * Their adverts carry `publisher.name`, a short code per source ("SL",
+ * "LBC", "Bienici", "DB"…), read off the 791 adverts saved so far. The
+ * documented `includedSites[]` filter is tried with each code. A bogus code
+ * is tried first: if it returns the full total, the filter is being ignored
+ * and the per-site numbers below mean nothing — the run says so and stops.
+ */
+const KNOWN_PUBLISHERS = [
+  "SL", "DB", "Le Figaro", "LBC", "ParuVendu", "Bienici", "Superimmo", "IAD",
+  "Century21", "L-Immo", "ORPI", "GDC", "Belles Demeures", "PAP", "Guy Hoquet",
+];
+/** Names we have NOT seen yet, probed in case they exist under these spellings. */
+const GUESSED = [
+  "Green-Acres", "GreenAcres", "Green Acres", "Vizzit", "Idealista", "Rightmove",
+  "LuxuryEstate", "Luxury Estate", "JamesEdition", "James Edition", "Etreproprio",
+  "SMC", "Maisons et Appartements", "Residences Immobilier", "Lux-Residence",
+  "Barnes", "Sotheby's", "Kretz", "Engel & Völkers", "Immonot", "FNAIM",
+  "Ouest-France", "Logic-Immo", "SeLoger", "Leboncoin", "Figaro",
+];
+async function sites(): Promise<void> {
+  const count = async (extra: (q: URLSearchParams) => void, label: string) => {
+    let total = 0;
+    for (const insee of COLLECTION_INSEE) {
+      const q = baseQuery(insee);
+      q.set("itemsPerPage", "0");
+      extra(q);
+      total += (await call(q, `sites-${label.replace(/[^a-z0-9]+/gi, "_")}-${insee}`)).total;
+    }
+    return total;
+  };
+  const all = await count(() => {}, "all");
+  const bogus = await count((q) => q.append("includedSites[]", "zz-no-such-site-zz"), "bogus");
+  console.log(`\n── sources in the gulf, updated ≤${FRESH_DAYS}d (counts only, free)`);
+  console.log(`   all sources: ${all}`);
+  console.log(`   bogus site code: ${bogus}  ${bogus === all ? "← FILTER IGNORED, per-site numbers would be meaningless" : "← filter is applied"}`);
+  if (bogus === all) return;
+  console.log("\n   properties with at least one advert from:");
+  const rows: [string, number][] = [];
+  for (const code of [...KNOWN_PUBLISHERS, ...GUESSED]) {
+    const n = await count((q) => q.append("includedSites[]", code), code);
+    rows.push([code, n]);
+  }
+  for (const [code, n] of rows.sort((a, b) => b[1] - a[1])) {
+    const seen = KNOWN_PUBLISHERS.includes(code) ? "" : "   (guessed name)";
+    if (n > 0 || !seen) console.log(`   ${String(n).padStart(6)}  ${code}${seen}`);
+  }
+  const zeros = rows.filter(([c, n]) => n === 0 && !KNOWN_PUBLISHERS.includes(c)).map(([c]) => c);
+  console.log(`\n   guessed names with 0: ${zeros.join(", ") || "none"}`);
+}
+
+/**
+ * Which spelling does `includedSites` want? 2026-09-29: every publisher code
+ * ("SL", "LBC"…) returned 0 through `includedSites[]`, including SeLoger, which
+ * holds hundreds of gulf listings — while a bogus code also returned 0, so the
+ * parameter is read and the VALUE is what is wrong. Their OpenAPI spec says
+ * only "array of string", style form, explode, name without brackets. So:
+ * try SeLoger every plausible way, on one commune, counts only. Whatever
+ * returns more than 0 is the format; excludedSites is tried the same way as a
+ * cross-check (excluding SeLoger must LOWER the count).
+ */
+async function siteFormat(): Promise<void> {
+  const insee = "83119"; // Saint-Tropez: SeLoger is certainly there
+  const base = baseQuery(insee);
+  base.set("itemsPerPage", "0");
+  const total = (await call(base, "fmt-total")).total;
+  console.log(`\n── includedSites format probe, Saint-Tropez, updated ≤${FRESH_DAYS}d: ${total} in all\n`);
+  const spellings = [
+    "SL", "sl", "SeLoger", "seloger", "Seloger", "seloger.com", "www.seloger.com",
+    "https://www.seloger.com", "SELOGER", "se-loger", "1", "/sites/1",
+  ];
+  for (const param of ["includedSites", "includedSites[]", "excludedSites", "excludedSites[]"]) {
+    for (const v of spellings) {
+      const q = new URLSearchParams(base);
+      q.append(param, v);
+      const n = (await call(q, `fmt-${param.replace(/\W/g, "")}-${v.replace(/\W/g, "_")}`)).total;
+      const include = param.startsWith("included");
+      const hit = include ? n > 0 : n < total;
+      console.log(`   ${hit ? "HIT " : "    "} ${param.padEnd(16)} ${JSON.stringify(v).padEnd(28)} ${n}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   apiKey();
+  if (flag("site-format")) {
+    await siteFormat();
+    return;
+  }
+  if (flag("sites")) {
+    await sites();
+    return;
+  }
   const diag = arg("diagnose");
   if (diag) {
     await diagnose(diag);
@@ -292,7 +385,14 @@ async function main(): Promise<void> {
   const max = Number(arg("max") ?? 200);
 
   if (sample) {
-    const props = await pull(sample, max);
+    // One commune, or a comma list, or "all" — `--max` per commune.
+    const list = sample === "all" ? COLLECTION_INSEE : sample.split(",").map((x) => x.trim()).filter(Boolean);
+    const props: Property[] = [];
+    for (const insee of list) {
+      const got = await pull(insee, max);
+      console.log(`   ${name(insee).padEnd(22)} ${got.length} pulled`);
+      props.push(...got);
+    }
     await analyse(props);
     return;
   }
