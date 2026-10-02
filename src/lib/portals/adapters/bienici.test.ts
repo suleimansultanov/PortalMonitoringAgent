@@ -192,3 +192,22 @@ test("the search asks for sales only, on the market, in the zone, a hundred at a
   assert.equal(f.size, 100);
   assert.equal(f.from, 200);
 });
+
+test("escaped titles and descriptions arrive as text, not as entities", () => {
+  // Seen on the client's dashboard 2026-10-02: "Terrain &agrave; b&acirc;tir".
+  const ad = {
+    ...FIXTURE.realEstateAds[0],
+    title: "Terrain &agrave; b&acirc;tir &amp; vue mer",
+    description: "Premi&egrave;re ligne.<br>Vue d&#233;gag&eacute;e.<br/><b>Rare</b>",
+  };
+  const r = parse(JSON.stringify(ad));
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.listing.title, "Terrain à bâtir & vue mer");
+  assert.equal(r.listing.description, "Première ligne.\nVue dégagée.\nRare");
+});
+
+test("a new-build programme is labelled as one", () => {
+  const r = parse(JSON.stringify({ ...FIXTURE.realEstateAds[0], propertyType: "programme" }));
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.listing.propertyType, "Programme neuf");
+});

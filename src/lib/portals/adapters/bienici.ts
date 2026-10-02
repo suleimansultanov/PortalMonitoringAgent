@@ -1,3 +1,4 @@
+import * as cheerio from "cheerio";
 import {
   emptyListing,
   type DiscoverContext,
@@ -72,7 +73,23 @@ const TYPES: Record<string, string> = {
   premises: "Local",
   office: "Bureau",
   others: "Autre",
+  programme: "Programme neuf",
 };
+
+/**
+ * Their text fields arrive HTML-escaped and sometimes with markup:
+ * "Terrain &agrave; b&acirc;tir", "…commodités.<br>Dès l'entrée…". Seen on the
+ * client's dashboard 2026-10-02 as literal "&agrave;". Decoded through cheerio
+ * (already a dependency) so every named and numeric entity is covered; <br>
+ * becomes a line break, other tags are dropped.
+ */
+function clean(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const withBreaks = v.replace(/<br\s*\/?>/gi, "\n");
+  const text = cheerio.load(`<div>${withBreaks}</div>`)("div").text();
+  const out = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  return out || null;
+}
 
 type Photo = { url?: string; url_photo?: string; photo?: string };
 type Ad = {
@@ -270,8 +287,8 @@ export const bieniciAdapter: PortalAdapter = {
     }
 
     const listing = emptyListing(ad.id, url || listingUrl(ad.id));
-    listing.title = ad.title?.trim() || null;
-    listing.description = ad.description?.trim() || null;
+    listing.title = clean(ad.title);
+    listing.description = clean(ad.description);
 
     /**
      * EUR by construction: the site is French-only and has no currency
