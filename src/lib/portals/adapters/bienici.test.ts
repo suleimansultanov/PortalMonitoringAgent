@@ -211,3 +211,19 @@ test("a new-build programme is labelled as one", () => {
   if (r.status === "failed") return assert.fail(r.error);
   assert.equal(r.listing.propertyType, "Programme neuf");
 });
+
+test("photos come from their CDN, built from `photo` when `url` is missing, the agency original last", () => {
+  const ad = {
+    ...FIXTURE.realEstateAds[0],
+    photos: [
+      { photo: "x-1_storage.gra.cloud.ovh.net_raw", url_photo: "https://storage.gra.cloud.ovh.net/v1/AUTH_x/kimono/abc/raw" },
+      { url_photo: "https://storage.gra.cloud.ovh.net/v1/AUTH_x/kimono/def/raw" },
+    ],
+  };
+  const r = parse(JSON.stringify(ad));
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.deepEqual(r.listing.imageUrls, [
+    "https://file.bienici.com/photo/x-1_storage.gra.cloud.ovh.net_raw",
+    "https://storage.gra.cloud.ovh.net/v1/AUTH_x/kimono/def/raw",
+  ]);
+});

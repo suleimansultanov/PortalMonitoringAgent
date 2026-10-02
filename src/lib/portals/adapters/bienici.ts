@@ -313,8 +313,18 @@ export const bieniciAdapter: PortalAdapter = {
     listing.agencyName = ad.accountDisplayName?.trim() || null;
     listing.agencyRef = ad.reference?.trim() || null;
 
+    /**
+     * Their own CDN copy first, always on one host (`file.bienici.com`) with a
+     * file-like name. Built from `photo` when `url` is missing, and only then
+     * the agency's original (`url_photo`), which can be any storage with no
+     * extension at all — e.g. an OVH object ending in `/raw` (2026-10-02),
+     * which loads in a plain <img> but trips any image pipeline that checks
+     * hosts or extensions.
+     */
     const photos = (ad.photos ?? [])
-      .map((p) => p.url ?? p.url_photo ?? null)
+      .map((p) =>
+        p.url ?? (p.photo ? `https://file.bienici.com/photo/${p.photo}` : null) ?? p.url_photo ?? null,
+      )
       .filter((u): u is string => typeof u === "string" && u.length > 0);
     listing.imageUrls = [...new Set(photos)];
     listing.imageUrl = listing.imageUrls[0] ?? null;
