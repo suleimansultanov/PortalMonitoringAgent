@@ -60,6 +60,16 @@
  *              is traffic, not disguise. This is the honest test, and the
  *              pages wait long enough after loading for those checks to run.
  *
+ *              Its first answer, 2026-10-04, through a French residential
+ *              proxy: Propriétés Le Figaro, JamesEdition and Figaro Immobilier
+ *              each served their index page and refused the very next one —
+ *              "Sorry, you have been blocked", or JamesEdition's "Vérification
+ *              de sécurité". The same shape from a GitHub runner and from a
+ *              German mobile connection. Three kinds of address, one answer:
+ *              it is the automated browser their check recognises, not where
+ *              it comes from. A proxy does not change that, and hiding the
+ *              browser from the check is the thing this project does not do.
+ *
  * WHY IT IS METERED. Trial plans are ~100 MB. A listing page with everything
  * it pulls in is 2–5 MB (measured 2026-10-04); the HTML we parse is ~3 % of
  * that. So only the portal's own documents are loaded — no images, fonts,
@@ -242,7 +252,8 @@ const PORTALS = {
     listingLinks: (html) =>
       [...new Set([...html.matchAll(/\/overseas\/details\/(\d{6,})\//g)].map((m) => `https://www.zoopla.co.uk/overseas/details/${m[1]}/`))],
     listings: ["https://www.zoopla.co.uk/overseas/details/74412384/"],
-    looksServed: (html) => html.includes("__NEXT_DATA__") && html.length > 20_000,
+    // Commune pages carry their results as JSON-LD (SearchResultsPage); details pages as __NEXT_DATA__.
+    looksServed: (html) => /SearchResultsPage|__NEXT_DATA__/.test(html) && html.length > 20_000,
   },
 };
 
