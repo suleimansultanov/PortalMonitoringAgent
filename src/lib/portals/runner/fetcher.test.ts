@@ -246,3 +246,38 @@ test("a source with no agreed headers sends none — the default stays untouched
   assert.equal(seen[0]["X-Collector"], undefined);
   assert.match(seen[0]["user-agent"], /PortalMonitoringAgent/);
 });
+
+test("a redirect to another site is not followed, and is not a refusal", async () => {
+  // Vizzit sends some of its listing URLs to leboncoin.fr (2026-10-04).
+  const asked: string[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    sleep: async () => {},
+    doFetch: (async (u: string | URL) => {
+      asked.push(String(u));
+      return new Response(null, { status: 302, headers: { location: "https://www.leboncoin.fr/ad/ventes_immobilieres/1" } });
+    }) as typeof fetch,
+  });
+  await assert.rejects(
+    fetcher("https://www.vizzit.fr/fr/property/parking/saint-tropez/Ar3icwffoq99dqvt"),
+    (err: Error) => !(err instanceof BlockedError) && /redirects off-site to www\.leboncoin\.fr/.test(err.message),
+  );
+  assert.deepEqual(asked, ["https://www.vizzit.fr/fr/property/parking/saint-tropez/Ar3icwffoq99dqvt"]);
+});
+
+test("a redirect within the same site is followed", async () => {
+  const asked: string[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    sleep: async () => {},
+    doFetch: (async (u: string | URL) => {
+      asked.push(String(u));
+      return String(u).endsWith("/old")
+        ? new Response(null, { status: 301, headers: { location: "https://vizzit.fr/new" } })
+        : new Response("<html>" + "<p>villa</p>".repeat(100) + "</html>", { status: 200 });
+    }) as typeof fetch,
+  });
+  const body = await fetcher("https://www.vizzit.fr/old");
+  assert.match(body, /villa/);
+  assert.deepEqual(asked, ["https://www.vizzit.fr/old", "https://vizzit.fr/new"]);
+});

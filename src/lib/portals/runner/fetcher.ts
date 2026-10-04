@@ -244,6 +244,11 @@ const CLEAN_REQUESTS_BEFORE_EASING = 10;
  * running their functions concurrently — never from firing requests at one
  * portal faster.
  */
+/** "www.vizzit.fr" and "vizzit.fr" are one site; "leboncoin.fr" is another. */
+export function siteOf(hostname: string): string {
+  return hostname.toLowerCase().replace(/^www\./, "");
+}
+
 export function createFetcher(opts: FetcherOptions): PoliteFetch {
   const {
     delayMs,
@@ -313,7 +318,18 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
     const maxAttempts = Math.max(attempts, rateLimitAttempts);
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const res = await doFetch(url, {
+        /**
+         * Redirects are followed by hand, and only within the same site.
+         *
+         * Vizzit answers some of its own listing URLs with a 302 to
+         * leboncoin.fr — partner adverts it republishes. Followed
+         * automatically, that sent this collector to Leboncoin, a portal we
+         * do not collect from at all, and its DataDome refusal was then
+         * counted as Vizzit's: three in a row stopped the pass (2026-10-04).
+         * A redirect off the site we were sent to is recorded as such and not
+         * requested — whose door it is was never ours to knock on.
+         */
+        const init = {
           headers: {
             "user-agent": userAgent,
             ...extraHeaders,
@@ -325,8 +341,20 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
             "accept-encoding": "gzip, deflate, br",
           },
           signal: AbortSignal.timeout(timeoutMs),
-          redirect: "follow",
-        });
+          redirect: "manual" as const,
+        };
+        let res = await doFetch(url, init);
+        let at = url;
+        for (let hop = 0; hop < 5 && res.status >= 300 && res.status < 400; hop++) {
+          const location = res.headers.get("location");
+          if (!location) break;
+          const next = new URL(location, at);
+          if (siteOf(next.hostname) !== siteOf(new URL(url).hostname)) {
+            throw new FetchFailedError(url, res.status, `redirects off-site to ${next.hostname} — not followed`);
+          }
+          at = next.toString();
+          res = await doFetch(at, init);
+        }
 
         /**
          * 403 and 429 are not the same message, and treating them alike was
