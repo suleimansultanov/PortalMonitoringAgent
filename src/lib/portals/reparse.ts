@@ -1,7 +1,8 @@
 import "server-only";
-import { and, desc, eq } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { portalListings, portalSnapshots, portalSources } from "@/lib/db/schema";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
+import { db, withDbRetry } from "@/lib/db/client";
+import { dbErrorMessage } from "@/lib/db/errors";
+import { portalListingEvents, portalListings, portalSnapshots, portalSources } from "@/lib/db/schema";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getPage, storageDescription } from "@/lib/s3/pages";
@@ -10,6 +11,7 @@ import { coverFromGallery } from "./images";
 import { resolveAgency } from "./agencies";
 import { resolveCommune } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
+import { computeEvents } from "./runner/events";
 
 /**
  * Re-run the parsers over pages already on disk. NO NETWORK.
@@ -37,7 +39,22 @@ import { resolveCommuneIdentities } from "./matching/resolve";
  * a listing that was never fetched. It re-derives; it does not discover.
  */
 
-type Args = { source?: string; dry: boolean; explain?: string };
+type Args = { source?: string; dry: boolean; explain?: string; save?: string };
+
+/**
+ * Listings read per query. A Bien'ici row with its gallery is ~2 kB on the
+ * wire, so a hundred is ~200 kB: inside the 10 s query_timeout even at
+ * 20 kB/s. Five hundred (~1 MB) was not, on a slow link — see where the rows
+ * are loaded.
+ */
+const ROW_PAGE = 100;
+
+/** The stored values a re-parse compares against. */
+type ReparseRow = Pick<
+  typeof portalListings.$inferSelect,
+  | "id" | "externalId" | "url" | "title" | "priceEur" | "areaM2" | "landM2"
+  | "rooms" | "bedrooms" | "propertyType" | "imageUrl" | "imageUrls" | "propertyId"
+>;
 
 function parseArgs(): Args {
   const get = (n: string) =>
@@ -46,6 +63,7 @@ function parseArgs(): Args {
     source: get("source"),
     dry: process.argv.includes("--dry"),
     explain: get("explain"),
+    save: get("save"),
   };
 }
 
@@ -67,12 +85,14 @@ async function lastEuroPrice(
     const r = adapter.parse(html, url);
     return "listing" in r ? r.listing.priceEur : null;
   };
-  const captures = await db
-    .select({ key: portalSnapshots.s3Key, at: portalSnapshots.fetchedAt })
-    .from(portalSnapshots)
-    .where(and(eq(portalSnapshots.sourceId, sourceId), eq(portalSnapshots.externalId, externalId)))
-    .orderBy(desc(portalSnapshots.fetchedAt))
-    .limit(4);
+  const captures = await withDbRetry(() =>
+    db
+      .select({ key: portalSnapshots.s3Key, at: portalSnapshots.fetchedAt })
+      .from(portalSnapshots)
+      .where(and(eq(portalSnapshots.sourceId, sourceId), eq(portalSnapshots.externalId, externalId)))
+      .orderBy(desc(portalSnapshots.fetchedAt))
+      .limit(4),
+  );
   for (const c of captures.slice(1)) {
     try {
       const price = eurOf(await getPage(c.key));
@@ -127,25 +147,30 @@ async function lastEuroPrice(
  * layer the collector wrote it with — local disk or bucket, whichever is
  * configured.
  */
-async function findPage(sourceId: string, externalId: string): Promise<string | null> {
-  const [snapshot] = await db
-    .select({ s3Key: portalSnapshots.s3Key })
-    .from(portalSnapshots)
-    .where(
-      and(
-        eq(portalSnapshots.sourceId, sourceId),
-        eq(portalSnapshots.externalId, externalId),
-      ),
-    )
-    // A listing fetched more than once should be re-parsed from the most recent
-    // capture, not the first one we happened to store.
-    .orderBy(desc(portalSnapshots.fetchedAt))
-    .limit(1);
+async function findPage(
+  sourceId: string,
+  externalId: string,
+): Promise<{ html: string; fetchedAt: Date } | null> {
+  const [snapshot] = await withDbRetry(() =>
+    db
+      .select({ s3Key: portalSnapshots.s3Key, fetchedAt: portalSnapshots.fetchedAt })
+      .from(portalSnapshots)
+      .where(
+        and(
+          eq(portalSnapshots.sourceId, sourceId),
+          eq(portalSnapshots.externalId, externalId),
+        ),
+      )
+      // A listing fetched more than once should be re-parsed from the most recent
+      // capture, not the first one we happened to store.
+      .orderBy(desc(portalSnapshots.fetchedAt))
+      .limit(1),
+  );
 
   if (!snapshot) return null;
 
   try {
-    return await getPage(snapshot.s3Key);
+    return { html: await getPage(snapshot.s3Key), fetchedAt: snapshot.fetchedAt };
   } catch (err) {
     /**
      * A recorded key whose object is gone. Reported rather than swallowed: it
@@ -163,6 +188,7 @@ async function findPage(sourceId: string, externalId: string): Promise<string | 
  * One listing, and what the parser actually sees.
  *
  *   npm run reparse -- --source=etreproprio --explain=23120189
+ *   npm run reparse -- --source=green-acres --explain=ID --save=page.html
  *
  * Written because a dry run reported an area changing from 1010 to 10 and no
  * amount of re-reading the regular expression explained why. A parser argues
@@ -171,7 +197,7 @@ async function findPage(sourceId: string, externalId: string): Promise<string | 
  * Prints every "m²" in the text with the characters before it — which is where
  * the answer lives when a number loses its first digit.
  */
-async function explainOne(sourceKey: string, externalId: string): Promise<void> {
+async function explainOne(sourceKey: string, externalId: string, saveTo?: string): Promise<void> {
   const [source] = await db
     .select()
     .from(portalSources)
@@ -186,8 +212,13 @@ async function explainOne(sourceKey: string, externalId: string): Promise<void> 
     .limit(1);
   if (!row) throw new Error(`no listing ${externalId} on ${sourceKey}`);
 
-  const html = await findPage(source.id, externalId);
+  const html = (await findPage(source.id, externalId))?.html;
   if (!html) throw new Error("page not on disk");
+  // `--save=file`: the page itself, for the cases the excerpts below do not settle.
+  if (saveTo) {
+    await fs.writeFile(saveTo, html, "utf8");
+    console.log(`page saved to ${saveTo} (${html.length} chars)`);
+  }
 
   const cheerio = await import("cheerio");
   const $ = cheerio.load(html);
@@ -272,7 +303,7 @@ export async function reparse(args: Args): Promise<void> {
   }
 
   if (args.explain) {
-    await explainOne(args.source ?? "etreproprio", args.explain);
+    await explainOne(args.source ?? "etreproprio", args.explain, args.save);
     return;
   }
 
@@ -299,23 +330,44 @@ export async function reparse(args: Args): Promise<void> {
      * says every listing has a title, not that a single one would change, and
      * is worse than printing nothing: it looks like a report.
      */
-    const rows = await db
-      .select({
-        id: portalListings.id,
-        externalId: portalListings.externalId,
-        url: portalListings.url,
-        title: portalListings.title,
-        priceEur: portalListings.priceEur,
-        areaM2: portalListings.areaM2,
-        landM2: portalListings.landM2,
-        rooms: portalListings.rooms,
-        bedrooms: portalListings.bedrooms,
-        propertyType: portalListings.propertyType,
-        imageUrl: portalListings.imageUrl,
-        imageUrls: portalListings.imageUrls,
-      })
-      .from(portalListings)
-      .where(eq(portalListings.sourceId, source.id));
+    /**
+     * In pages, by id. One select of every row with its gallery is ~5.6 MB
+     * for Bien'ici alone, and on a slow link that misses the pool's 10 s
+     * query_timeout on every attempt — 2026-10-02, three retries in a row.
+     * A page is a fraction of that, and a retry repeats one page.
+     */
+    const rows: ReparseRow[] = [];
+    for (;;) {
+      const after = rows.at(-1)?.id;
+      const page = await withDbRetry(() =>
+        db
+          .select({
+            id: portalListings.id,
+            externalId: portalListings.externalId,
+            url: portalListings.url,
+            title: portalListings.title,
+            priceEur: portalListings.priceEur,
+            areaM2: portalListings.areaM2,
+            landM2: portalListings.landM2,
+            rooms: portalListings.rooms,
+            bedrooms: portalListings.bedrooms,
+            propertyType: portalListings.propertyType,
+            imageUrl: portalListings.imageUrl,
+            imageUrls: portalListings.imageUrls,
+            propertyId: portalListings.propertyId,
+          })
+          .from(portalListings)
+          .where(
+            after
+              ? and(eq(portalListings.sourceId, source.id), gt(portalListings.id, after))
+              : eq(portalListings.sourceId, source.id),
+          )
+          .orderBy(asc(portalListings.id))
+          .limit(ROW_PAGE),
+      );
+      rows.push(...page);
+      if (page.length < ROW_PAGE) break;
+    }
 
     if (rows.length === 0) continue;
 
@@ -327,6 +379,11 @@ export async function reparse(args: Args): Promise<void> {
     const differs = new Map<string, number>();
     const examples: string[] = [];
     const currencyExamples: string[] = [];
+    /** Price changes the pipeline could not see while it could not read dollar pages. */
+    const missedChanges: string[] = [];
+    let missedChangeCount = 0;
+    /** Pages shown in another currency, by where their euro price was found. */
+    const foreignPages = new Map<string, number>();
 
     /**
      * A line every hundred pages.
@@ -351,11 +408,12 @@ export async function reparse(args: Args): Promise<void> {
             `~${Math.max(left, 0)}s left`,
         );
       }
-      const html = await findPage(source.id, row.externalId);
-      if (!html) {
+      const page = await findPage(source.id, row.externalId);
+      if (!page) {
         missing++;
         continue;
       }
+      const html = page.html;
 
       const result = adapter.parse(html, row.url);
       if (result.status === "failed") {
@@ -453,7 +511,52 @@ export async function reparse(args: Args): Promise<void> {
       const foreign = (p.raw as Record<string, unknown> | null)?.foreignPrice as
         | { currency?: string; shown?: string }
         | undefined;
+      /**
+       * Only when the page gave no euro price of its own. Since 2026-10-04 the
+       * adapter reads the euro figure a dollar page states (`raw.priceEurFrom`
+       * says where), and that one is current — it was written by `consider`
+       * above and an older capture must not replace it.
+       */
       if (foreign) {
+        const where =
+          ((p.raw as Record<string, unknown>).priceEurFrom as { where?: string } | undefined)?.where ??
+          "no euro figure on the page";
+        foreignPages.set(where, (foreignPages.get(where) ?? 0) + 1);
+      }
+      /**
+       * A PRICE CHANGE NOBODY RECORDED, 2026-10-04.
+       *
+       * The stored price is a real euro price from an earlier capture; the
+       * newest page states a different one, also in euros, also theirs. That
+       * is the listing's price changing while every page we fetched was in
+       * dollars and read as "no price" — so ingest, which would have emitted
+       * `price_changed` on the first fetch that showed it, never did.
+       *
+       * Overwriting the column alone would absorb the change without a trace,
+       * and the next nightly pass would find nothing left to report. So the
+       * event is written here, once, dated by the capture that shows the new
+       * price (the latest moment it can have happened) and marked
+       * `detectedBy: "reparse"` so it can always be told from one the collector
+       * saw live. Same payload as ingest: it comes from `computeEvents`.
+       */
+      const missed =
+        foreign && p.priceEur !== null && row.priceEur !== null && row.priceEur !== p.priceEur
+          ? computeEvents(
+              { priceEur: row.priceEur, areaM2: null, rooms: null, availability: null, status: "active" },
+              { priceEur: p.priceEur, areaM2: null, rooms: null, availability: null, status: "active" },
+            ).find((e) => e.type === "price_changed")
+          : undefined;
+      if (missed) {
+        missedChangeCount += 1;
+        if (missedChanges.length < 12) {
+          missedChanges.push(
+            `    ${String(row.priceEur).padStart(10)} → ${String(p.priceEur).padStart(10)} € ` +
+              `(${String((missed.payload as { percent?: number } | undefined)?.percent ?? "?")}%)  ` +
+              `page of ${page.fetchedAt.toISOString().slice(0, 10)}, shown "${foreign?.shown ?? "?"}"  ${row.externalId}`,
+          );
+        }
+      }
+      if (foreign && p.priceEur === null) {
         /**
          * Recover before clearing. The same listing was usually captured
          * earlier in euros — laptop-era pages are, and the four checked by
@@ -539,9 +642,47 @@ export async function reparse(args: Args): Promise<void> {
 
       if (Object.keys(patch).length === 0) continue;
 
+      if (!args.dry && missed) {
+        /**
+         * Checked first, so a pass that died between this insert and the row
+         * update below does not write the event twice when it is run again.
+         */
+        const [already] = await withDbRetry(() =>
+          db
+            .select({ id: portalListingEvents.id })
+            .from(portalListingEvents)
+            .where(
+              and(
+                eq(portalListingEvents.listingId, row.id),
+                eq(portalListingEvents.type, "price_changed"),
+                eq(portalListingEvents.priceFrom, missed.priceFrom as number),
+                eq(portalListingEvents.priceTo, missed.priceTo as number),
+              ),
+            )
+            .limit(1),
+        );
+        if (!already) {
+          await withDbRetry(() =>
+            db.insert(portalListingEvents).values({
+              listingId: row.id,
+              propertyId: row.propertyId,
+              sourceId: source.id,
+              runId: null,
+              type: "price_changed",
+              priceFrom: missed.priceFrom ?? null,
+              priceTo: missed.priceTo ?? null,
+              payload: { ...missed.payload, detectedBy: "reparse" },
+              occurredAt: page.fetchedAt,
+            }),
+          );
+        }
+      }
+
       if (!args.dry) {
         patch.updatedAt = new Date();
-        await db.update(portalListings).set(patch).where(eq(portalListings.id, row.id));
+        await withDbRetry(() =>
+          db.update(portalListings).set(patch).where(eq(portalListings.id, row.id)),
+        );
       }
       updated++;
     }
@@ -564,6 +705,17 @@ export async function reparse(args: Args): Promise<void> {
     if (currencyExamples.length > 0) {
       console.log("    prices read off a page in another currency:");
       for (const e of currencyExamples) console.log(e);
+    }
+    if (missedChangeCount > 0) {
+      console.log(
+        `    price changes missed while the page was in another currency: ${missedChangeCount}` +
+          (args.dry ? " (a price_changed event WOULD be written for each)" : " (a price_changed event written for each)"),
+      );
+      for (const e of missedChanges) console.log(e);
+    }
+    if (foreignPages.size > 0) {
+      const parts = [...foreignPages.entries()].sort((a, b) => b[1] - a[1]);
+      console.log(`    pages in another currency, euro price from: ${parts.map(([k, n]) => `${k} ${n}`).join(", ")}`);
     }
     const top = [...changes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
     if (top.length > 0) {
@@ -594,7 +746,7 @@ if (process.argv[1]?.endsWith("reparse.ts")) {
   reparse(parseArgs())
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error("[reparse] failed:", (err as Error).message);
+      console.error("[reparse] failed:", dbErrorMessage(err));
       process.exit(1);
     });
 }

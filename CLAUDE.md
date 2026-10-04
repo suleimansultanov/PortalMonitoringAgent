@@ -65,6 +65,11 @@ questioned and reversed.
   for display. Parsing the screen invents a price change on every FX move.
 - **Propriétés Le Figaro geo is a postcode centroid.** Store it, never match on
   it. Also filter out the `/location-vacances/` branch — that is holiday rental.
+- **Green-Acres renders for the visitor.** From a US address (the GitHub
+  runner) the headline price is in dollars and sizes are in sq ft / acres. Never
+  store the headline unless the page says EUR: read `offers` in the JSON-LD,
+  else their "Prix en euros" line. Convert imperial by the unit printed beside
+  the figure. 535 listings went without a price for three weeks over this.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 

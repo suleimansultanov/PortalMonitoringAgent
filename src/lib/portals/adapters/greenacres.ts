@@ -7,7 +7,7 @@ import {
   type PortalAdapter,
   type RawListing,
 } from "../types";
-import { num } from "../jsonld";
+import { extractJsonLd, firstOffer, num, primaryOfferNode, str } from "../jsonld";
 import { collectCharacteristics, isEmpty } from "../attributes";
 import { isPastLastPage } from "../runner/fetcher";
 
@@ -228,13 +228,20 @@ export const greenAcresAdapter: PortalAdapter = {
      * of 2 869 local pages, the other 26 "Prix sur demande").
      *
      * The page states its own currency: the selected option in its currency
-     * picker is the one marked `primary`. Anything but EUR leaves the price
-     * null and keeps what was shown in `raw`, so it is visibly missing rather
-     * than wrong by 15%. Converting it back would put an exchange rate of our
-     * choosing into a figure the client compares against a notary's.
+     * picker is the one marked `primary`. A figure shown in anything but EUR
+     * is never stored and never converted — an exchange rate of our choosing
+     * has no place in a number the client compares against a notary's.
+     *
+     * But a dollar page still states the euro price, in its own words, and
+     * for a week that went unread (2026-10-04, reported from the client side:
+     * 535 of 535 listings first seen since 10 September had no price, every
+     * one of them published). `euroPrice` reads it; what was shown stays in
+     * `raw.foreignPrice` either way.
      */
     const shownCurrency = displayCurrency($);
-    listing.priceEur = shownCurrency === "EUR" ? toInt(priceText) : null;
+    const shownPrice = toInt(priceText);
+    const euro = euroPrice($, html, externalId, shownCurrency, shownPrice);
+    listing.priceEur = euro?.price ?? null;
 
     /**
      * "Prix sur demande" is information, not a parse failure.
@@ -244,9 +251,12 @@ export const greenAcresAdapter: PortalAdapter = {
      * one is the agency choosing not to publish, the other is our parser
      * missing. Without this flag the quality report cannot tell them apart, and
      * the screen has to print "—" where it should print "on request".
+     *
+     * Whatever the display currency: the price element is there and holds no
+     * figure. A dollar page used to be excluded from this, which filed a
+     * withheld price as a foreign one.
      */
-    const onRequest =
-      priceText !== null && shownCurrency === "EUR" && listing.priceEur === null;
+    const onRequest = listing.priceEur === null && priceText !== null && shownPrice === null;
 
     // ── Size, rooms ───────────────────────────────────────────────────────
     // Keyed off their icon classes, which name the thing they label
@@ -395,11 +405,13 @@ export const greenAcresAdapter: PortalAdapter = {
 
     listing.raw = {
       priceOnRequest: onRequest,
-      // Present only when the page was rendered in another currency; read by
-      // `reparse` as evidence that the stored price must be cleared.
-      ...(shownCurrency !== "EUR"
+      // Present only when the page showed a figure in another currency; read
+      // by `reparse` as evidence that a stored price with no euro source must
+      // be cleared. `priceEurFrom` says where on that page the euros were.
+      ...(shownCurrency !== "EUR" && shownPrice !== null
         ? { foreignPrice: { currency: shownCurrency, shown: priceText } }
         : {}),
+      ...(shownCurrency !== "EUR" && euro ? { priceEurFrom: { where: euro.from } } : {}),
       dpe: activeLetter("dpe-row"),
       ges: activeLetter("ges-row"),
       ...(isEmpty(characteristics)
@@ -596,10 +608,29 @@ function surface(raw: string | null): number | null {
   if (/\d\s*(?:à|-|–|\bto\b)\s*\d/i.test(raw.replace(/(\d)[\s\u00a0\u202f](?=\d{3}\b)/g, "$1"))) return null;
   const value = num(raw);
   if (value === null) return null;
+  /**
+   * Imperial, when the page was rendered for a visitor Green-Acres takes for
+   * an American — which the nightly runner is. "2 067 sq ft" was stored as
+   * 2 067 m² and "2,47 acres" (one hectare) as 2.47 m²; about 880 active
+   * listings by 2026-10-04. The unit is read off the figure itself rather
+   * than off the page's unit picker, so a number is only ever converted by
+   * the unit printed next to it.
+   *
+   * Unlike a currency this is a conversion with nothing to choose: both
+   * factors are exact by definition. The result is rounded because their
+   * figure already is — 192 m² became 2 067 sq ft and comes back as 192.03.
+   * Acres are printed to two decimals, so a hectare returns as 9 996 m².
+   */
+  if (/\bsq\.?\s?ft\b|\bft²/i.test(raw)) return Math.round(value * M2_PER_SQ_FT);
+  if (/\bacres?\b/i.test(raw)) return Math.round(value * M2_PER_ACRE);
   // Word boundary: "ha" must be a unit, not the start of "habitable".
   const hectares = /\bha\b/i.test(raw);
   return hectares ? Math.round(value * 10_000) : value;
 }
+
+/** The international foot is 0.3048 m exactly; an acre is 43 560 sq ft. */
+const M2_PER_SQ_FT = 0.09290304;
+const M2_PER_ACRE = 4046.8564224;
 
 /**
  * A count out of a labelled string like "8 pièces" or "Chambres 7".
@@ -717,6 +748,55 @@ function capitalise(s: string): string {
 
 function titleCase(s: string): string {
   return s.replace(/\b[a-zà-ÿ]/g, (c) => c.toUpperCase());
+}
+
+/**
+ * The price in euros, from wherever the page itself states it in euros.
+ *
+ * Three places, in the order this project reads any page (CLAUDE.md: JSON-LD,
+ * then the page's own elements):
+ *
+ *  1. `offers` in the JSON-LD, when it says EUR. Independent of the visitor:
+ *     the dollar page of 2026-10-02 carries `"price":"2350000",
+ *     "priceCurrency":"EUR"` under a headline of 2 659 927 $. Green-Acres
+ *     added this block around the start of October; older saved pages have
+ *     none.
+ *  2. The headline price, when the page was rendered in euros.
+ *  3. On a page rendered in another currency, their own line beneath the
+ *     headline: `<div class="advert-currency-price">Prix en euros :
+ *     2 350 000 €</div>`. Present on every dollar page looked at, back to
+ *     September.
+ *
+ * Nothing here converts. Each is a euro figure Green-Acres published.
+ *
+ * The JSON-LD node is taken only if its photographs carry this listing's id,
+ * the same test the gallery uses — a page is free to describe a neighbour in
+ * its markup, and one portal's "similar listings" already did (see
+ * `primaryOfferNode`).
+ */
+function euroPrice(
+  $: cheerio.CheerioAPI,
+  html: string,
+  externalId: string,
+  shownCurrency: string,
+  shownPrice: number | null,
+): { price: number; from: "json-ld" | "shown" | "euro-line" } | null {
+  const node = primaryOfferNode(extractJsonLd(html));
+  const offer = node ? firstOffer(node) : null;
+  if (node && offer && str(offer.priceCurrency)?.toUpperCase() === "EUR") {
+    const images = Array.isArray(node.image) ? node.image : [node.image];
+    const own = images.some((u) => typeof u === "string" && u.includes(externalId));
+    const price = num(offer.price);
+    if (own && price !== null && price > 0) return { price: Math.round(price), from: "json-ld" };
+  }
+
+  if (shownCurrency === "EUR") {
+    return shownPrice === null ? null : { price: shownPrice, from: "shown" };
+  }
+
+  const line = firstText($, ".advert-currency-price");
+  const price = line?.includes("€") ? toInt(line) : null;
+  return price !== null && price > 0 ? { price, from: "euro-line" } : null;
 }
 
 /**

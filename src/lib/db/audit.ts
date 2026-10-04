@@ -172,13 +172,24 @@ async function main(): Promise<void> {
       select l.status,
              count(*)::int as n,
              count(*) filter (where l.raw ? 'foreignPrice')::int as page_not_in_eur,
-             count(*) filter (where l.raw ? 'priceEurFrom')::int as euro_from_earlier_capture,
+             count(*) filter (where l.raw->'priceEurFrom'->>'where' in ('json-ld', 'euro-line'))::int as euro_stated_on_that_page,
+             count(*) filter (where l.raw->'priceEurFrom'->>'where' in ('s3', 'local'))::int as euro_from_earlier_capture,
              count(*) filter (where l.raw ? 'foreignPrice' and l.price_eur is null)::int as price_cleared,
              count(*) filter (where l.raw ? 'foreignPrice' and l.price_eur is not null
                                 and not (l.raw ? 'priceEurFrom'))::int as SUSPECT_dollar_still_stored,
              count(*) filter (where l.price_eur is null)::int as no_price_total
       from portal_listings l join portal_sources s on s.id = l.source_id
       where s.key = 'green-acres'
+      group by 1 order by 1
+    `,
+  );
+
+  await block(
+    "6c. Green-Acres land under 20 m² — acres read as square metres (2,47 acres is a hectare); 0 once the 2026-10-04 re-parse has run",
+    sql`
+      select l.status, count(*)::int as n, min(l.land_m2) as smallest, max(l.land_m2) as largest
+      from portal_listings l join portal_sources s on s.id = l.source_id
+      where s.key = 'green-acres' and l.land_m2 < 20
       group by 1 order by 1
     `,
   );

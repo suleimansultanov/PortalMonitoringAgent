@@ -537,6 +537,109 @@ test("a page rendered in dollars gives NO price, never the dollar figure", () =>
   assert.equal((res.listing.raw as Record<string, unknown>).priceOnRequest, false);
 });
 
+/**
+ * A page the nightly runner saved on 2026-10-02, as Green-Acres renders it for
+ * a visitor it takes for an American: dollars in the headline, square feet in
+ * the summary. Reported from the client side on 2026-10-04 as 535 listings
+ * with no price and ~880 with a floor area ten times too large. The page
+ * states the euro price twice in its own words; neither was being read.
+ */
+const USD_URL =
+  "https://www.green-acres.fr/fr/properties/maison/les-issambres/A8qmjvfctnazcl7n.htm";
+const withoutJsonLd = (html: string) =>
+  html.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/g, "");
+const withoutEuroLine = (html: string) =>
+  html.replace(/<(div|span) class="advert-currency-price">[^<]*<\/\1>/g, "");
+
+function parsedUsd(mutate: (html: string) => string = (h) => h) {
+  const html = mutate(fixture("green-acres-detail-usd.html"));
+  const res = greenAcresAdapter.parse(html, USD_URL);
+  if (res.status === "failed") throw new Error(`parse failed: ${res.error}`);
+  return res.listing;
+}
+
+test("a dollar page still states its euro price, and that is the one stored", () => {
+  const l = parsedUsd();
+  assert.equal(l.priceEur, 2_350_000); // headline: 2 659 927 $
+  const raw = l.raw as Record<string, unknown>;
+  assert.deepEqual(raw.foreignPrice, { currency: "USD", shown: "2 659 927 $" });
+  assert.deepEqual(raw.priceEurFrom, { where: "json-ld" });
+  assert.equal(raw.priceOnRequest, false);
+});
+
+test("without the JSON-LD, the page's own 'Prix en euros' line gives the same figure", () => {
+  // Pages saved before October carry no JSON-LD at all; the line is on all of them.
+  const l = parsedUsd(withoutJsonLd);
+  assert.equal(l.priceEur, 2_350_000);
+  assert.deepEqual((l.raw as Record<string, unknown>).priceEurFrom, { where: "euro-line" });
+});
+
+test("with no euro figure anywhere, the dollar figure is still never stored", () => {
+  const l = parsedUsd((h) => withoutEuroLine(withoutJsonLd(h)));
+  assert.equal(l.priceEur, null);
+  const raw = l.raw as Record<string, unknown>;
+  assert.equal((raw.foreignPrice as { currency: string }).currency, "USD");
+  assert.equal(raw.priceEurFrom, undefined);
+});
+
+test("a JSON-LD offer in another currency is not a euro price", () => {
+  const l = parsedUsd((h) =>
+    withoutEuroLine(h).replace('"price":"2350000","priceCurrency":"EUR"', '"price":"2659927","priceCurrency":"USD"'),
+  );
+  assert.equal(l.priceEur, null);
+});
+
+test("a JSON-LD node carrying another listing's photographs is not this listing's price", () => {
+  const l = parsedUsd((h) => {
+    const start = h.indexOf('<script type="application/ld+json">');
+    const end = h.indexOf("</script>", start);
+    const block = h.slice(start, end).replaceAll("A8qmjvfctnazcl7n", "Azzzzzzzzzzzzzzz");
+    return withoutEuroLine(h.slice(0, start) + block + h.slice(end));
+  });
+  assert.equal(l.priceEur, null);
+});
+
+test("square feet are converted to square metres, not stored as them", () => {
+  // "2 067 sq ft" for a villa its own description calls 192 m².
+  assert.equal(parsedUsd().areaM2, 192);
+});
+
+test("land in acres or square feet is converted too", () => {
+  // Above a hectare the imperial page prints acres: "2,47 acres" is one
+  // hectare and was stored as 2.47 m². Below it, "99 459 sq ft".
+  const page = (land: string) => `<html><body>${"x".repeat(600)}
+    <meta property="og:title" content="Villa" />
+    <span class="tag"><em class="icons icon-habitablesurface xs"></em><span>6 028 sq ft</span></span>
+    <span class="tag"><em class="icons icon-landsurface xs"></em><span>${land}</span></span>
+    <div class="price-detail">11 800 000 €</div>
+  </body></html>`;
+  const parse = (land: string) => {
+    const res = greenAcresAdapter.parse(page(land), DETAIL_URL);
+    if (res.status === "failed") throw new Error(res.error);
+    return res.listing;
+  };
+  assert.equal(parse("2,47 acres").landM2, 9_996);
+  assert.equal(parse("99 459 sq ft").landM2, 9_240);
+  assert.equal(parse("2,47 acres").areaM2, 560);
+});
+
+test("a withheld price on a dollar page is 'on request', not a foreign price", () => {
+  // The picker says dollars, but no figure was shown in them — nothing foreign
+  // to record, and the agency's choice not to publish is the information.
+  const html = `<html><body>${"x".repeat(600)}
+    <meta property="og:title" content="Villa" />
+    <div id="currency-selection-EUR" class="button-component clear md"></div>
+    <div id="currency-selection-USD" class="button-component primary md"></div>
+    <div class="price-detail">Prix sur demande</div>
+  </body></html>`;
+  const res = greenAcresAdapter.parse(html, DETAIL_URL);
+  if (res.status === "failed") throw new Error(res.error);
+  assert.equal(res.listing.priceEur, null);
+  const raw = res.listing.raw as Record<string, unknown>;
+  assert.equal(raw.priceOnRequest, true);
+  assert.equal(raw.foreignPrice, undefined);
+});
+
 test("a size given as a range is not glued into one number", () => {
   // "57 à 82 m²" came back as 5 782 on a Cavalaire programme.
   const html = fixture("green-acres-detail.html").replace(
