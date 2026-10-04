@@ -588,6 +588,46 @@ function sourceSeeds(): SourceSeed[] {
         fetchMode: "browser",
       },
     },
+    {
+      key: "vizzit",
+      name: "Vizzit",
+      hosts: ["vizzit.fr", "www.vizzit.fr"],
+      baseUrl: "https://www.vizzit.fr",
+      /** Their robots.txt: `Crawl-delay: 1`, `Request-rate: 1/1`. */
+      crawlDelayMs: 1_000,
+      permissionNote:
+        "robots.txt read 2026-10-04: Green-Acres' file with a few additions. `User-agent: *` " +
+        "disallows internal AJAX endpoints (LoadAdvertsForNavigation, AdvertsListing, " +
+        "TagVisit, CityBoundary, EstimationActions, aspirationalsearch, " +
+        "prog_show_properties, */properties/popin/), /maps/, several `searchQuery=` " +
+        "filters, tracking parameters and `currency=`. The commune index /acheter/<slug> " +
+        "with ?p_n=N and listings under /fr/property/ are open. Crawl-delay: 1, " +
+        "Request-rate: 1/1.\n\n" +
+        "Measured 2026-10-04: index and listing answer 200 to our named user-agent, to " +
+        "the plain client and to a browser, from GitHub Actions and from a home " +
+        "connection. NO WRITTEN PERMISSION IS ON FILE and, on the above, none is " +
+        "required; if they object, stop and write.\n\n" +
+        "Same engine as Green-Acres and the same obfuscated card links (base64 in " +
+        "`data-o`) — see that source's note; the same reading applies. `currency=` is " +
+        "disallowed and is NOT used: a page served in dollars is read for its own euro " +
+        "line instead.",
+      config: {
+        host: "https://www.vizzit.fr",
+        /** Their slugs are Green-Acres' slugs; all thirteen answered on 2026-10-04. */
+        communes: GREEN_ACRES_COMMUNES,
+        pageParam: "p_n",
+        /** Sainte-Maxime stated 1 246 on 2026-10-04: 52 pages of 24. */
+        maxPages: 80,
+        /**
+         * About 5 400 listings stated across the gulf, twice Green-Acres. A
+         * first pass at one request a second would outlast the night's
+         * watchdog and be killed mid-write; with a budget it ends cleanly and
+         * the rest rolls over, so the catalogue arrives over two or three
+         * nights. Once it has, a night is the day's new listings.
+         */
+        fetchBudgetMinutes: 120,
+      },
+    },
   ];
 }
 

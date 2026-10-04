@@ -8,6 +8,7 @@ import { figaroAdapter } from "./adapters/figaro";
 import { jameseditionAdapter } from "./adapters/jamesedition";
 import { bieniciAdapter } from "./adapters/bienici";
 import { figaroImmobilierAdapter } from "./adapters/figaroimmobilier";
+import { vizzitAdapter } from "./adapters/vizzit";
 
 /**
  * Adapter registry.
@@ -34,6 +35,7 @@ const ADAPTERS: PortalAdapter[] = [
   jameseditionAdapter,
   bieniciAdapter,
   figaroImmobilierAdapter,
+  vizzitAdapter,
   // avivAdapter,
   // zooplaAdapter,
 ];

@@ -48,11 +48,17 @@ import { isPastLastPage } from "../runner/fetcher";
  * cleverer parser.
  */
 
-/** `/fr/properties/maison/ramatuelle/Amfhgmt9hjtzqghr.htm` → `Amfhgmt9hjtzqghr` */
-const ID_FROM_URL = /\/fr\/properties\/[^/]+\/[^/]+\/([A-Za-z0-9]+)\.htm/i;
+/**
+ * `/fr/properties/maison/ramatuelle/Amfhgmt9hjtzqghr.htm` → `Amfhgmt9hjtzqghr`
+ *
+ * Also `/fr/property/appartement/saint-tropez/Ag0fd0cn96pi96t3`, which is how
+ * Vizzit — the same engine under another name — spells the same page: singular,
+ * no extension. `adapters/vizzit.ts` reuses this parser, so both are read here.
+ */
+const ID_FROM_URL = /\/fr\/propert(?:ies|y)\/[^/]+\/[^/]+\/([A-Za-z0-9]+)(?:\.htm|$|[?#])/i;
 
-/** `.../{type}/{commune}/{id}.htm` — both segments are useful. */
-const TYPE_AND_COMMUNE = /\/fr\/properties\/([^/]+)\/([^/]+)\//i;
+/** `.../{type}/{commune}/{id}` — both segments are useful. */
+const TYPE_AND_COMMUNE = /\/fr\/propert(?:ies|y)\/([^/]+)\/([^/]+)\//i;
 
 export const greenAcresAdapter: PortalAdapter = {
   key: "green-acres",
@@ -461,7 +467,7 @@ export const greenAcresAdapter: PortalAdapter = {
  * is malformed is skipped rather than yielding a broken URL that would 404 and
  * count as a failure.
  */
-function cardsOnPage(html: string, host: string): { id: string; url: string }[] {
+export function cardsOnPage(html: string, host: string): { id: string; url: string }[] {
   const $ = cheerio.load(html);
   const out: { id: string; url: string }[] = [];
   const seen = new Set<string>();
