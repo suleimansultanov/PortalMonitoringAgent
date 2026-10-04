@@ -5,6 +5,7 @@
  *   node scripts/access-test.mjs --direct                      # from this machine's own address
  *   node scripts/access-test.mjs                               # through PMA_RESIDENTIAL_PROXY
  *   node scripts/access-test.mjs --portals=figaro,seloger --listings=2 --budget-mb=20
+ *   node scripts/access-test.mjs --browser=full --group=proxy   # the site's own scripts run
  *
  * Two modes, one question each:
  *   --direct  "does this address get served?" — run on GitHub Actions it says
@@ -15,7 +16,10 @@
  *
  * THE PORTALS. Two groups (`--portals` picks; the default is the group named
  * by `--group`, "candidates" unless told otherwise):
- *   blocked     Figaro, JamesEdition, SMC (both sites), Superimmo — adapters exist, the
+ *   proxy       Propriétés Le Figaro, JamesEdition, Figaro Immobilier, Zoopla
+ *               Overseas — the four where an address is what could be refused,
+ *               in that order. Run these through the proxy with --browser=full.
+ *   blocked     SMC (both sites), Superimmo — adapters exist, the
  *               nightly cannot reach them. Measured through a French
  *               residential address on 2026-10-04: the first two served every
  *               page; SMC answered its Cloudflare challenge and Superimmo a
@@ -42,6 +46,20 @@
  * datacentre ranges wholesale; it is not an answer to a portal that has seen
  * who we are and said no (runner/browser.ts, `proxy`).
  *
+ * TWO WAYS OF LOADING A PAGE (`--browser=`).
+ *   documents  (default) only the portal's own HTML. Cheapest, and NOT what
+ *              the collector does: no script of theirs runs. On 2026-10-04
+ *              Figaro Immobilier and Zoopla passed this way from GitHub and
+ *              then refused the real collector after one page — once their
+ *              own bot-detection script had run. So a "SERVED" here is a
+ *              lower bound on refusal, not a promise of access.
+ *   full       what the collector's browser does: the site's own scripts,
+ *              requests and styles run — Cloudflare's checks included, as
+ *              they would on any visit. Only images, fonts, media and other
+ *              companies' requests (analytics, ads, maps) are refused, which
+ *              is traffic, not disguise. This is the honest test, and the
+ *              pages wait long enough after loading for those checks to run.
+ *
  * WHY IT IS METERED. Trial plans are ~100 MB. A listing page with everything
  * it pulls in is 2–5 MB (measured 2026-10-04); the HTML we parse is ~3 % of
  * that. So only the portal's own documents are loaded — no images, fonts,
@@ -61,6 +79,7 @@ const args = Object.fromEntries(
   }),
 );
 const DIRECT = args.direct === "true";
+const FULL = (args.browser ?? "documents") === "full";
 const LISTINGS = Math.max(0, Number(args.listings ?? 3));
 const BUDGET_BYTES = Math.max(1, Number(args["budget-mb"] ?? 30)) * 1024 * 1024;
 const OUT = path.resolve(args.out ?? "access-test-pages");
@@ -87,7 +106,7 @@ const links = (html, origin, re) =>
 const PORTALS = {
   // ── adapters exist, the nightly is refused ────────────────────────────────
   figaro: {
-    group: "blocked",
+    group: "proxy",
     basis: "permission",
     origin: "https://proprietes.lefigaro.fr",
     delayMs: 5_000,
@@ -98,7 +117,7 @@ const PORTALS = {
     looksServed: (html) => html.includes("__NUXT_DATA__"),
   },
   jamesedition: {
-    group: "blocked",
+    group: "proxy",
     basis: "open",
     origin: "https://www.jamesedition.com",
     delayMs: 4_000,
@@ -170,7 +189,7 @@ const PORTALS = {
     looksServed: (html) => html.length > 30_000 && /annonce|€/i.test(html),
   },
   "figaro-immobilier": {
-    group: "candidates",
+    group: "proxy",
     /**
      * "open", not "permission": Groupe Figaro's reply of 25 Aug was about
      * Propriétés Le Figaro. Whether it covers this site has never been asked,
@@ -183,7 +202,7 @@ const PORTALS = {
     listingLinks: (html) =>
       links(html, "https://immobilier.lefigaro.fr", /href="((?:https:\/\/immobilier\.lefigaro\.fr)?\/annonces\/annonce-\d{6,}\.html)/gi),
     listings: ["https://immobilier.lefigaro.fr/annonces/annonce-104748999.html"],
-    looksServed: (html) => html.length > 30_000 && /annonce|€/i.test(html),
+    looksServed: (html) => html.includes("__NUXT_DATA__"),
   },
   vizzit: {
     group: "candidates",
@@ -211,13 +230,19 @@ const PORTALS = {
     looksServed: (html) => html.length > 20_000,
   },
   "zoopla-overseas": {
-    group: "candidates",
-    /** robots.txt closed /property/ and /search/ when read on 24 Aug; it decides again here. */
+    group: "proxy",
+    /**
+     * Their robots.txt closes /property/ and /search/ — the UK site's paths.
+     * The overseas section is open (read in full 2026-10-04).
+     */
     basis: "open",
     origin: "https://www.zoopla.co.uk",
     delayMs: 5_000,
-    index: "https://www.zoopla.co.uk/overseas/",
-    looksServed: (html) => html.length > 20_000 && /overseas|property/i.test(html),
+    index: "https://www.zoopla.co.uk/overseas/property/france/provence-alpes-cote-dazur/var/draguignan/grimaud/sainte-maxime/",
+    listingLinks: (html) =>
+      [...new Set([...html.matchAll(/\/overseas\/details\/(\d{6,})\//g)].map((m) => `https://www.zoopla.co.uk/overseas/details/${m[1]}/`))],
+    listings: ["https://www.zoopla.co.uk/overseas/details/74412384/"],
+    looksServed: (html) => html.includes("__NEXT_DATA__") && html.length > 20_000,
   },
 };
 
@@ -295,13 +320,32 @@ function robotsVerdict(robots, url) {
   return { allowed: best.allow, rule: best.rule };
 }
 
-/** One context per portal, everything but the portal's own documents refused. */
+/** "proprietes.lefigaro.fr" → "lefigaro.fr"; "www.zoopla.co.uk" → "zoopla.co.uk". */
+function siteOf(hostname) {
+  const parts = hostname.toLowerCase().split(".");
+  return parts.slice(/\.(co|com|org|gov|ac)\.[a-z]{2}$/.test(hostname) ? -3 : -2).join(".");
+}
+
+/** Never fetched in either mode: bytes for pictures, and nothing a page's checks depend on. */
+const HEAVY = new Set(["image", "media", "font"]);
+
+/**
+ * One context per portal. `documents`: the portal's own HTML only. `full`:
+ * everything from the portal's own site — scripts, XHR, styles, Cloudflare's
+ * `/cdn-cgi/` checks — except images, media and fonts; other companies'
+ * requests refused. A hard stop on the budget is enforced here, per request,
+ * so a page heavier than expected cannot carry the run past it.
+ */
 async function openContext(browser, host) {
   const context = await browser.newContext({ locale: "fr-FR", timezoneId: "Europe/Paris", userAgent: UA });
+  const own = siteOf(host);
   await context.route("**/*", (route) => {
     const req = route.request();
     const h = new URL(req.url()).hostname;
-    if (req.resourceType() === "document" && (h === host || h === "ipinfo.io")) return route.continue();
+    const type = req.resourceType();
+    const ownSite = siteOf(h) === own || h === "ipinfo.io";
+    const allowed = FULL ? ownSite && !HEAVY.has(type) : ownSite && type === "document";
+    if (allowed && billed() < BUDGET_BYTES) return route.continue();
     blocked++;
     return route.abort();
   });
@@ -330,7 +374,7 @@ function classify(status, headers, html, portal) {
 
 async function visit(page, key, kind, url, largestDoc) {
   // Stop before a page that could cross the cap, not after it.
-  if (billed() + Math.max(largestDoc, 400 * 1024) * OVERHEAD > BUDGET_BYTES) {
+  if (billed() + Math.max(largestDoc, (FULL ? 2048 : 400) * 1024) * OVERHEAD > BUDGET_BYTES) {
     rows.push({ portal: key, kind, url, status: "-", verdict: "skipped: budget", bytes: 0 });
     return { ok: false };
   }
@@ -339,7 +383,8 @@ async function visit(page, key, kind, url, largestDoc) {
     const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
     const status = res?.status() ?? 0;
     const headers = res?.headers() ?? {};
-    await sleep(500); // let `requestfinished` land so the count is complete
+    // Full: give their own checks time to run, as on any visit. Then let `requestfinished` land.
+    await sleep(FULL ? 4_000 : 500);
     const html = await page.content();
     const verdict = classify(status, headers, html, PORTALS[key]);
     const bytes = spent - before;
@@ -354,7 +399,8 @@ async function visit(page, key, kind, url, largestDoc) {
 
 await fs.mkdir(OUT, { recursive: true });
 console.log(
-  `${DIRECT ? "DIRECT — this machine's own address" : `via proxy ${proxyHost} (credentials not printed)`} · user-agent: ${UA}`,
+  `${DIRECT ? "DIRECT — this machine's own address" : `via proxy ${proxyHost} (credentials not printed)`} · ` +
+    `browser: ${FULL ? "full (their scripts run)" : "documents only"} · user-agent: ${UA}`,
 );
 console.log(`budget ${mb(BUDGET_BYTES)} incl. ×${OVERHEAD} overhead · ${LISTINGS} listing(s) per portal · ${wanted.join(", ")}\n`);
 
@@ -425,7 +471,7 @@ try {
 }
 
 const lines = [
-  `**${DIRECT ? "Direct, from this machine's address" : `Through the residential proxy (${proxyHost})`}**`,
+  `**${DIRECT ? "Direct, from this machine's address" : `Through the residential proxy (${proxyHost})`}** · ${FULL ? "full browser, their scripts running" : "HTML documents only"}`,
   "",
   "| portal | page | HTTP | verdict | on the wire |",
   "|---|---|---|---|---|",

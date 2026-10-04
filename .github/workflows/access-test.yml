@@ -25,10 +25,15 @@ on:
         required: false
         default: ""
       group:
-        description: "candidates = no adapter yet · blocked = adapters the nightly cannot reach"
+        description: "candidates = no adapter yet · proxy = the four worth a proxy · blocked = SMC, Superimmo"
         type: choice
-        options: [candidates, blocked]
+        options: [candidates, proxy, blocked]
         default: candidates
+      browser:
+        description: "documents = HTML only · full = the site's own scripts run, as the collector's do"
+        type: choice
+        options: [documents, full]
+        default: documents
       listings:
         description: "Listing pages per portal after its index."
         required: false
@@ -58,7 +63,7 @@ jobs:
 
       - name: Ask each portal
         run: |
-          ARGS="--group=${{ inputs.group }} --listings=${{ inputs.listings }} --budget-mb=${{ inputs.budget_mb }} --out=access-test-pages"
+          ARGS="--group=${{ inputs.group }} --browser=${{ inputs.browser }} --listings=${{ inputs.listings }} --budget-mb=${{ inputs.budget_mb }} --out=access-test-pages"
           if [ -n "${{ inputs.portals }}" ]; then ARGS="$ARGS --portals=${{ inputs.portals }}"; fi
           if [ "${{ inputs.mode }}" = "direct" ]; then ARGS="$ARGS --direct"; fi
           node scripts/access-test.mjs $ARGS
