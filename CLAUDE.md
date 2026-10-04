@@ -70,6 +70,11 @@ questioned and reversed.
   store the headline unless the page says EUR: read `offers` in the JSON-LD,
   else their "Prix en euros" line. Convert imperial by the unit printed beside
   the figure. 535 listings went without a price for three weeks over this.
+- **Figaro Immobilier's results carry Propriétés Le Figaro listings** (`isPlf`,
+  `recordLink` on proprietes.lefigaro.fr) — about a third of every commune.
+  They belong to the `figaro` source; filing them under both counts one
+  advert as two portals'. Its commune token for Le Plan-de-la-Tour has no
+  article (`plan+de+la+tour+83120`); `le+plan…` answers 410.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 

@@ -554,6 +554,40 @@ function sourceSeeds(): SourceSeed[] {
         maxPages: 20,
       },
     },
+    {
+      key: "figaro-immobilier",
+      name: "Figaro Immobilier",
+      hosts: ["immobilier.lefigaro.fr"],
+      baseUrl: "https://immobilier.lefigaro.fr",
+      /** Ours, as on Propriétés; no Crawl-delay in their robots.txt. */
+      crawlDelayMs: 5_000,
+      permissionNote:
+        "robots.txt read 2026-10-04 (a browser; the plain client gets 403 even there). " +
+        "`User-agent: *` disallows /annonce/ (singular), /recherche/, /rest/, /api/, /s/, " +
+        "/annonces/*? with `Allow: /annonces/*page=*` taking precedence, and " +
+        "/annonces/immobilier+prestige-*. The commune index " +
+        "/annonces/immobilier-vente-bien-<ville>+<cp>.html with ?page=N, and listings under " +
+        "/annonces/annonce-<id>.html, are open. No Crawl-delay.\n\n" +
+        "Measured 2026-10-04 by scripts/access-test.mjs --direct on GitHub Actions: index " +
+        "and three listings 200 to our named user-agent in a browser; the plain client is " +
+        "refused by Cloudflare before anyone looks at who is asking, the same shape as " +
+        "Propriétés and Etreproprio. No disguise is used.\n\n" +
+        "NO WRITTEN PERMISSION IS ON FILE for this site: Groupe Figaro's reply of 25 Aug " +
+        "2026 was about Propriétés Le Figaro. On the above none is required; if they " +
+        "object, stop and write. Index pages only — their records are complete, so no " +
+        "listing page is fetched. Propriétés Le Figaro records shown in their results " +
+        "(isPlf) are left to that source.",
+      config: {
+        /**
+         * Generous, and safe to be: the loop ends on their own `totalPage`,
+         * and the ceiling reports the commune incomplete instead of passing
+         * for an ending. Saint-Tropez was 8 pages on 2026-10-04.
+         */
+        maxPages: 40,
+        /** 403 to the plain client on every page. See `permissionNote`. */
+        fetchMode: "browser",
+      },
+    },
   ];
 }
 
