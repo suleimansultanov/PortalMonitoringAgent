@@ -46,3 +46,4 @@ logs/
 # Files Claude sends to the operator land here. Not part of the collector,
 # and this repository is public.
 Claude outputs/
+proxy-test-pages/
