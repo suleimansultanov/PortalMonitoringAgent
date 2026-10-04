@@ -628,6 +628,38 @@ function sourceSeeds(): SourceSeed[] {
         fetchBudgetMinutes: 120,
       },
     },
+    {
+      key: "zoopla-overseas",
+      name: "Zoopla Overseas",
+      hosts: ["www.zoopla.co.uk", "zoopla.co.uk"],
+      baseUrl: "https://www.zoopla.co.uk",
+      /** Ours; their robots.txt states no Crawl-delay. */
+      crawlDelayMs: 5_000,
+      permissionNote:
+        "robots.txt read in full 2026-10-04 (a browser; the plain client gets Cloudflare's " +
+        "challenge even there). `User-agent: *` disallows /property/ and /search/ — the UK " +
+        "site's paths. The overseas section is /overseas/property/… and " +
+        "/overseas/details/<id>/, which no rule closes; under it only the map, print and " +
+        "photos sub-pages of a details page and its contact form are disallowed, and none " +
+        "is used. `?pn=` is open; `?rpn=`, `?qpn=` and `q=` are closed and not used. No " +
+        "Crawl-delay. TrovitBot, PetalBot and others are banned by name; we are not among " +
+        "them. The August research note called this source closed: it had read the UK " +
+        "rules as covering the overseas section.\n\n" +
+        "Measured 2026-10-04: scripts/access-test.mjs --direct on GitHub Actions served " +
+        "the section to our named user-agent in a browser; commune pages and a details " +
+        "page answered 200 from a home connection the same way. No disguise is used. NO " +
+        "WRITTEN PERMISSION IS ON FILE and, on the above, none is required; if they " +
+        "object, stop and write.\n\n" +
+        "Listings are syndicated by Properstar with English text: no agency, no mandate " +
+        "reference. The headline price is sterling; only the listing's own EUR figure is " +
+        "stored.",
+      config: {
+        /** Their largest commune of ours stated 158 on 2026-10-04: 7 pages of 25. */
+        maxPages: 40,
+        /** Cloudflare challenge to the plain client on every path. See `permissionNote`. */
+        fetchMode: "browser",
+      },
+    },
   ];
 }
 

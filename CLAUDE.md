@@ -75,6 +75,13 @@ questioned and reversed.
   They belong to the `figaro` source; filing them under both counts one
   advert as two portals'. Its commune token for Le Plan-de-la-Tour has no
   article (`plan+de+la+tour+83120`); `le+plan…` answers 410.
+- **Vizzit is Green-Acres' engine with twice the catalogue**, not a mirror.
+  Same ids, same page, same parser (`adapters/vizzit.ts` reuses it) — so a fix
+  to one is a fix to both, and so is a break.
+- **Zoopla Overseas leads with sterling and has no agencies.** Store only the
+  listing's own EUR figure (`currencyCode`), never the pound. Every listing is
+  syndicated by Properstar in English: do not store it as the agency, and
+  expect weak deduplication — price, surface and commune are all there is.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 

@@ -9,6 +9,7 @@ import { jameseditionAdapter } from "./adapters/jamesedition";
 import { bieniciAdapter } from "./adapters/bienici";
 import { figaroImmobilierAdapter } from "./adapters/figaroimmobilier";
 import { vizzitAdapter } from "./adapters/vizzit";
+import { zooplaAdapter } from "./adapters/zoopla";
 
 /**
  * Adapter registry.
@@ -36,8 +37,8 @@ const ADAPTERS: PortalAdapter[] = [
   bieniciAdapter,
   figaroImmobilierAdapter,
   vizzitAdapter,
+  zooplaAdapter,
   // avivAdapter,
-  // zooplaAdapter,
 ];
 
 const BY_KEY = new Map(ADAPTERS.map((a) => [a.key, a]));
