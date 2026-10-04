@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "./schema";
+import { dbErrorMessage } from "./errors";
 
 /**
  * Load `.env.local` when running outside Next.js.
@@ -104,6 +105,17 @@ function getPool(): Pool {
     ...(needsSsl(url) && { ssl: { rejectUnauthorized: false } }),
   });
 
+  /**
+   * An IDLE connection the pooler closes is emitted here, on the pool, not on
+   * any query — and an unhandled 'error' event kills the process. A fifteen-
+   * minute reparse died that way on 2026-10-02 with no line of ours in the
+   * trace. The pool has already discarded the client; the next query opens a
+   * fresh one, so logging is all there is to do.
+   */
+  pool.on("error", (err) => {
+    console.warn("[db] idle connection dropped:", err.message);
+  });
+
   if (process.env.NODE_ENV !== "production") globalThis.__pma_pg_pool = pool;
   return pool;
 }
@@ -135,12 +147,25 @@ export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
 
 export { schema };
 
-/** True for errors that mean "this pooled connection is dead", not "this query is wrong". */
-function isDeadConnectionError(err: unknown): boolean {
-  const code = (err as { code?: string } | null)?.code ?? "";
-  if (["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND"].includes(code)) return true;
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return /timeout|terminat|connection|socket|server closed|read econn/.test(msg);
+/**
+ * True for errors that mean "this pooled connection is dead", not "this query is wrong".
+ *
+ * Walks the `cause` chain. Drizzle 0.45 wraps every driver error as "Failed
+ * query: <the SQL>" with the real one on `cause`, so judging the outer message
+ * alone matched nothing and withDbRetry silently stopped retrying — found
+ * 2026-10-02 when the Supabase pooler was timing out connections and the
+ * sign-in query failed on the first attempt.
+ */
+export function isDeadConnectionError(err: unknown): boolean {
+  for (let e = err, depth = 0; e != null && depth < 5; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: string }).code ?? "";
+    if (["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND"].includes(code)) return true;
+    const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+    // The outer Drizzle message is the SQL itself; a column named `timeout` must not read as one.
+    if (msg.startsWith("failed query:")) continue;
+    if (/timeout|terminat|connection|socket|server closed|read econn/.test(msg)) return true;
+  }
+  return false;
 }
 
 /**
@@ -156,7 +181,11 @@ export async function withDbRetry<T>(op: () => Promise<T>, attempts = 3): Promis
     } catch (err) {
       lastErr = err;
       if (i === attempts - 1 || !isDeadConnectionError(err)) throw err;
-      console.warn(`[db] retrying after dead-connection error (attempt ${i + 1}):`, (err as Error)?.message);
+      console.warn(`[db] retrying after dead-connection error (attempt ${i + 1}):`, dbErrorMessage(err));
+      // Back off before the next attempt. Retrying at once lands in the same
+      // network blip: on 2026-10-02 three back-to-back connects all timed out
+      // while one a second later opened in 1 s.
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** i));
     }
   }
   throw lastErr;
