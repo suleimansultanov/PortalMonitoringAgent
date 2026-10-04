@@ -1,0 +1,76 @@
+name: Portal access test
+
+# Who serves the collector, from where? Run by hand only. Touches no database
+# and writes nothing; the pages that came back are kept as an artifact so a
+# refusal can be read, not just counted. What is tested, in what order and why:
+# the note at the top of scripts/access-test.mjs.
+#
+#   mode = direct  from this runner's own address — what the nightly can reach
+#                  as it is. Free.
+#   mode = proxy   through the repository secret PMA_RESIDENTIAL_PROXY
+#                  (http://user:pass@host:port). Only the portals' own HTML
+#                  documents go through it; installing Node packages and
+#                  Chromium below goes out direct and costs the proxy nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "direct = this runner's address · proxy = residential proxy"
+        type: choice
+        options: [direct, proxy]
+        default: direct
+      portals:
+        description: "Comma-separated, in this order. Empty = the group below."
+        required: false
+        default: ""
+      group:
+        description: "candidates = no adapter yet · blocked = adapters the nightly cannot reach"
+        type: choice
+        options: [candidates, blocked]
+        default: candidates
+      listings:
+        description: "Listing pages per portal after its index."
+        required: false
+        default: "3"
+      budget_mb:
+        description: "Hard cap on traffic for the run, overhead margin included."
+        required: false
+        default: "30"
+
+jobs:
+  access-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Ask each portal
+        run: |
+          ARGS="--group=${{ inputs.group }} --listings=${{ inputs.listings }} --budget-mb=${{ inputs.budget_mb }} --out=access-test-pages"
+          if [ -n "${{ inputs.portals }}" ]; then ARGS="$ARGS --portals=${{ inputs.portals }}"; fi
+          if [ "${{ inputs.mode }}" = "direct" ]; then ARGS="$ARGS --direct"; fi
+          node scripts/access-test.mjs $ARGS
+        env:
+          PMA_RESIDENTIAL_PROXY: ${{ inputs.mode == 'proxy' && secrets.PMA_RESIDENTIAL_PROXY || '' }}
+          CRAWLER_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
+
+      - name: Keep the pages that came back
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: access-test-${{ inputs.mode }}-${{ github.run_id }}
+          path: access-test-pages
+          retention-days: 7
+          if-no-files-found: warn
