@@ -281,3 +281,43 @@ test("a redirect within the same site is followed", async () => {
   assert.match(body, /villa/);
   assert.deepEqual(asked, ["https://www.vizzit.fr/old", "https://vizzit.fr/new"]);
 });
+
+test("an API request goes out as a POST with its JSON body and headers, and its answer is not scanned for block pages", async () => {
+  const seen: { method?: string; body?: unknown; headers: Record<string, string> }[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    sleep: async () => {},
+    doFetch: (async (_u: string | URL, init?: RequestInit) => {
+      seen.push({ method: init?.method, body: init?.body, headers: init?.headers as Record<string, string> });
+      // A listing description that happens to contain a block marker.
+      return new Response(JSON.stringify({ data: [{ description: "access denied to the garage, captcha-free" }] }), { status: 200 });
+    }) as typeof fetch,
+  });
+  const body = await fetcher("https://api.example.test/properties", {
+    body: JSON.stringify({ page: 1 }),
+    headers: { "x-api-key": "k" },
+    json: true,
+  });
+  assert.match(body, /captcha-free/);
+  assert.equal(seen[0].method, "POST");
+  assert.equal(seen[0].body, '{"page":1}');
+  assert.equal(seen[0].headers["x-api-key"], "k");
+  assert.equal(seen[0].headers["content-type"], "application/json");
+  assert.match(seen[0].headers.accept, /json/);
+});
+
+test("without an init the fetch is the plain GET of a page it always was", async () => {
+  const seen: (string | undefined)[] = [];
+  const fetcher = createFetcher({
+    delayMs: 0,
+    sleep: async () => {},
+    doFetch: (async (_u: string | URL, init?: RequestInit) => {
+      seen.push(init?.method);
+      assert.equal(init?.body, undefined);
+      assert.match((init?.headers as Record<string, string>).accept, /text\/html/);
+      return new Response("<html>" + "<p>villa</p>".repeat(100) + "</html>", { status: 200 });
+    }) as typeof fetch,
+  });
+  await fetcher("https://example.test/page");
+  assert.deepEqual(seen, ["GET"]);
+});

@@ -145,7 +145,24 @@ export type ParseResult =
   | { status: "failed"; error: string };
 
 /** Fetch provided by the runner: applies crawl delay, user-agent and logging. */
-export type PoliteFetch = (url: string) => Promise<string>;
+/**
+ * An API request instead of a page: a method, a JSON body, extra headers.
+ * Added 2026-10-06 for Stream.Estate, whose search is a POST. Absent, the
+ * fetch is the plain GET of a page it has always been. Only the plain fetcher
+ * honours it — the browser loads pages, and an adapter that needs `init` runs
+ * in plain mode.
+ */
+export type FetchInit = {
+  method?: "GET" | "POST";
+  /** Sent as is; set `json` for a JSON body and a JSON answer. */
+  body?: string;
+  /** Merged over the defaults. API keys travel here, read from the environment by the adapter. */
+  headers?: Record<string, string>;
+  /** The answer is JSON from an API: ask for it, and do not scan it for block pages. */
+  json?: boolean;
+};
+
+export type PoliteFetch = (url: string, init?: FetchInit) => Promise<string>;
 
 export type DiscoverContext = {
   fetch: PoliteFetch;

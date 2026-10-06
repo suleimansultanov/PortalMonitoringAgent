@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import type { PoliteFetch } from "../types";
+import type { FetchInit, PoliteFetch } from "../types";
 
 /**
  * The only place in this project that touches the network.
@@ -301,7 +301,7 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
    */
   let cleanRequests = 0;
 
-  return async function politeFetch(url: string): Promise<string> {
+  return async function politeFetch(url: string, request: FetchInit = {}): Promise<string> {
     const wait = nextAllowedAt - now();
     if (wait > 0) await sleep(wait);
     nextAllowedAt = now() + currentDelay;
@@ -330,16 +330,22 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
          * requested — whose door it is was never ours to knock on.
          */
         const init = {
+          method: request.method ?? (request.body !== undefined ? "POST" : "GET"),
           headers: {
             "user-agent": userAgent,
             ...extraHeaders,
             // The headers any well-formed HTTP client sends. Not a disguise —
             // omitting them makes the request malformed rather than anonymous,
             // and some servers reject on that alone.
-            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            accept: request.json
+              ? "application/vnd.api+json, application/json;q=0.9"
+              : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
             "accept-encoding": "gzip, deflate, br",
+            ...(request.json && request.body !== undefined ? { "content-type": "application/json" } : {}),
+            ...request.headers,
           },
+          ...(request.body !== undefined ? { body: request.body } : {}),
           signal: AbortSignal.timeout(timeoutMs),
           redirect: "manual" as const,
         };
@@ -414,7 +420,8 @@ export function createFetcher(opts: FetcherOptions): PoliteFetch {
 
         const body = await readBody(res, url);
 
-        const signal = detectBlock(body);
+        // An API answer is data, not a page: its descriptions can say "captcha".
+        const signal = request.json ? null : detectBlock(body);
         if (signal) throw new BlockedError(url, signal);
 
         if (currentDelay > delayMs) {

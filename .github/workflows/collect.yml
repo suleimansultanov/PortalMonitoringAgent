@@ -189,6 +189,8 @@ jobs:
           # JamesEdition). Empty until the secret exists; a source configured
           # for it then refuses to run rather than going out direct.
           PMA_RESIDENTIAL_PROXY: ${{ secrets.PMA_RESIDENTIAL_PROXY }}
+          # Stream.Estate's API key (V2 beta). Read by the adapter from the environment only.
+          STREAM_ESTATE_V2_API_KEY: ${{ secrets.STREAM_ESTATE_V2_API_KEY }}
 
       # `always()`, because the summary matters most on the night that failed.
       - name: Publish the summary

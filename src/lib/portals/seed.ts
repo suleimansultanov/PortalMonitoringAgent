@@ -660,6 +660,41 @@ function sourceSeeds(): SourceSeed[] {
         fetchMode: "browser",
       },
     },
+    {
+      key: "stream-estate",
+      name: "Stream.Estate",
+      hosts: ["api-v2.stream.estate"],
+      baseUrl: "https://api-v2.stream.estate",
+      /** Ours: ~40 requests a minute against their written 500. A full pass is ~60 requests. */
+      crawlDelayMs: 1_500,
+      permissionNote:
+        "A data provider's API, used under its terms, not a portal crawled: access is by our " +
+        "own key (STREAM_ESTATE_V2_API_KEY, environment only). Their terms allow showing the " +
+        "data to end users and analysing it; they forbid reselling it, bulk republication " +
+        "and a competing data API or product.\n\n" +
+        "Billing in writing from Thomas at Stream.Estate, 2026-10-05: on V1 every result " +
+        "returned is one item, a property returned again is another, each webhook delivery " +
+        "is one, count-only requests (itemsPerPage=0) are free, and the plan's items do not " +
+        "roll over. He offered the V2 private beta, billed at nothing while it lasts, " +
+        "500 requests/minute, 'keep the volume reasonable'.\n\n" +
+        "NOT YET ANSWERED: under what licence SeLoger and Leboncoin listings reach them. " +
+        "Until it is, those listings and every listing with no named source are not " +
+        "stored (`heldBack`, `takeUnnamed`), and properties already collected directly " +
+        "from Vizzit or Bien'ici are not taken twice (`ownSources`).",
+      config: {
+        apiKeyEnv: "STREAM_ESTATE_V2_API_KEY",
+        /** As Stream.Estate names them: the portals we collect ourselves. */
+        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"],
+        /** Waiting on the licence question. Empty it, and set takeUnnamed, when it is answered. */
+        heldBack: ["leboncoin", "seloger"],
+        takeUnnamed: false,
+        pageSize: 100,
+        /** Sainte-Maxime stated 1 383 on 2026-10-06: 14 pages of 100. */
+        maxPages: 40,
+        /** Their 83107 is all of Roquebrune-sur-Argens; the client's place is Les Issambres. */
+        localities: { "83107": ["issambres"] },
+      },
+    },
   ];
 }
 

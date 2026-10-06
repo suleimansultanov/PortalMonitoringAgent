@@ -10,6 +10,7 @@ import { bieniciAdapter } from "./adapters/bienici";
 import { figaroImmobilierAdapter } from "./adapters/figaroimmobilier";
 import { vizzitAdapter } from "./adapters/vizzit";
 import { zooplaAdapter } from "./adapters/zoopla";
+import { streamEstateAdapter } from "./adapters/streamestate";
 
 /**
  * Adapter registry.
@@ -38,6 +39,7 @@ const ADAPTERS: PortalAdapter[] = [
   figaroImmobilierAdapter,
   vizzitAdapter,
   zooplaAdapter,
+  streamEstateAdapter,
   // avivAdapter,
 ];
 

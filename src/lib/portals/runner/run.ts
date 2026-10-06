@@ -499,9 +499,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
    * not as us knocking with the wrong hand.
    */
   const SITEMAP_LIKE = /\.gz(?:$|[?#])/i;
-  const discoveryFetch: PoliteFetch = (url) => {
-    if (useBrowser && SITEMAP_LIKE.test(url)) return plainFetcher(url);
-    return fetcher(url);
+  const discoveryFetch: PoliteFetch = (url, init) => {
+    if (useBrowser && SITEMAP_LIKE.test(url)) return plainFetcher(url, init);
+    return fetcher(url, init);
   };
   /** Ingestion: the browser only when this source needs it there too. */
   const listingFetcher = browserForListingsToo ? fetcher : plainFetcher;
