@@ -300,8 +300,15 @@ export const streamEstateAdapter: PortalAdapter = {
           `already ours ${dropped.ours}, held back ${dropped.heldBack}, ` +
           `outside the locality ${dropped.elsewhere}, other commune ${dropped.wrongCommune}`,
       );
+      /**
+       * Their total is taken on the first page and the catalogue moves while
+       * the cursor walks it: Roquebrune read 1 219 of 1 220 on 2026-10-06, and
+       * one listing is not a hole in the market. A few, or half a percent, is
+       * tolerated; more is incompleteness, and nothing there gets delisted.
+       */
+      const slack = total === null ? 0 : Math.max(3, Math.ceil(total * 0.005));
       if (cutShort) ctx.incomplete(insee, cutShort);
-      else if (total !== null && seen < total) ctx.incomplete(insee, `read ${seen} of the ${total} they state`);
+      else if (total !== null && seen + slack < total) ctx.incomplete(insee, `read ${seen} of the ${total} they state`);
     }
   },
 

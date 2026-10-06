@@ -922,12 +922,21 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
        * It ignores parse time and any throttling the portal adds, so it reads
        * low — deliberately, since the alternative is padding a guess and then
        * being wrong in the direction that makes people give up on a run.
+       *
+       * Records discovery already holds (Bien'ici, Stream.Estate) cost no
+       * request and wait for no crawl delay; only storing them takes time.
+       * Saying "at least 15 min at 1.5s apart" over 602 of them, as on
+       * 2026-10-06, described a wait that does not happen.
        */
-      const minutes = Math.round((toFetch.length * crawlDelayMs) / 60_000);
+      const inHand = toFetch.filter((id) => discovered.get(id)?.document !== undefined).length;
+      const pages = toFetch.length - inHand;
       console.log(
         `[run:${source.key}] fetching ${toFetch.length} listings ` +
           `(${diff.added.length} new, ${diff.refresh.length} due a refresh) — ` +
-          `at least ${minutes} min at ${crawlDelayMs / 1000}s apart`,
+          (pages === 0
+            ? `records already in hand from discovery: no requests, storing only`
+            : `${inHand > 0 ? `${inHand} in hand, ` : ""}at least ` +
+              `${Math.round((pages * crawlDelayMs) / 60_000)} min at ${crawlDelayMs / 1000}s apart for ${pages} pages`),
       );
     }
     let ingested = 0;

@@ -147,3 +147,12 @@ test("a city-level position is a centre and is not stored", async () => {
     if (accuracy !== "PRECISE") assert.equal(r.listing.lat, null);
   }
 });
+
+test("a total that moved by one while the cursor walked is not a hole in the market", async () => {
+  const p = JSON.parse(PAGE);
+  const shifted = JSON.stringify({ ...p, meta: { ...p.meta, totalItems: p.data.length + 1 } });
+  const { incomplete } = await discoverWith(() => shifted);
+  assert.deepEqual(incomplete, []);
+  const holed = JSON.stringify({ ...p, meta: { ...p.meta, totalItems: p.data.length + 50 } });
+  assert.match((await discoverWith(() => holed)).incomplete[0][1], /read 30 of the 80/);
+});
