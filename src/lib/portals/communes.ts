@@ -56,7 +56,14 @@ export const GULF_OF_SAINT_TROPEZ: CommuneEntry[] = [
     label: "Les Issambres",
     insee: "83107",
     localityOf: "Roquebrune-sur-Argens",
-    localityMatch: ["issambres"],
+    /**
+     * The agencies also write the locality by its parts. Val d'Esquières and
+     * San Peïre are inside Les Issambres; La Garonnette is not listed because
+     * it straddles the border with Sainte-Maxime. Bien'ici labels a listing
+     * "Roquebrune-sur-Argens - Val d'Esquières - Port" (2026-10-07) and on
+     * "issambres" alone it went unfiled.
+     */
+    localityMatch: ["issambres", "esquieres", "san peire"],
   },
   { label: "Sainte-Maxime", insee: "83115" },
   { label: "Gassin", insee: "83065" },

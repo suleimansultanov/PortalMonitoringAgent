@@ -677,22 +677,32 @@ function sourceSeeds(): SourceSeed[] {
         "is one, count-only requests (itemsPerPage=0) are free, and the plan's items do not " +
         "roll over. He offered the V2 private beta, billed at nothing while it lasts, " +
         "500 requests/minute, 'keep the volume reasonable'.\n\n" +
-        "NOT YET ANSWERED: under what licence SeLoger and Leboncoin listings reach them. " +
-        "Until it is, those listings and every listing with no named source are not " +
-        "stored (`heldBack`, `takeUnnamed`), and properties already collected directly " +
-        "from Vizzit or Bien'ici are not taken twice (`ownSources`).",
+        "Leboncoin listings are taken since 2026-10-07 on the OPERATOR'S decision of " +
+        "2026-10-06 ('showing them is allowed, collect them'), WITHOUT written confirmation " +
+        "from Stream.Estate: Thomas was asked in writing on 2026-10-05 under what licence " +
+        "SeLoger and Leboncoin listings reach them and had not answered. Replace this " +
+        "paragraph with his answer when it arrives. SeLoger does not occur in their V2 " +
+        "source list (checked 2026-10-06). Listings with no named source and no URL " +
+        "(`takeUnnamed`) are still not stored — `portal_listings.url` is NOT NULL and " +
+        "where such a link should lead is undecided. Properties already collected " +
+        "directly from Vizzit or Bien'ici are not taken twice (`ownSources`).",
       config: {
         apiKeyEnv: "STREAM_ESTATE_V2_API_KEY",
         /** As Stream.Estate names them: the portals we collect ourselves. */
         ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"],
-        /** Waiting on the licence question. Empty it, and set takeUnnamed, when it is answered. */
-        heldBack: ["leboncoin", "seloger"],
+        /** Emptied 2026-10-07 on the operator's decision — see permissionNote. Was ["leboncoin", "seloger"]. */
+        heldBack: [],
+        /** Still off: these listings have no URL and the column is NOT NULL. See permissionNote. */
         takeUnnamed: false,
         pageSize: 100,
         /** Sainte-Maxime stated 1 383 on 2026-10-06: 14 pages of 100. */
         maxPages: 40,
-        /** Their 83107 is all of Roquebrune-sur-Argens; the client's place is Les Issambres. */
-        localities: { "83107": ["issambres"] },
+        /**
+         * Their 83107 is all of Roquebrune-sur-Argens; the client's place is
+         * Les Issambres, which the agencies also write by its parts — Val
+         * d'Esquières, San Peïre. The same fragments as `communes.ts`.
+         */
+        localities: { "83107": ["issambres", "esquieres", "san peire"] },
       },
     },
   ];

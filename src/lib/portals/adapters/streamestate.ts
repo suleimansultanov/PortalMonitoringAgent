@@ -35,12 +35,16 @@ import {
  *     least one listing from a portal outside `ownSources`. A property seen
  *     only on Vizzit or Bien'ici is already ours, directly, and taking it
  *     again would count one advert as two portals.
- *  2. Nothing from `heldBack` sources (Leboncoin, SeLoger) and nothing whose
- *     source is not named — 43% of listings in Saint-Tropez arrive with no
- *     source and no URL, and SeLoger and Figaro are absent from their source
- *     list. Whether those may be shown to a client is with Stream.Estate.
- *     They are not stored; when the answer is yes, empty `heldBack` and
- *     set `takeUnnamed` in the source's config and the next pass takes them.
+ *  2. Nothing from `heldBack` sources and nothing whose source is not named —
+ *     43% of listings in Saint-Tropez arrive with no source and no URL, and
+ *     SeLoger and Figaro are absent from their source list. Whether those may
+ *     be shown to a client was put to Stream.Estate on 2026-10-05 and not
+ *     answered. On 2026-10-06 the operator decided to take Leboncoin anyway:
+ *     the seed's `heldBack` is empty since 2026-10-07 and the source's
+ *     `permissionNote` records on whose word. The unnamed ones stay out for a
+ *     different reason — they have no URL and `portal_listings.url` is NOT
+ *     NULL, so `takeUnnamed` cannot be turned on until it is decided where
+ *     such a listing should link.
  *
  * SHAPE. One record per property with the listings that carry it — their
  * deduplication, done before ours. Each record becomes one listing here,
@@ -57,7 +61,11 @@ const API = "https://api-v2.stream.estate";
 
 /** Portals we collect ourselves, as Stream.Estate names them. */
 const OWN_SOURCES = ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"];
-/** Named portals whose listings wait for the licence question. */
+/**
+ * The fallback when the source's config carries no `heldBack` — deliberately
+ * the cautious one. The decision to take Leboncoin lives in `seed.ts`, where
+ * the permission note says who made it.
+ */
 const HELD_BACK = ["leboncoin", "seloger"];
 
 // ── Their JSON:API answer, checked at the boundary ───────────────────────────
