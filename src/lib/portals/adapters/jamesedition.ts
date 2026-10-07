@@ -264,6 +264,42 @@ function breadcrumbTrail(blocks: Record<string, unknown>[]): string[] {
     .filter((n): n is string => n !== null && n.length > 0);
 }
 
+/**
+ * The gallery, from the page rather than the markup.
+ *
+ * The JSON-LD `image` is one string — the cover — and until 2026-10-07 that
+ * was the whole gallery for all 627 listings we held. The top gallery
+ * (`je2-top-gallery`) carries the first photos as `<picture>` sources in
+ * several sizes; the similar-listings strip further down (`ListingCard`)
+ * carries ten more that belong to OTHER properties — the same strip whose
+ * JSON-LD `House` blocks invent phantoms — so the search stops at its first
+ * card. One URL per photo, the widest size served.
+ */
+const GALLERY_OPEN = /class="[^"]*\bje2-top-gallery\b/;
+const SIMILAR_OPEN = /class="[^"]*\bListingCard\b/;
+const LISTING_IMAGE = /https:\/\/img\.jamesedition\.com\/listing_images\/([^"'\s,]+?)\/je\/(\d+)[0-9a-z]*\.jpg/g;
+
+function galleryOf(html: string, cover: string | null): string[] {
+  const coverId = cover?.match(/listing_images\/(.+?)\/je\//)?.[1] ?? null;
+  const start = html.search(GALLERY_OPEN);
+  const after = start < 0 ? "" : html.slice(start);
+  const stop = after.search(SIMILAR_OPEN);
+  const segment = stop < 0 ? after : after.slice(0, stop);
+
+  const widest = new Map<string, { width: number; url: string }>();
+  for (const m of segment.matchAll(LISTING_IMAGE)) {
+    const [url, id, width] = m;
+    const held = widest.get(id);
+    if (!held || Number(width) > held.width) widest.set(id, { width: Number(width), url });
+  }
+  // The cover keeps the URL the markup gave it, so the screen's dedupe sees one photo, not two sizes of it.
+  if (cover && coverId) widest.set(coverId, { width: Infinity, url: cover });
+
+  const urls = [...widest.entries()].map(([, v]) => v.url);
+  if (cover && urls[0] !== cover) return [cover, ...urls.filter((u) => u !== cover)];
+  return urls;
+}
+
 export const jameseditionAdapter: PortalAdapter = {
   key: "jamesedition",
   name: "JamesEdition",
@@ -450,7 +486,7 @@ export const jameseditionAdapter: PortalAdapter = {
     listing.description =
       typeof product.description === "string" ? product.description.trim() : null;
     listing.imageUrl = typeof product.image === "string" ? product.image : null;
-    if (listing.imageUrl) listing.imageUrls = [listing.imageUrl];
+    listing.imageUrls = galleryOf(html, listing.imageUrl);
 
     const offer = product.offers as Record<string, unknown> | undefined;
 

@@ -36,6 +36,24 @@ test("the real listing parses, and every field is the one on the page", () => {
   assert.ok((l.imageUrl ?? "").startsWith("https://img.jamesedition.com/"));
 });
 
+test("the gallery is the top gallery's photos, not the similar-listings strip", () => {
+  const r = jameseditionAdapter.parse(listing, URL_);
+  assert.ok(r.status !== "failed");
+  const urls = r.listing.imageUrls;
+  /**
+   * Five photos in the page's own gallery; ten `507x312xc` thumbnails below
+   * it belong to the similar-listings cards and would be a neighbour's house
+   * in this one's gallery. Was one photo — the JSON-LD cover — for every
+   * listing until 2026-10-07.
+   */
+  assert.equal(urls.length, 5, urls.join("\n"));
+  assert.equal(urls[0], r.listing.imageUrl);
+  const ids = urls.map((u) => u.match(/listing_images\/(.+?)\/je\//)?.[1]);
+  assert.equal(new Set(ids).size, 5, "one URL per photo");
+  for (const u of urls) assert.doesNotMatch(u, /507x312xc/);
+  for (const u of urls.slice(1)) assert.match(u, /\/je\/2200xxs\.jpg$/, "the widest size served");
+});
+
 test("the floor area is the house and not the garden", () => {
   /**
    * The strip reads "8 Beds 8 Baths 389 Sqm 2,666 Sqm lot". Both figures are
