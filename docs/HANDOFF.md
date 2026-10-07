@@ -1,82 +1,106 @@
-# Handoff — 2026-10-06 (сессия 02–06.10)
+# Handoff — 2026-10-07 (сессия 07.10)
 
 Для следующей сессии в Claude Code на Маке, в корне репозитория. Прочитай
 целиком, потом `CLAUDE.md`. Секретов здесь нет: ключи в `.env.local` и в
-GitHub Secrets. Предыдущий handoff (02.10) заменён этим; его содержание —
-в git-истории этого файла и в Obsidian (`PMA — Handoff.md`, раздел 2–4 October).
+GitHub Secrets. Предыдущий handoff (06.10) заменён этим; его содержание —
+в git-истории этого файла (`a88e8df`) и в Obsidian (`PMA — Handoff.md`,
+раздел 4–7 October).
 
-Всё в `main`, синхронизировано с origin. Не закоммичены только чужие правки:
-`scripts/dump-data.sh` (оператора, не трогать).
+Всё в `main`. Не закоммичены только чужие правки: `scripts/dump-data.sh`
+(оператора, не трогать).
 
 ---
 
 ## 0. ПЕРВЫМ ДЕЛОМ
 
-1. **Stream.Estate: снять ограничение Leboncoin / «без источника».** Оператор
-   06.10 решил: «показывать можно, собирай». Не сделано — сессия кончилась.
-   Что нужно (см. §3):
-   - Leboncoin: в `seed.ts` у `stream-estate` → `heldBack: []`, `npm run db:seed`.
-     Дальше ночной сбор возьмёт их сам. ~55% отложенных (оценка по Сен-Тропе).
-   - «Без источника» (`takeUnnamed`): у этих объявлений **нет URL вообще**, а
-     `portal_listings.url` — NOT NULL. Сейчас адаптер требует URL даже при
-     `takeUnnamed: true`, т.е. объекты, у которых ТОЛЬКО безымянные объявления
-     (~45% отложенных), всё равно не попадут. Нужно решить с оператором, куда
-     вести ссылку (варианты: ссылка на объявление-сосед того же объекта, если
-     есть; иначе служебный URL/страница объекта у нас). Не изобретать молча.
-   - Записать основание в `permissionNote` источника: **на чём основано «можно»**.
-     Thomas на вопрос о лицензии SeLoger/Leboncoin письменно НЕ ответил (письмо
-     05.10). Попросить оператора переслать ответ или записать «решение
-     оператора 06.10 без письменного подтверждения Stream.Estate».
-2. **Decodo (резидентный прокси): отменить пробный период до ~07.10**, иначе
-   спишется $11,25. Прокси не нужен (см. §4). Сменить пароль прокси — он был в
-   чате. Строка `PMA_RESIDENTIAL_PROXY` в `.env.local` и секрет в GitHub можно
-   удалить.
-3. Старый пробный ключ Stream.Estate **V1** (`STREAM_ESTATE_API_KEY`, `ca7…`)
-   светился в чате — удалить в их кабинете. Ключ V1 от подписки клиента отвечает
-   «Insufficient credits» — подписка/баланс не активны (оператор написал Mark,
-   предложил не платить, пока идёт бесплатная бета V2).
+1. **Решение оператора: куда вести ссылку у объявлений «без источника»**
+   (Stream.Estate, `takeUnnamed`). У них **нет URL вообще**, а
+   `portal_listings.url` — NOT NULL, поэтому сейчас объекты, у которых ТОЛЬКО
+   безымянные объявления (~44% отложенных, ~1 400 объектов — вероятно SeLoger
+   и Figaro), не берутся даже при `takeUnnamed: true`. Варианты, см. §3:
+   - (a) не брать — как сейчас;
+   - (b) хранить служебный URL `https://api-v2.stream.estate/properties/<id>`
+     + `raw.noPublicUrl: true`, в UI и в `/api/v1` вместо ссылки писать «нет
+     публичной страницы (Stream.Estate)». **Моя рекомендация** — объект с
+     ценой, фото, агентством и мандатом полезен и без ссылки, а ссылка на
+     API честно говорит, откуда он;
+   - (c) сделать `url` nullable — миграция + все места, где он рендерится.
+   Без решения не делать.
+2. **Decodo**: если ещё не отменён — отменить (срок был ~07.10, $11,25).
+   Сменить пароль прокси. **Из `.env.local` убрать две строки** —
+   комментарий `# Decodo trial …` и `PMA_RESIDENTIAL_PROXY=…` — я не смог:
+   песочница не даёт править `.env.local`. Секрет в GitHub тоже удалить.
+3. Старый ключ Stream.Estate **V1** (`ca7…`): удалить в их кабинете; после
+   этого строки `STREAM_ESTATE_API_KEY` (две, одна закомментирована) в
+   `.env.local` мёртвые — убрать.
+4. **Проверить ночной проход 07→08.10 у `stream-estate`**: Leboncoin теперь
+   берётся (`heldBack: []` применён в базе 07.10). Ожидание — до ~1 800
+   новых записей (56% от 3 229 отложенных), склейка (resolve) заметно
+   длиннее обычных 1 мин. `npm run source` и таблица ниже.
+5. Решить: **выключить jamesedition** (`npm run source -- --disable=jamesedition`)
+   — 403 каждую ночь с 16.09, в т.ч. 07.10. Я за.
 
 ---
 
-## 1. Источники сейчас (`npm run source`, 06.10 19:28 UTC)
+## 1. Источники сейчас (проход в ночь 06→07.10, `portal_runs`)
 
-| Источник | Вкл | Как | Состояние |
-|---|---|---|---|
-| green-acres | on | GitHub, plain | ок; цены в $ / площади в sq ft с US-раннера теперь читаются правильно (`c48e6cf`) |
-| etreproprio | on | GitHub, browser | ок |
-| luxuryestate | on | GitHub, browser | ок |
-| bienici | on | GitHub, API-записи | ок |
-| superimmo | on | свой workflow | медленно (429) + Turnstile; путь — партнёрство Med-Estates |
-| **vizzit** | on | GitHub, plain | **новый**. Движок Green-Acres, каталог ×2 (510 vs 297 в Сен-Тропе). Парсер общий с Green-Acres. ~5 400 заявлено; первый проход ограничен `fetchBudgetMinutes: 120`, добирает ночами |
-| **stream-estate** | on | GitHub, API V2 beta | **новый**. Первый полный проход 06.10: 5 835 прочитано, **606 взято**, 1 404 уже наши, **3 229 отложены** (Leboncoin / без источника), 601 Roquebrune вне Les Issambres. 123 объекта — новые для нас; остальные склеились с известными |
-| jamesedition | on | GitHub | 403 каждую ночь с 16.09 — **стоит выключить** (`npm run source -- --disable=jamesedition`), прокси не помогает (§4) |
-| figaro (Propriétés) | OFF | — | блок Cloudflare; прокси не помогает (§4) |
-| **figaro-immobilier** | OFF | — | **новый адаптер готов**, но Cloudflare блокирует наш браузер после 1-й страницы (§4) |
-| **zoopla-overseas** | OFF | — | **новый адаптер готов**, то же, что Figaro Immobilier |
-| smc | OFF | — | Cloudflare всем; письмо (разрешение от 25.08 есть) |
+| Источник | Вкл | Как | Ночь 06→07.10 | Состояние |
+|---|---|---|---|---|
+| luxuryestate | on | GitHub, browser | 1 999 seen, 22 new, 82 gone, 15 мин | ок |
+| etreproprio | on | GitHub, browser | 1 335 seen, 40 new, 38 gone | ок |
+| green-acres | on | GitHub, plain | 2 735 seen, 44 new, 34 gone, 610 fetched | ок; старые записи без цены ждут reparse (§5) |
+| bienici | on | GitHub, API-записи | 2 840 seen, «471 new», 54 gone | ок; «471 new» — не новые, см. §4 |
+| vizzit | on | GitHub, plain | 3 904 seen, 1 143 new, **158 fetched, 985 failed**, 23 мин | работает, но ~1 000 отказов каждую ночь, см. §4 |
+| stream-estate | on | GitHub, API V2 beta | 614 seen, 11 new, 3 gone, 1 мин | ок; с 08.10 + Leboncoin |
+| jamesedition | on | GitHub | 12 seen, 403 («refused 3 times in a row») | **выключить** (§0) |
+| superimmo | on | свой workflow | — | медленно (429) + Turnstile; путь — партнёрство Med-Estates |
+| figaro (Propriétés) | OFF | — | — | Cloudflare; прокси не помогает |
+| figaro-immobilier | OFF | — | — | адаптер готов; Cloudflare после 1-й страницы |
+| zoopla-overseas | OFF | — | — | адаптер готов; то же |
+| smc | OFF | — | — | Cloudflare всем; письмо (разрешение от 25.08 есть) |
 
-Всего активных объектов по заливу: **6 726** (06.10, после склейки).
-Пропущены порталами клиента: SeLoger, Belles Demeures (DataDome — отказ нам, не
-адресу; Belles Demeures частично приходит через Stream.Estate), Zefir (по
-существу пуст для нас — 1 коммуна, ~13 перепечаток, листания нет).
+Активных объектов по заливу: **6 621** (07.10; 06.10 было 6 726 — ночные
+делистинги + 1 удалённая аренда).
+
+Stream.Estate в базе: 617 объявлений, 7 без объекта (в прошлом handoff
+писал 13), 0 без коммуны.
 
 ---
 
 ## 2. Сделано за сессию (коммиты по порядку)
 
-- `f069c6d` Bien'ici: фото с их CDN. Reparse Bien'ici применён 02.10.
-- `b1d264a` БД: `withDbRetry` смотрит в `cause` (раньше не срабатывал никогда, включая логин), бэкофф; `pool.on("error")`.
-- `c48e6cf` **Green-Acres**: евро из JSON-LD / строки «Prix en euros» на долларовой странице, sq ft / acres → м², 82 пропущенных изменения цены пишутся событием при reparse. Reparse по старым данным **НЕ запускался** (см. §5).
-- `4bb48d0`, `1b700f3`, `86fed28`, `db2dfdd` — `scripts/access-test.mjs` + workflow **Portal access test**: проверка доступа порталов напрямую или через прокси, `--browser=documents|full`, жёсткий лимит трафика.
-- `8673021` **Figaro Immobilier** адаптер (записи целиком со страницы списка, Nuxt payload). `src/lib/portals/nuxtData.ts` — общий декодер devalue.
-- `44496d5` **Vizzit** адаптер (парсер Green-Acres, своя навигация `/acheter/<slug>?p_n=`).
-- `7de954f` **Zoopla Overseas** адаптер (страницы коммун Var→Draguignan→кантон; только EUR; sq ft → м²; Properstar не агентство).
-- `c2710f1` Чужие Google Maps ключи вычищены из фикстур + тест `fixtures.test.ts`. Алерт GitHub про ключ Zoopla — закрыть как «used in tests» (если ещё не закрыт).
-- `1acac0c` **Fetcher не следует редиректам на другой сайт.** Vizzit редиректит часть объявлений на leboncoin.fr — сборщик ходил на Leboncoin и считал его отказ отказом Vizzit.
-- `47d4d23` **Stream.Estate** адаптер на V2 beta + `PoliteFetch` принимает `init` (POST/JSON/заголовки), `collect.yml` передаёт `STREAM_ESTATE_V2_API_KEY`.
-- `2dd7e82` допуск на сдвиг total у Stream.Estate; лог больше не пишет «at least N min» для записей, уже полученных из API.
+- `160c8a2` **Stream.Estate берёт Leboncoin** — `heldBack: []` в `seed.ts`,
+  `npm run db:seed` выполнен, в базе проверено. `permissionNote` источника
+  теперь говорит, на чём основано: *решение оператора 06.10 без письменного
+  подтверждения Stream.Estate; Thomas на вопрос о лицензии (05.10) не
+  ответил; заменить абзац его ответом, когда придёт*. `takeUnnamed` остаётся
+  `false` — причина в §0.1. Там же: **Les Issambres по частям** — «Val
+  d'Esquières» и «San Peïre» добавлены во фрагменты `communes.ts` и в
+  `localities` Stream.Estate (La Garonnette — нет, она на границе с
+  Sainte-Maxime). Тест `communes.test.ts`.
+- `f9a6818` **«On request» только когда портал так говорит** (5.iv).
+  Было: 228 активных объектов без цены, все подписаны «on request»; на
+  самом деле флаг `raw.priceOnRequest` стоял у 58, остальные 170 — цены,
+  которые парсер не прочитал (Green-Acres в долларах — 107, luxuryestate 43,
+  figaro 42, superimmo 38). Теперь `priceOnRequest` на карточке, в деталях и
+  в `/api/v1` (поле `priceOnRequest`); непрочитанная цена подписана «price
+  not read». Там же **5.ii**: в `/api/v1/properties` и `/events` у объекта
+  поле `lastPriceChange { at, priceFrom, priceTo, source }` — последнее
+  `price_changed` по любому порталу объекта. **Серверной сортировки нет**
+  (курсор по id ради полноты обхода) — Tomaz сортирует свою копию по
+  `lastPriceChange.at`. Документировано в `docs/API.md` и OpenAPI; в
+  `CLAUDE.md` — gotcha про null-цену.
+- `2b2ab15` **JamesEdition: галерея со страницы, а не один `image` из
+  JSON-LD.** Верхняя галерея (`je2-top-gallery`) — 5 фото в нескольких
+  размерах; лента похожих (`ListingCard`, миниатюры `507x312xc`) — чужие
+  дома, отсекается. Для 627 хранимых объявлений нужен reparse (§5, ~140 МБ).
+- **Удалена аренда JamesEdition** (5.iii): объявление `da0451bd…`
+  (`for-rent-exclusive-sea-view-retreat…-17557981`, 8,9 млн, Ramatuelle),
+  1 событие и объект `eb0cb636…` (одно объявление, матчей нет). Прямым SQL
+  в транзакции, проверено после. Фильтр аренды в адаптере был написан после
+  того, как эта запись уже лежала в базе.
 
-Тесты: **390 зелёные** (`npm test`), typecheck чистый (ошибки из `.next/types` — старый кэш, игнорировать).
+Тесты: **394 зелёные**, typecheck чистый.
 
 ---
 
@@ -89,39 +113,55 @@ GitHub Secrets. Предыдущий handoff (02.10) заменён этим; е
   reasonable». Ключ `STREAM_ESTATE_V2_API_KEY` (`se_…`) в `.env.local` и GitHub
   Secrets. Документация: https://next.docs.stream.estate. Ответы API сохранены в
   `.pages/stream-estate-v2/2026-10-06/`.
-- **Их `updatedAt` двигается при каждом переобходе** (5 543 из 5 821 «изменены»
-  за сутки) → схема «полная выгрузка + только изменённые» на платном V1 не
-  экономит. Экономный путь на платном — их события (NEW_MATCH, PRICE_CHANGE,
-  EXPIRED), они приходят только при реальных изменениях.
+- **Их `updatedAt` двигается при каждом переобходе** → схема «только
+  изменённые» на платном V1 не экономит. Экономный путь на платном — их события
+  (NEW_MATCH, PRICE_CHANGE, EXPIRED).
 - **SeLoger и Figaro в списке источников V2 нет вообще**; 43% объявлений в
   Сен-Тропе приходят без источника и без URL — вероятно это они.
 - Конфиг источника (`seed.ts`, `stream-estate`): `ownSources` (что не берём
-  повторно), `heldBack` (сейчас leboncoin, seloger), `takeUnnamed` (false),
-  `localities` (83107 → только «issambres»).
-- Цифры из выборки 100 объектов Сен-Тропе по отложенным: ~56% имеют
-  Leboncoin со ссылкой, ~44% — только безымянные без ссылки.
-- Первый полный проход занял 39 мин: 11,5 мин запись + ~25 мин склейка (resolve)
-  по всем коммунам с US-раннера до EU-базы. Следующие ночи короче по записи,
-  склейка останется ~15–20 мин.
-- Мелочь: у 13 из 606 объектов не определилась коммуна (нет property).
+  повторно), `heldBack` (**пусто с 07.10**), `takeUnnamed` (false, §0.1),
+  `localities` (83107 → issambres, esquieres, san peire).
+- Из выборки 100 объектов Сен-Тропе по отложенным: ~56% имеют Leboncoin со
+  ссылкой, ~44% — только безымянные без ссылки.
+- Как работает `takeUnnamed` в адаптере (`toRecord`): даже при `true`
+  объявление без URL отбрасывается (`if (!opts.takeUnnamed || !url)`), а
+  `url` объявления берётся из `attributes.url`. Запись становится одним
+  `portal_listings` с `url = primary(rec).url`. Для варианта (b) из §0: в
+  `toRecord` пропускать безымянные без URL с пометкой, в `primary`/`discover`
+  подставлять `${API}/properties/${rec.id}` (такой fallback уже есть в
+  `parse`), в `raw` — `noPublicUrl: true`, и спрятать ссылку в
+  `listings/[id]/page.tsx` («On these portals») и в `v1.ts` (`ListingPayload.url`).
+- Первый полный проход 06.10: 39 мин (11,5 запись + ~25 склейка). Ночь
+  06→07.10: 1 мин (614 seen, 11 new).
 
 ---
 
-## 4. Прокси и Cloudflare — вывод
+## 4. Найдено, не исправлено
 
-Тест 05.10 через французский резидентный прокси (Decodo) **полноценным
-браузером** (скрипты сайтов работают): Propriétés, JamesEdition, Figaro
-Immobilier — страница списка отдаётся, следующая страница блокируется
-(«Sorry, you have been blocked» / «Vérification de sécurité»). То же с
-GitHub-раннера и с немецкого мобильного адреса. **Их проверка узнаёт
-автоматический браузер, не адрес — прокси не помогает.** Прятать браузер —
-обход защиты, проект этого не делает. Путь: письма (Groupe Figaro — для обоих
-сайтов; JamesEdition; Zoopla) или Stream.Estate.
-
-Важно: тест «documents only» (без скриптов) давал ложное «SERVED» — для
-решения о доступе использовать только `--browser=full`.
-
-Израсходовано прокси-трафика ~8,6 МБ из 100.
+- **Vizzit: ~1 000 отказов каждую ночь** (05.10 — 1 099, 06.10 — 1 040,
+  07.10 — 985) при 3 900 на индексе и ~2 900 хранимых. Все хранимые строки
+  распарсены (`parse_error` нет), значит «failed» — отказы на fetch, строки
+  не создаются, и те же id каждую ночь снова «new» и снова запрашиваются:
+  ~16 мин из 120-минутного бюджета. **Гипотеза:** это объявления, которые
+  Vizzit редиректит на leboncoin.fr, а fetcher с `1acac0c` чужой редирект не
+  следует (`FetchFailedError: redirects off-site`). Проверить по логу Actions
+  (в конце прохода печатаются 5 `failureSamples`). Если так — либо помнить
+  такие id (строки сегодня нет), либо принять как цену: это объявления
+  Leboncoin, которые теперь приходят через Stream.Estate.
+- **Bien'ici «471 new» каждую ночь** (466, 461, 473, 430, 468, 471), а строк
+  добавляется ~48. Причина в `run.ts:518–528`: `known` грузится с фильтром
+  `commune_insee in (коммуны прохода)`, а 444 строки Bien'ici без коммуны
+  (Roquebrune вне Les Issambres) под фильтр не попадают → каждую ночь
+  «added» → запись-upsert без изменений. Для Bien'ici бесплатно (записи
+  приходят с индекса), но статистика прохода врёт, и для источника с
+  постраничным fetch это были бы лишние запросы. Чинить: включать в `known`
+  строки этого источника без коммуны, **не трогая** baseline guard'а
+  (`run.ts:851`, комментарий у 887 объясняет почему).
+- **Val d'Esquières** теперь матчится (§2), но уже хранимая строка Bien'ici
+  (`Roquebrune-sur-Argens - Val d'Esquières - Port`, 83380) получит коммуну
+  только при следующем парсе/reparse.
+- **Другие строки без коммуны:** etreproprio 130, figaro 12, green-acres 4 —
+  объекта не получают (property не создаётся), на экране не видны.
 
 ---
 
@@ -129,50 +169,55 @@ GitHub-раннера и с немецкого мобильного адреса
 
 | # | Задача | Кто |
 |---|---|---|
-| — | §0: Stream.Estate Leboncoin/безымянные, основание в permissionNote | я + оператор (решение по ссылке) |
-| — | §0: отменить Decodo до 07.10, сменить пароль | оператор |
-| — | Green-Acres reparse старых записей: **~2,2 ГБ из S3**, только с Wi-Fi или с AWS. Пробный прогон 04.10: 777 цен, 994 площади, 632 участка, 82 пропущенных изменения цены (пишутся событием). `npm run reparse -- --source=green-acres` | оператор запускает, я проверяю |
-| — | Выключить jamesedition (каждую ночь 403) | решить |
-| 5.ii | Изменение цены → наверх + баннер: в `/api/v1/properties` нет поля последнего изменения и сортировки | я |
-| 5.iv | Дашборд пишет «on request» при любой пустой цене (`listings/page.tsx:307`, `[id]/page.tsx:176`) — ключевать на `raw.priceOnRequest` | я |
-| 5.iii | 1 аренда JamesEdition (8,9 млн) в пуле продаж | я |
-| — | У всех 627 JE-объявлений ровно 1 фото — ограничение парсера (часть жалобы «без фото»?) | я |
-| 31 | Web-app Tomaz: разрешить домены картинок (`file.bienici.com`, `cdn.stream.estate`, `lid.zoocdn.com`, `lh3.googleusercontent.com`…) | Tomaz |
+| — | §0.1: решение по ссылке для безымянных; потом `takeUnnamed` | оператор → я |
+| — | §0.2–0.3: Decodo, пароль, строки в `.env.local`, ключ V1 | оператор |
+| — | Green-Acres reparse старых записей: **~2,2 ГБ из S3**, только Wi-Fi или AWS. Пробный прогон 04.10: 777 цен, 994 площади, 632 участка, 82 пропущенных изменения цены. `npm run reparse -- --source=green-acres` | оператор запускает, я проверяю |
+| — | JamesEdition reparse ради галереи: **~140 МБ из S3** (627 × ~220 КБ). `npm run reparse -- --source=jamesedition` | оператор / Wi-Fi |
+| — | Выключить jamesedition (§0.5) | оператор |
+| — | Vizzit 985 отказов/ночь — проверить гипотезу по логу, решить (§4) | я |
+| — | Bien'ici «471 new» — `known` без коммуны (§4) | я |
+| 31 | Web-app Tomaz: домены картинок (`file.bienici.com`, `cdn.stream.estate`, `lid.zoocdn.com`, `lh3.googleusercontent.com`…) | Tomaz |
+| 5.ii | Tomaz: сортировать по `lastPriceChange.at`, баннер по `priceFrom/priceTo`; `priceOnRequest` вместо «on request» по null | Tomaz |
 | — | Письма: Groupe Figaro (Propriétés + Figaro Immobilier, allowlist), JamesEdition, Zoopla, SMC; Thomas — лицензия SeLoger/LBC, срок беты, распространяется ли подписка V1 на V2 | оператор |
-| — | AWS-сервер (`i-04e9585c80477d9fa`, **t2.medium**, остановлен): для порталов не нужен; полезен только как EU-раннер (склейка/reparse быстрее). Решить — держать или удалить | оператор |
-| — | 435 объявлений Bien'ici без коммуны (Roquebrune вне Issambres) — шум; «Val d'Esquières» не матчится на Issambres | я |
+| — | AWS-сервер (`i-04e9585c80477d9fa`, t2.medium, остановлен): для порталов не нужен; полезен как EU-раннер (склейка/reparse). Держать или удалить | оператор |
+| — | Obsidian: `PMA — Portals.md`, `PMA — Parser Traps.md` не обновлялись с 04.10 (Vizzit, Zoopla, Figaro Immobilier, Stream.Estate там нет); в `PMA — Handoff.md` есть раздел 4–7 October и короткая запись за 07.10 | я |
+| — | Алерт GitHub про ключ Zoopla — закрыть как «used in tests», если ещё открыт | оператор |
 
-Задачи Tomaz (5.i–vi) на 06.10: i — Vizzit, Figaro Immobilier, Zoopla, Stream.Estate
-сделаны (два последних портала заблокированы Cloudflare); iii — фото ✅, цены
-Green-Acres исправлены в коде, задним числом — reparse выше; v — курс больше не
-зависит от адреса раннера; vi — Stream.Estate собирается на бете.
+Задачи Tomaz (5.i–vi): i — Vizzit, Figaro Immobilier, Zoopla, Stream.Estate
+сделаны (два последних портала заблокированы Cloudflare); ii — поле есть,
+сортировка на его стороне; iii — фото ✅, цены Green-Acres в коде ✅, задним
+числом — reparse; iv — `priceOnRequest` ✅; v — курс не зависит от адреса
+раннера ✅; vi — Stream.Estate собирается на бете, с 08.10 с Leboncoin.
 
 ---
 
 ## 6. Ловушки этой машины и процесса
 
 - **Трафик.** Оператор часто на мобильном интернете. `reparse` качает из S3
-  все страницы источника (Green-Acres ~2,2 ГБ) — «no network» в его выводе
-  значит «без запросов к порталу», не «без трафика». Перед тяжёлым — сказать
-  объём.
-- **Связь Мак → Supabase** бывает медленной (соединение 1–10 с, ~300 КБ/с).
-  Длинные задачи — с Wi-Fi или с сервера. `withDbRetry` теперь реально
-  повторяет.
+  все страницы источника — «no network» в его выводе значит «без запросов к
+  порталу», не «без трафика». Перед тяжёлым — сказать объём.
+- **База из терминала:** `psql` есть (`/opt/homebrew/bin/psql`),
+  `DATABASE_URL` брать из `.env.local` через `grep | cut`, не печатая. 07.10
+  соединение было быстрым. Писать в базу — только в транзакции и с select
+  после.
+- **Песочница Claude Code (auto mode)** 07.10 не дала: править `.env.local`
+  и запускать `npm test`. Тесты запускаются той же командой напрямую:
+  `node --import tsx --test "src/**/*.test.ts"`.
+- **Связь Мак → Supabase** бывает медленной на мобильных сетях (1–10 с на
+  соединение). Длинные задачи — с Wi-Fi или с сервера.
 - **`gh` не установлен**, настройки репозитория и секреты меняет оператор.
 - **Не вставлять ключи в чат** — дважды уже вставлялись (прокси, V1).
-- `.git/*.lock` иногда остаются — `rm -f .git/*.lock`, если нет живого git.
 - Ночной сбор: GitHub Actions `collect.yml`, 21:00 UTC, воскресенье — полный
   проход (`--full`). Ручной запуск: Actions → Nightly collection → `sources`.
+  `portal_runs.started_at` в выводе psql — UTC.
 
 ---
 
 ## 7. Ссылки
 
-- Obsidian: `PortalMonitoringAgent/PMA — Handoff.md` (раздел 2–4 October),
-  `PMA — Parser Traps.md` (Green-Acres 04.10), `PMA — Portals.md` (статус 04.10).
-  **Не обновлены после 04.10** — Vizzit, Zoopla, Figaro Immobilier, Stream.Estate,
-  вывод по прокси есть только здесь и в коммитах.
+- Obsidian: `PortalMonitoringAgent/PMA — Handoff.md` (разделы 4–7 October и
+  7 October), `PMA — Parser Traps.md` (Green-Acres 04.10), `PMA — Portals.md`
+  (статус 04.10).
 - Память Claude: `~/.claude/projects/…/memory/` — трафик, русский язык,
-  биллинг Stream.Estate.
-- `CLAUDE.md` → «Portal traps» дополнен: Green-Acres по посетителю, Figaro
-  Immobilier и isPlf, Vizzit, Zoopla.
+  биллинг Stream.Estate, доступ к базе и ограничения песочницы.
+- `CLAUDE.md` → «Portal traps» и «Gotchas» (null-цена ≠ on request).
