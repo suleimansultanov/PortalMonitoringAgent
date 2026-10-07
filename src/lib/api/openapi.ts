@@ -23,6 +23,23 @@ const property = {
     title: { type: "string", nullable: true },
     description: { type: "string", nullable: true },
     priceEur: { type: "integer", nullable: true, description: "Asking price in euros, as the portal states it." },
+    priceOnRequest: {
+      type: "boolean",
+      description:
+        "True when a portal carrying the property says the agency withheld the price (prix sur demande). A null priceEur with this false is a price we did not read, not one the agency is hiding — do not print 'on request' for it.",
+    },
+    lastPriceChange: {
+      type: "object",
+      nullable: true,
+      description:
+        "The most recent price change observed on any portal carrying the property; null when none was. Sort on `at` to put re-priced properties first. `at` is the night we observed it.",
+      properties: {
+        at: { type: "string", format: "date-time" },
+        priceFrom: { type: "integer", nullable: true },
+        priceTo: { type: "integer", nullable: true },
+        source: { type: "string", example: "bienici" },
+      },
+    },
     areaM2: { type: "number", nullable: true },
     landM2: { type: "number", nullable: true },
     rooms: { type: "integer", nullable: true },

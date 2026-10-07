@@ -300,13 +300,24 @@ export default async function ListingsPage({
                       €/m²
                     </span>
                   ) : (
-                    r.priceEur === null && (
-                      // "Price on request" is information — the agency chose not
-                      // to publish. A bare dash would read as a parser failure.
-                      <span className="text-[11px] italic text-[var(--color-muted)]">
-                        on request
-                      </span>
-                    )
+                    r.priceEur === null &&
+                      // "On request" is information — the agency chose not to
+                      // publish — and it is only said when a portal says so.
+                      // A price the parser did not read is a different thing;
+                      // calling it "on request" told agents the agency was
+                      // hiding a number that was on the page.
+                      (r.priceOnRequest ? (
+                        <span className="text-[11px] italic text-[var(--color-muted)]">
+                          on request
+                        </span>
+                      ) : (
+                        <span
+                          className="text-[11px] italic text-[var(--color-faint)]"
+                          title="The portal page carried no price we could read. Not the agency withholding it — that is shown as “on request”."
+                        >
+                          price not read
+                        </span>
+                      ))
                   )}
                 </div>
 

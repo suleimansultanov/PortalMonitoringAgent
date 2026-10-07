@@ -172,8 +172,24 @@ export default async function PropertyPage({
 
             <div className="p-6">
               <div className="flex items-baseline justify-between gap-4">
-                <span className="tnum display text-[34px] leading-none">
-                  {p.priceEur === null ? "Price on request" : money(p.priceEur)}
+                {/*
+                  "On request" only when a portal says the agency withheld it.
+                  A price we did not read is not the agency's choice, and
+                  saying so in front of a client misreports the agency.
+                */}
+                <span
+                  className="tnum display text-[34px] leading-none"
+                  title={
+                    p.priceEur === null && !p.priceOnRequest
+                      ? "The portal page carried no price we could read."
+                      : undefined
+                  }
+                >
+                  {p.priceEur === null
+                    ? p.priceOnRequest
+                      ? "Price on request"
+                      : "No price read"
+                    : money(p.priceEur)}
                 </span>
                 {p.priceEur !== null && p.areaM2 && (
                   <span className="tnum text-sm text-[var(--color-muted)]">
@@ -326,7 +342,11 @@ export default async function PropertyPage({
                     >
                       {l.sourceName}
                     </a>
-                    <span className="tnum text-[13px]">{money(l.priceEur)}</span>
+                    <span className="tnum text-[13px]">
+                      {l.priceEur === null && l.raw?.priceOnRequest === true
+                        ? "on request"
+                        : money(l.priceEur)}
+                    </span>
                   </div>
 
                   <div className="tnum mt-1.5 text-[11px] text-[var(--color-muted)]">

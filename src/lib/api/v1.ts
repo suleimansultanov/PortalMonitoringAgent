@@ -27,6 +27,26 @@ export type PropertyPayload = {
   title: string | null;
   description: string | null;
   priceEur: number | null;
+  /**
+   * The agency withheld the price ("prix sur demande"), as opposed to a price
+   * we did not read. True only when a portal carrying the property says so.
+   * A client that prints "on request" for every null price misreports the
+   * agency — 170 of 228 null prices on 2026-10-07 were unread, not withheld.
+   */
+  priceOnRequest: boolean;
+  /**
+   * The most recent price change on any portal carrying the property, or
+   * null when none was ever observed. Here so a client can put a re-priced
+   * villa at the top of a screen and say "was X, now Y" without walking
+   * /events for it. `at` is when WE observed it, the night it changed.
+   */
+  lastPriceChange: {
+    at: string;
+    priceFrom: number | null;
+    priceTo: number | null;
+    /** Which portal showed the change. */
+    source: string;
+  } | null;
   areaM2: number | null;
   landM2: number | null;
   rooms: number | null;
@@ -187,6 +207,7 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   }
   for (const r of rows) r.listings = byProperty.get(r.id) ?? [];
 
+  await withLastPriceChange(rows);
   await withAgency(rows);
   // Stripped rather than merely undocumented: an internal id in a payload is an
   // id somebody eventually depends on.
@@ -233,6 +254,50 @@ function characteristicsOf(raw: Record<string, unknown> | null): {
   };
 }
 
+/**
+ * The newest `price_changed` event per property, in one query for the page.
+ *
+ * Resolved through the listing rather than `events.property_id`, for the
+ * reason given on `events()` below: that column was not written for every
+ * row, and the property a listing belongs to NOW is the one that matters
+ * after a merge. The page is at most 500 properties and the whole corpus
+ * holds a couple of thousand price changes, so the rows are sorted here and
+ * the first per property kept, rather than a DISTINCT ON the builder cannot
+ * type.
+ */
+async function withLastPriceChange(rows: PropertyPayload[]): Promise<void> {
+  const ids = rows.map((r) => r.id);
+  if (ids.length === 0) return;
+
+  const changes = await db
+    .select({
+      propertyId: portalListings.propertyId,
+      at: portalListingEvents.occurredAt,
+      priceFrom: portalListingEvents.priceFrom,
+      priceTo: portalListingEvents.priceTo,
+      source: portalSources.key,
+    })
+    .from(portalListingEvents)
+    .innerJoin(portalListings, eq(portalListings.id, portalListingEvents.listingId))
+    .innerJoin(portalSources, eq(portalSources.id, portalListingEvents.sourceId))
+    .where(
+      and(eq(portalListingEvents.type, "price_changed"), inArray(portalListings.propertyId, ids)),
+    )
+    .orderBy(desc(portalListingEvents.occurredAt));
+
+  const latest = new Map<string, PropertyPayload["lastPriceChange"]>();
+  for (const c of changes) {
+    if (!c.propertyId || latest.has(c.propertyId)) continue;
+    latest.set(c.propertyId, {
+      at: c.at.toISOString(),
+      priceFrom: c.priceFrom ?? null,
+      priceTo: c.priceTo ?? null,
+      source: c.source,
+    });
+  }
+  for (const r of rows) r.lastPriceChange = latest.get(r.id) ?? null;
+}
+
 /** The agency on the property row, in one query for the whole page. */
 async function withAgency(rows: PropertyPayload[]): Promise<void> {
   const ids = [...new Set(rows.map((r) => r.agencyId).filter((x): x is string => !!x))];
@@ -273,6 +338,13 @@ const propertyColumns = {
   title: properties.title,
   description: properties.description,
   priceEur: properties.priceEur,
+  /** Any active listing of the property saying the agency withheld the price. */
+  priceOnRequest: sql<boolean>`exists (
+    select 1 from ${portalListings} pl
+    where pl.property_id = ${properties.id}
+      and pl.status = 'active'
+      and (pl.raw->>'priceOnRequest') = 'true'
+  )`,
   areaM2: properties.areaM2,
   landM2: properties.landM2,
   rooms: properties.rooms,
@@ -296,6 +368,8 @@ function toPayload(r: Record<string, unknown>): PropertyPayload {
     title: (r.title as string) ?? null,
     description: (r.description as string) ?? null,
     priceEur: (r.priceEur as number) ?? null,
+    priceOnRequest: r.priceOnRequest === true,
+    lastPriceChange: null,
     areaM2: (r.areaM2 as number) ?? null,
     landM2: (r.landM2 as number) ?? null,
     rooms: (r.rooms as number) ?? null,

@@ -47,7 +47,10 @@ For an instance starting from empty, and for periodic reconciliation.
 
 ```json
 {
-  "properties": [ { "id": "…", "priceEur": 1160000, "areaM2": 85, "rooms": 3,
+  "properties": [ { "id": "…", "priceEur": 1160000, "priceOnRequest": false,
+                    "lastPriceChange": { "at": "2026-10-03T22:14:09Z", "priceFrom": 1250000,
+                                         "priceTo": 1160000, "source": "bienici" },
+                    "areaM2": 85, "rooms": 3,
                     "bedrooms": 2, "communeInsee": "83119", "sourceCount": 3,
                     "listings": [ { "source": "figaro", "url": "https://…" } ] } ],
   "nextCursor": "…",
@@ -59,6 +62,15 @@ For an instance starting from empty, and for periodic reconciliation.
 Paged by `id`, not by date. A cursor on a mutable column skips and repeats rows
 while you page, and the nightly pass mutates `updated_at` on hundreds of rows —
 so a walk stays complete even if it takes an hour and collection runs during it.
+For the same reason there is no server-side sort: order the copy you hold.
+`lastPriceChange.at` is what to sort on for "re-priced first"; it is null for a
+property whose price was never seen to move.
+
+**`priceOnRequest`.** A null `priceEur` means one of two things, and they are
+not the same: the agency withheld the price ("prix sur demande"), or the portal
+page carried a price we did not read. Only the first is `priceOnRequest: true`.
+Print "on request" for a null price without checking it and you tell the agent
+the agency is hiding a number that was on the page.
 
 Do not poll this daily once you are running. Twenty changes are not worth
 re-reading the whole market, and the cost grows with the corpus.

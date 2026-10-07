@@ -155,6 +155,11 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 - `portal_sources.permission_note` records *why* we are allowed to collect from
   a source. Fill it in. The day someone asks, the answer needs to be next to the
   thing doing the collecting.
+- **A null `priceEur` is not "on request".** Only `raw.priceOnRequest = true`
+  is — four adapters set it (Green-Acres, Figaro, Figaro Immobilier, SMC). The
+  rest of the nulls are prices the parser did not read, and the screens and
+  `/api/v1` say so (`priceOnRequest`). On 2026-10-07, 170 of 228 nulls were
+  unread, not withheld.
 
 ## Related
 - **LeadEstateVault** (`../LeadEstateVault/vault`) — sibling project. The db

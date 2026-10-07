@@ -70,6 +70,12 @@ export type ListingRow = {
   /** Feature words found in the listing text, for the tags on a card. */
   features: string[];
   priceEur: number | null;
+  /**
+   * The agency withheld the price — "prix sur demande" — as opposed to a
+   * price we failed to read. True only when a portal carrying the property
+   * says so (`raw.priceOnRequest`); a null price on its own is not evidence.
+   */
+  priceOnRequest: boolean;
   areaM2: number | null;
   landM2: number | null;
   rooms: number | null;
@@ -203,6 +209,18 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
       imageUrl: properties.imageUrl,
       imageUrls: properties.imageUrls,
       priceEur: properties.priceEur,
+      /**
+       * Whether any portal says the agency withheld the price. The screen
+       * used to print "on request" for every null — 228 properties on
+       * 2026-10-07, of which 58 were on request and the rest were prices
+       * the parser had not read (Green-Acres in dollars, mostly).
+       */
+      priceOnRequest: sql<boolean>`exists (
+        select 1 from ${portalListings} pl
+        where pl.property_id = ${properties.id}
+          and pl.status = 'active'
+          and (pl.raw->>'priceOnRequest') = 'true'
+      )`,
       areaM2: properties.areaM2,
       landM2: properties.landM2,
       rooms: properties.rooms,
@@ -400,6 +418,12 @@ export async function listMatches(
       imageUrl: properties.imageUrl,
       imageUrls: properties.imageUrls,
       priceEur: properties.priceEur,
+      priceOnRequest: sql<boolean>`exists (
+        select 1 from ${portalListings} pl
+        where pl.property_id = ${properties.id}
+          and pl.status = 'active'
+          and (pl.raw->>'priceOnRequest') = 'true'
+      )`,
       areaM2: properties.areaM2,
       landM2: properties.landM2,
       rooms: properties.rooms,
@@ -448,6 +472,7 @@ export async function listMatches(
       }),
       features: featuresOf(`${r.title ?? ""} ${r.description ?? ""}`),
       priceEur: r.priceEur,
+      priceOnRequest: r.priceOnRequest,
       areaM2: r.areaM2 === null ? null : Number(r.areaM2),
       landM2: r.landM2 === null ? null : Number(r.landM2),
       rooms: r.rooms,
@@ -624,6 +649,9 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
       }),
       features: featuresOf(`${row.title ?? ""} ${row.description ?? ""}`),
       priceEur: row.priceEur,
+      priceOnRequest: listingRows.some(
+        (l) => l.status === "active" && l.raw?.priceOnRequest === true,
+      ),
       areaM2,
       landM2: row.landM2 === null ? null : Number(row.landM2),
       rooms: row.rooms,
