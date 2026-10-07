@@ -77,6 +77,13 @@ test("once the licence question is answered, the config lets them in", async () 
   assert.ok(open > strict, `${open} > ${strict}`);
 });
 
+test("the portal is read off the URL, not their slug", async () => {
+  // Their slug for patrice-besse.co.uk is "co" — every .co.uk domain was, Rightmove included.
+  const sources = (await records()).flatMap((r) => r.listings.map((l) => l.source));
+  assert.ok(sources.includes("patrice-besse"), sources.join(","));
+  assert.equal(sources.includes("co"), false);
+});
+
 test("the stored record leaves out what moves on every re-crawl", async () => {
   for (const r of await records()) {
     assert.equal("updatedAt" in r.property, false);

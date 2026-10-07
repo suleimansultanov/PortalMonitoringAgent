@@ -12,6 +12,7 @@ import {
   settings,
 } from "@/lib/db/schema";
 import { GULF_OF_SAINT_TROPEZ } from "@/lib/portals/communes";
+import { portalOf } from "@/lib/portals/portalOf";
 import { hasFeature } from "@/lib/matching/buyers";
 
 /**
@@ -92,7 +93,12 @@ export type ListingRow = {
   lastSeenAt: Date | null;
   /** Days between first sighting and now, or delisting. Ours, not the portal's. */
   daysOnMarket: number | null;
-  portals: { source: string; url: string }[];
+  /**
+   * `source` is the site the link opens. For a listing collected through an
+   * aggregator that is the portal read off the URL, and `via` names the
+   * aggregator — the card says "Belles Demeures", not "stream-estate".
+   */
+  portals: { source: string; url: string; via?: string }[];
 };
 
 export type ListingFilters = {
@@ -288,11 +294,22 @@ async function portalsFor(propertyIds: string[]): Promise<Map<string, ListingRow
   for (const r of rows) {
     if (!r.propertyId) continue;
     const list = out.get(r.propertyId) ?? [];
-    list.push({ source: r.source, url: r.url });
+    const site = AGGREGATORS[r.source] ? portalOf(r.url) : null;
+    list.push(
+      site
+        ? { source: site.key, url: r.url, via: AGGREGATORS[r.source] }
+        : { source: r.source, url: r.url },
+    );
     out.set(r.propertyId, list);
   }
   return out;
 }
+
+/**
+ * Sources that carry other portals' listings. Their rows are shown under the
+ * portal the link opens, read off the URL, with the aggregator named beside.
+ */
+const AGGREGATORS: Record<string, string> = { "stream-estate": "Stream.Estate" };
 
 /**
  * What to put on a card.
@@ -633,7 +650,12 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
   const areaM2 = row.areaM2 === null ? null : Number(row.areaM2);
   const portalsList = listingRows
     .filter((l) => l.status === "active")
-    .map((l) => ({ source: l.source, url: l.url }));
+    .map((l) => {
+      const site = AGGREGATORS[l.source] ? portalOf(l.url) : null;
+      return site
+        ? { source: site.key, url: l.url, via: AGGREGATORS[l.source] }
+        : { source: l.source, url: l.url };
+    });
 
   return {
     property: {
@@ -671,6 +693,10 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     description: row.description,
     listings: listingRows.map((l) => ({
       ...l,
+      // "Belles Demeures · via Stream.Estate": the portal the link opens, then who brought it.
+      sourceName: AGGREGATORS[l.source]
+        ? `${portalOf(l.url)?.name ?? l.sourceName} · via ${AGGREGATORS[l.source]}`
+        : l.sourceName,
       areaM2: l.areaM2 === null ? null : Number(l.areaM2),
       matchConfidence: l.matchConfidence === null ? null : Number(l.matchConfidence),
     })),

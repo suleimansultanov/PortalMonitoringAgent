@@ -65,8 +65,15 @@ const property = {
       items: {
         type: "object",
         properties: {
-          source: { type: "string", example: "figaro" },
+          source: { type: "string", example: "figaro", description: "Which of our collectors brought it. `stream-estate` is an aggregator, not a portal — see `portal`." },
           sourceName: { type: "string", example: "Propriétés Le Figaro" },
+          portal: {
+            type: "string",
+            example: "bellesdemeures",
+            description:
+              "The site `url` opens, read off the URL. Equal to `source` for a portal collected directly; for `source: stream-estate` it is the portal the advert is actually on. Show this to an agent, not `source`.",
+          },
+          portalName: { type: "string", example: "Belles Demeures" },
           url: { type: "string" },
           externalId: { type: "string" },
           priceEur: { type: "integer", nullable: true },

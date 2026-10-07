@@ -52,7 +52,9 @@ For an instance starting from empty, and for periodic reconciliation.
                                          "priceTo": 1160000, "source": "bienici" },
                     "areaM2": 85, "rooms": 3,
                     "bedrooms": 2, "communeInsee": "83119", "sourceCount": 3,
-                    "listings": [ { "source": "figaro", "url": "https://…" } ] } ],
+                    "listings": [ { "source": "figaro", "portal": "figaro", "url": "https://…" },
+                                  { "source": "stream-estate", "portal": "bellesdemeures",
+                                    "portalName": "Belles Demeures", "url": "https://…" } ] } ],
   "nextCursor": "…",
   "communes": ["83119", "…"],
   "caveat": "…"
@@ -71,6 +73,13 @@ not the same: the agency withheld the price ("prix sur demande"), or the portal
 page carried a price we did not read. Only the first is `priceOnRequest: true`.
 Print "on request" for a null price without checking it and you tell the agent
 the agency is hiding a number that was on the page.
+
+**`source` and `portal`.** `source` is which of our collectors brought the
+listing; `portal` is the site its `url` opens, read off the URL. They are equal
+for every portal we collect directly. `stream-estate` is an aggregator, not a
+portal: its listings carry the portal the advert is actually on —
+`bellesdemeures`, `leboncoin`, `idealista`, `rightmove` — and that is the name
+to show an agent.
 
 Do not poll this daily once you are running. Twenty changes are not worth
 re-reading the whole market, and the cost grows with the corpus.

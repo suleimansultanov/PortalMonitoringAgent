@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { z } from "zod";
+import { portalKey } from "../portalOf";
 import {
   emptyListing,
   type DiscoverContext,
@@ -141,10 +142,18 @@ export function toRecord(
   for (const ref of refs(p, "listings")) {
     const l = byKey.get(`${ref.type}:${ref.id}`);
     if (!l) continue;
-    const source = refs(l, "source")
-      .map((s) => str(byKey.get(`${s.type}:${s.id}`)?.attributes?.slug))
-      .find(Boolean);
     const url = str(l.attributes?.url);
+    /**
+     * The portal from the URL's host first, their slug second. Their slugs
+     * file every `.co.uk` domain as `co` — Rightmove and Patrice Besse were
+     * one label on 2026-10-07 — and a listing with a URL but no slug is still
+     * on a named site. See `portalOf.ts`.
+     */
+    const source =
+      (url ? portalKey(url) : null) ??
+      refs(l, "source")
+        .map((s) => str(byKey.get(`${s.type}:${s.id}`)?.attributes?.slug))
+        .find(Boolean);
     const expiredAt = str(l.attributes?.expiredAt);
     if (expiredAt) continue; // a listing taken down is not a place the property is shown
     if (!source || !url) {

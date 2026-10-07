@@ -371,9 +371,13 @@ export default async function ListingsPage({
                     rel="noopener noreferrer"
                     className="rounded border border-[var(--color-line)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-muted)] transition-colors hover:border-[var(--color-accent-soft)] hover:text-[var(--color-accent-soft)]"
                     title={
-                      p.count > 1
-                        ? `${p.count} listings on this portal were merged into this property — open one`
-                        : undefined
+                      [
+                        p.via && `Collected via ${p.via}`,
+                        p.count > 1 &&
+                          `${p.count} listings on this portal were merged into this property — open one`,
+                      ]
+                        .filter(Boolean)
+                        .join(". ") || undefined
                     }
                   >
                     {p.source}
@@ -490,13 +494,13 @@ function Filter({ href, label, active }: { href: string; label: string; active: 
  * both to a single tidy chip would hide exactly the failure worth seeing.
  */
 function byPortal(
-  portals: { source: string; url: string }[],
-): { source: string; url: string; count: number }[] {
-  const out = new Map<string, { source: string; url: string; count: number }>();
+  portals: { source: string; url: string; via?: string }[],
+): { source: string; url: string; via?: string; count: number }[] {
+  const out = new Map<string, { source: string; url: string; via?: string; count: number }>();
   for (const p of portals) {
     const seen = out.get(p.source);
     if (seen) seen.count += 1;
-    else out.set(p.source, { source: p.source, url: p.url, count: 1 });
+    else out.set(p.source, { source: p.source, url: p.url, via: p.via, count: 1 });
   }
   return [...out.values()];
 }

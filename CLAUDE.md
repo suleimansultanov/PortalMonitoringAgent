@@ -82,6 +82,10 @@ questioned and reversed.
   listing's own EUR figure (`currencyCode`), never the pound. Every listing is
   syndicated by Properstar in English: do not store it as the agency, and
   expect weak deduplication — price, surface and commune are all there is.
+- **Stream.Estate is an aggregator, not a portal.** Its rows are stored under
+  `stream-estate`, but the advert is on Belles Demeures, Leboncoin, Idealista…
+  Show the portal read off the URL (`portalOf.ts`), never their source slug:
+  they file every `.co.uk` domain as `co` — Rightmove hid behind it.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 

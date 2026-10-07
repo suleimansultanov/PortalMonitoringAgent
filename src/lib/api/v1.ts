@@ -10,6 +10,7 @@ import {
   portalSources,
   properties,
 } from "@/lib/db/schema";
+import { portalOf } from "@/lib/portals/portalOf";
 import type { KeyScope } from "./keys";
 
 /**
@@ -86,6 +87,14 @@ export type ListingPayload = {
   source: string;
   /** Display name — "Propriétés Le Figaro", not "figaro". */
   sourceName: string;
+  /**
+   * The site `url` opens, read off the URL. Equal to `source` for a portal we
+   * collect directly; for a listing that reached us through an aggregator
+   * (`source: "stream-estate"`) it is the portal the advert is actually on —
+   * "bellesdemeures", "leboncoin", "rightmove".
+   */
+  portal: string;
+  portalName: string;
   url: string;
   externalId: string;
   priceEur: number | null;
@@ -185,9 +194,12 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   for (const l of links) {
     if (!l.propertyId) continue;
     const list = byProperty.get(l.propertyId) ?? [];
+    const site = AGGREGATED.has(l.source) ? portalOf(l.url) : null;
     list.push({
       source: l.source,
       sourceName: l.sourceName ?? l.source,
+      portal: site?.key ?? l.source,
+      portalName: site?.name ?? l.sourceName ?? l.source,
       url: l.url,
       externalId: l.externalId,
       priceEur: l.priceEur,
@@ -214,6 +226,9 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   for (const r of rows) delete r.agencyId;
   return rows;
 }
+
+/** Sources that carry other portals' listings: their `portal` is read off the URL. */
+const AGGREGATED = new Set(["stream-estate"]);
 
 /**
  * The parsed page, reduced to what a client can display.
