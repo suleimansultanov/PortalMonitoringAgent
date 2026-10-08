@@ -36,16 +36,13 @@ import {
  *     least one listing from a portal outside `ownSources`. A property seen
  *     only on Vizzit or Bien'ici is already ours, directly, and taking it
  *     again would count one advert as two portals.
- *  2. Nothing from `heldBack` sources and nothing whose source is not named —
- *     43% of listings in Saint-Tropez arrive with no source and no URL, and
- *     SeLoger and Figaro are absent from their source list. Whether those may
- *     be shown to a client was put to Stream.Estate on 2026-10-05 and not
- *     answered. On 2026-10-06 the operator decided to take Leboncoin anyway:
- *     the seed's `heldBack` is empty since 2026-10-07 and the source's
- *     `permissionNote` records on whose word. The unnamed ones stay out for a
- *     different reason — they have no URL and `portal_listings.url` is NOT
- *     NULL, so `takeUnnamed` cannot be turned on until it is decided where
- *     such a listing should link.
+ *  2. Nothing from `heldBack` sources and nothing without a URL. Until their
+ *     V2 update of 2026-10-08, 43% of listings in Saint-Tropez arrived with
+ *     no source and no URL; they were SeLoger, and now carry both. The
+ *     seed's `heldBack` is empty since 2026-10-07 on the operator's decision,
+ *     and the source's `permissionNote` records on whose word and what
+ *     Stream.Estate answered. A listing still without a URL stays out:
+ *     `portal_listings.url` is NOT NULL (`takeUnnamed`).
  *
  * SHAPE. One record per property with the listings that carry it — their
  * deduplication, done before ours. Each record becomes one listing here,

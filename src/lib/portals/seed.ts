@@ -677,22 +677,33 @@ function sourceSeeds(): SourceSeed[] {
         "is one, count-only requests (itemsPerPage=0) are free, and the plan's items do not " +
         "roll over. He offered the V2 private beta, billed at nothing while it lasts, " +
         "500 requests/minute, 'keep the volume reasonable'.\n\n" +
-        "Leboncoin listings are taken since 2026-10-07 on the OPERATOR'S decision of " +
-        "2026-10-06 ('showing them is allowed, collect them'), WITHOUT written confirmation " +
-        "from Stream.Estate: Thomas was asked in writing on 2026-10-05 under what licence " +
-        "SeLoger and Leboncoin listings reach them and had not answered. Replace this " +
-        "paragraph with his answer when it arrives. SeLoger does not occur in their V2 " +
-        "source list (checked 2026-10-06). Listings with no named source and no URL " +
-        "(`takeUnnamed`) are still not stored — `portal_listings.url` is NOT NULL and " +
-        "where such a link should lead is undecided. Properties already collected " +
-        "directly from Vizzit or Bien'ici are not taken twice (`ownSources`).",
+        "Every source, Leboncoin and SeLoger included, is taken since 2026-10-07 on the " +
+        "OPERATOR'S decision of 2026-10-06 ('showing them is allowed, collect them'). " +
+        "Thomas's written answer to the licence question, received 2026-10-08: what may " +
+        "be done with the data, displaying included, is in their Terms " +
+        "(stream.estate/terms, updated 2026-10-01) and Acceptable Use Policy " +
+        "(stream.estate/legal/aup, updated 2026-09-08), which 'apply as written, and the " +
+        "same way to every source'; a specific agreement, 'such as a written confirmation " +
+        "for your agency client', is part of an Enterprise contract. So no source is " +
+        "treated differently, and there is NO written confirmation covering Med-Estates. " +
+        "OPEN RISK, for the operator: AUP 2.6 forbids use 'on behalf of, or for the " +
+        "benefit of, a third party that has not been authorised by us' — the Enterprise " +
+        "call is where that is settled.\n\n" +
+        "Listings with no source and no URL were SeLoger: after their V2 update of " +
+        "2026-10-08, all 181 listings of the first 100 Saint-Tropez properties carry both " +
+        "(105 of them SeLoger). `takeUnnamed` stays off for any that remain — " +
+        "`portal_listings.url` is NOT NULL. Properties already collected directly from " +
+        "Vizzit or Bien'ici are not taken twice (`ownSources`).\n\n" +
+        "V2 beta: no end date and no post-beta pricing published as of 2026-10-08, " +
+        "'should happen soon (Oct/Nov)'. The client's V1 subscription is separate and is " +
+        "not needed for V2.",
       config: {
         apiKeyEnv: "STREAM_ESTATE_V2_API_KEY",
         /** As Stream.Estate names them: the portals we collect ourselves. */
         ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"],
         /** Emptied 2026-10-07 on the operator's decision — see permissionNote. Was ["leboncoin", "seloger"]. */
         heldBack: [],
-        /** Still off: these listings have no URL and the column is NOT NULL. See permissionNote. */
+        /** Off: a listing with no URL cannot be stored (NOT NULL). Since 2026-10-08 their listings carry one. */
         takeUnnamed: false,
         pageSize: 100,
         /** Sainte-Maxime stated 1 383 on 2026-10-06: 14 pages of 100. */
