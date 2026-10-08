@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { portalKey, portalOf } from "./portalOf";
+import { carriedPortals, portalKey, portalLinks, portalOf } from "./portalOf";
 
 test("the portal is the label before the public suffix", () => {
   assert.equal(portalKey("https://www.bellesdemeures.com/annonces/vente/123"), "bellesdemeures");
@@ -42,4 +42,53 @@ test("a name for display: the brand where we know it, the host where we do not",
 test("something that is not a URL has no portal", () => {
   assert.equal(portalKey("not a url"), null);
   assert.equal(portalOf(""), null);
+});
+
+test("an aggregator row becomes every portal it carries, each with its own link and date", () => {
+  const carried = [
+    { source: "seloger", url: "https://www.seloger.com/annonces/achat/x/260823763.htm", publishedAt: "2026-09-01T10:00:00Z" },
+    { source: "leboncoin", url: "https://www.leboncoin.fr/ad/ventes_immobilieres/2390139342", publishedAt: "2026-09-05T10:00:00Z" },
+    { source: "co", url: "https://www.rightmove.co.uk/properties/150123456", publishedAt: null },
+  ];
+  const ps = carriedPortals("stream-estate", carried[0].url, carried);
+  assert.deepEqual(ps.map((p) => p.key), ["seloger", "leboncoin", "rightmove"]);
+  assert.equal(ps[1].url, carried[1].url);
+  assert.equal(ps[1].publishedAt, "2026-09-05T10:00:00Z");
+  for (const p of ps) assert.equal(p.via, "Stream.Estate");
+  // A source that is not an aggregator carries nothing.
+  assert.deepEqual(carriedPortals("vizzit", "https://www.vizzit.fr/x", carried), []);
+});
+
+test("a portal we read ourselves wins over the same portal seen through the aggregator", () => {
+  const links = portalLinks(
+    [
+      { source: "vizzit", url: "https://www.vizzit.fr/acheter/ours" },
+      {
+        source: "stream-estate",
+        url: "https://www.leboncoin.fr/ad/ventes_immobilieres/1",
+        carried: [
+          { url: "https://www.vizzit.fr/acheter/theirs" },
+          { url: "https://www.leboncoin.fr/ad/ventes_immobilieres/1" },
+        ],
+      },
+    ],
+    { vizzit: "Vizzit" },
+  );
+  assert.deepEqual(links.map((l) => [l.key, l.via ?? null]), [["vizzit", null], ["leboncoin", "Stream.Estate"]]);
+  assert.equal(links[0].url, "https://www.vizzit.fr/acheter/ours");
+});
+
+test("both Maisons et Appartements sites are our smc source", () => {
+  assert.equal(portalKey("https://www.maisonsetappartements.fr/fr/vente/x"), "smc");
+  assert.equal(portalKey("https://www.residences-immobilier.com/fr/vente/x"), "smc");
+});
+
+test("an agency's own website is shown as 'Agency websites', a portal as itself", () => {
+  const ps = carriedPortals("stream-estate", "https://www.seloger.com/a/1.htm", [
+    { url: "https://www.tardieu.fr/vente/123" },
+    { url: "https://www.orpi.com/annonce-vente-1/" },
+    { url: "https://www.seloger.com/a/1.htm" },
+  ]);
+  assert.deepEqual(ps.map((p) => [p.key, p.name]), [["agency-sites", "Agency websites"], ["seloger", "SeLoger"]]);
+  assert.equal(ps[0].url, "https://www.tardieu.fr/vente/123", "the link still opens the agency's site");
 });

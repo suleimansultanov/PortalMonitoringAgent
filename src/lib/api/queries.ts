@@ -12,7 +12,7 @@ import {
   settings,
 } from "@/lib/db/schema";
 import { GULF_OF_SAINT_TROPEZ } from "@/lib/portals/communes";
-import { portalOf } from "@/lib/portals/portalOf";
+import { AGGREGATORS, carriedPortals, portalLinks, portalOf } from "@/lib/portals/portalOf";
 import { hasFeature } from "@/lib/matching/buyers";
 
 /**
@@ -280,6 +280,8 @@ async function portalsFor(propertyIds: string[]): Promise<Map<string, ListingRow
       propertyId: portalListings.propertyId,
       source: portalSources.key,
       url: portalListings.url,
+      /** Only the carried listings, not the whole `raw` — that is kilobytes per row. */
+      carried: sql<unknown>`${portalListings.raw}->'listings'`,
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
@@ -290,26 +292,32 @@ async function portalsFor(propertyIds: string[]): Promise<Map<string, ListingRow
       ),
     );
 
-  const out = new Map<string, ListingRow["portals"]>();
+  const byProperty = new Map<string, typeof rows>();
   for (const r of rows) {
     if (!r.propertyId) continue;
-    const list = out.get(r.propertyId) ?? [];
-    const site = AGGREGATORS[r.source] ? portalOf(r.url) : null;
-    list.push(
-      site
-        ? { source: site.key, url: r.url, via: AGGREGATORS[r.source] }
-        : { source: r.source, url: r.url },
-    );
-    out.set(r.propertyId, list);
+    byProperty.set(r.propertyId, [...(byProperty.get(r.propertyId) ?? []), r]);
   }
+
+  const out = new Map<string, ListingRow["portals"]>();
+  for (const [propertyId, listings] of byProperty) out.set(propertyId, cardPortals(listings));
   return out;
 }
 
 /**
- * Sources that carry other portals' listings. Their rows are shown under the
- * portal the link opens, read off the URL, with the aggregator named beside.
+ * The chips on a card: one entry per DIRECT listing — so a portal carrying
+ * the villa twice still shows "×2", the deduplication fault worth seeing —
+ * then one per portal an aggregator row carries, skipping any portal we
+ * already hold directly. A Stream.Estate row with SeLoger and Leboncoin is
+ * two chips, not one "stream-estate".
  */
-const AGGREGATORS: Record<string, string> = { "stream-estate": "Stream.Estate" };
+function cardPortals(listings: { source: string; url: string; carried?: unknown }[]): ListingRow["portals"] {
+  const direct = listings.filter((l) => !AGGREGATORS[l.source]);
+  const held = new Set(direct.map((l) => l.source));
+  const viaAggregator = portalLinks(listings.filter((l) => AGGREGATORS[l.source]))
+    .filter((p) => !held.has(p.key))
+    .map((p) => ({ source: p.key, url: p.url, via: p.via }));
+  return [...direct.map((l) => ({ source: l.source, url: l.url })), ...viaAggregator];
+}
 
 /**
  * What to put on a card.
@@ -648,14 +656,11 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
   }
 
   const areaM2 = row.areaM2 === null ? null : Number(row.areaM2);
-  const portalsList = listingRows
-    .filter((l) => l.status === "active")
-    .map((l) => {
-      const site = AGGREGATORS[l.source] ? portalOf(l.url) : null;
-      return site
-        ? { source: site.key, url: l.url, via: AGGREGATORS[l.source] }
-        : { source: l.source, url: l.url };
-    });
+  const portalsList = cardPortals(
+    listingRows
+      .filter((l) => l.status === "active")
+      .map((l) => ({ source: l.source, url: l.url, carried: l.raw?.listings })),
+  );
 
   return {
     property: {
@@ -693,9 +698,9 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     description: row.description,
     listings: listingRows.map((l) => ({
       ...l,
-      // "Belles Demeures · via Stream.Estate": the portal the link opens, then who brought it.
+      // "SeLoger, Leboncoin · via Stream.Estate": every portal the row carries, then who brought it.
       sourceName: AGGREGATORS[l.source]
-        ? `${portalOf(l.url)?.name ?? l.sourceName} · via ${AGGREGATORS[l.source]}`
+        ? `${carriedPortals(l.source, l.url, l.raw?.listings).map((p) => p.name).join(", ") || (portalOf(l.url)?.name ?? l.sourceName)} · via ${AGGREGATORS[l.source]}`
         : l.sourceName,
       areaM2: l.areaM2 === null ? null : Number(l.areaM2),
       matchConfidence: l.matchConfidence === null ? null : Number(l.matchConfidence),

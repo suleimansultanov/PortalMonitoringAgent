@@ -158,9 +158,10 @@ export default async function PropertyPage({
                 images={[...new Set([p.imageUrl, ...p.imageUrls].filter((x): x is string => !!x))]}
                 alt={p.headline}
               />
-              {p.sourceCount > 1 && (
+              {/* Distinct portals, Stream.Estate's split out — not `sourceCount`, which counts it once. */}
+              {new Set(p.portals.map((x) => x.source)).size > 1 && (
                 <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
-                  × {p.sourceCount} portals
+                  × {new Set(p.portals.map((x) => x.source)).size} portals
                 </span>
               )}
               {p.status !== "active" && (

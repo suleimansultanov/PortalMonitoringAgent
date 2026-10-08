@@ -52,9 +52,9 @@ For an instance starting from empty, and for periodic reconciliation.
                                          "priceTo": 1160000, "source": "bienici" },
                     "areaM2": 85, "rooms": 3,
                     "bedrooms": 2, "communeInsee": "83119", "sourceCount": 3,
-                    "listings": [ { "source": "figaro", "portal": "figaro", "url": "https://…" },
-                                  { "source": "stream-estate", "portal": "bellesdemeures",
-                                    "portalName": "Belles Demeures", "url": "https://…" } ] } ],
+                    "listings": [ { "source": "figaro", "via": null, "url": "https://…" },
+                                  { "source": "seloger", "sourceName": "SeLoger",
+                                    "via": "stream-estate", "url": "https://…" } ] } ],
   "nextCursor": "…",
   "communes": ["83119", "…"],
   "caveat": "…"
@@ -74,12 +74,16 @@ page carried a price we did not read. Only the first is `priceOnRequest: true`.
 Print "on request" for a null price without checking it and you tell the agent
 the agency is hiding a number that was on the page.
 
-**`source` and `portal`.** `source` is which of our collectors brought the
-listing; `portal` is the site its `url` opens, read off the URL. They are equal
-for every portal we collect directly. `stream-estate` is an aggregator, not a
-portal: its listings carry the portal the advert is actually on —
-`bellesdemeures`, `leboncoin`, `idealista`, `rightmove` — and that is the name
-to show an agent.
+**`source` is always a portal.** `stream-estate` is an aggregator, not a
+portal, and it never appears as a `source`: each of its properties is sent as
+one listing per portal it was found on — `seloger`, `leboncoin`,
+`bellesdemeures`, `idealista`, `rightmove` — each with that portal's own link
+and publication date, and `via: "stream-estate"`. A portal we collect
+ourselves is never sent twice: our own reading wins. Sites of single agencies
+(Tardieu, Orpi, a Century 21 office) are grouped as `agency-sites`, "Agency
+websites", each still linking to its own site. `/api/v1/status` lists the same
+portals, each with the aggregator's run and `via`. `portal`/`portalName` equal
+`source`/`sourceName` and are kept for clients that read them.
 
 Do not poll this daily once you are running. Twenty changes are not worth
 re-reading the whole market, and the cost grows with the corpus.

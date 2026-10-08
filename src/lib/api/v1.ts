@@ -10,7 +10,7 @@ import {
   portalSources,
   properties,
 } from "@/lib/db/schema";
-import { portalOf } from "@/lib/portals/portalOf";
+import { AGGREGATORS, carriedPortals, shownAs } from "@/lib/portals/portalOf";
 import type { KeyScope } from "./keys";
 
 /**
@@ -84,17 +84,19 @@ export type PropertyPayload = {
 };
 
 export type ListingPayload = {
+  /**
+   * The portal the advert is on — "figaro", "seloger", "leboncoin". For a
+   * listing that reached us through an aggregator this is the portal read off
+   * its URL, never the aggregator: see `via`.
+   */
   source: string;
   /** Display name — "Propriétés Le Figaro", not "figaro". */
   sourceName: string;
-  /**
-   * The site `url` opens, read off the URL. Equal to `source` for a portal we
-   * collect directly; for a listing that reached us through an aggregator
-   * (`source: "stream-estate"`) it is the portal the advert is actually on —
-   * "bellesdemeures", "leboncoin", "rightmove".
-   */
+  /** Same as `source` and `sourceName`; kept for clients that read these names. */
   portal: string;
   portalName: string;
+  /** The aggregator that carried it ("stream-estate"), or null when we read the portal ourselves. */
+  via: string | null;
   url: string;
   externalId: string;
   priceEur: number | null;
@@ -194,12 +196,12 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   for (const l of links) {
     if (!l.propertyId) continue;
     const list = byProperty.get(l.propertyId) ?? [];
-    const site = AGGREGATED.has(l.source) ? portalOf(l.url) : null;
-    list.push({
+    const base: ListingPayload = {
       source: l.source,
       sourceName: l.sourceName ?? l.source,
-      portal: site?.key ?? l.source,
-      portalName: site?.name ?? l.sourceName ?? l.source,
+      portal: l.source,
+      portalName: l.sourceName ?? l.source,
+      via: null,
       url: l.url,
       externalId: l.externalId,
       priceEur: l.priceEur,
@@ -214,10 +216,42 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
       firstSeenAt: l.firstSeenAt?.toISOString() ?? null,
       lastSeenAt: l.lastSeenAt?.toISOString() ?? null,
       ...characteristicsOf(l.raw),
-    });
+    };
+    if (!AGGREGATORS[l.source]) {
+      list.push(base);
+    } else {
+      /**
+       * AN AGGREGATOR ROW IS SPLIT INTO ITS PORTALS, HERE.
+       *
+       * One Stream.Estate row is one property with every advert it found —
+       * SeLoger, Leboncoin, Belles Demeures — and a client grouping by
+       * `source` saw a single portal called "stream-estate". Each portal is
+       * sent as a listing of its own, under the portal's name, with its own
+       * link and publication date; `via` says who carried it. The id is the
+       * row's id and the portal, so it is stable night to night.
+       */
+      for (const p of carriedPortals(l.source, l.url, l.raw?.listings)) {
+        list.push({
+          ...base,
+          source: p.key,
+          sourceName: p.name,
+          portal: p.key,
+          portalName: p.name,
+          via: l.source,
+          url: p.url,
+          externalId: `${l.externalId}:${p.key}`,
+          publishedAt: p.publishedAt ?? base.publishedAt,
+        });
+      }
+    }
     byProperty.set(l.propertyId, list);
   }
-  for (const r of rows) r.listings = byProperty.get(r.id) ?? [];
+  for (const r of rows) {
+    const list = byProperty.get(r.id) ?? [];
+    // A portal we collect directly is our own reading of it; the same portal seen via an aggregator is dropped.
+    const direct = new Set(list.filter((l) => !l.via).map((l) => l.source));
+    r.listings = list.filter((l) => !l.via || !direct.has(l.source));
+  }
 
   await withLastPriceChange(rows);
   await withAgency(rows);
@@ -226,9 +260,6 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   for (const r of rows) delete r.agencyId;
   return rows;
 }
-
-/** Sources that carry other portals' listings: their `portal` is read off the URL. */
-const AGGREGATED = new Set(["stream-estate"]);
 
 /**
  * The parsed page, reduced to what a client can display.
@@ -545,7 +576,7 @@ export async function events(
 export async function status(scope: KeyScope): Promise<{
   lastSuccessfulCollectionAt: string | null;
   properties: number;
-  sources: { key: string; lastRunAt: string | null; lastOutcome: string }[];
+  sources: { key: string; lastRunAt: string | null; lastOutcome: string; via?: string }[];
 }> {
   /**
    * Scoped to the sources this key may read.
@@ -659,13 +690,46 @@ export async function status(scope: KeyScope): Promise<{
     (r) => ({ key: r.key, lastRunAt: r.last_run_at, lastOutcome: r.last_outcome }),
   );
 
+  /**
+   * An aggregator is not a portal: its row is replaced by one row per portal
+   * it carries, each with the aggregator's own run — the run is what says
+   * whether SeLoger-via-Stream.Estate is current. Portals we also collect
+   * ourselves keep their own row. The portals are read off the hosts of the
+   * links the aggregator's live rows carry, inside this key's communes.
+   */
+  const expanded: { key: string; lastRunAt: string | null; lastOutcome: string; via?: string }[] = [];
+  const direct = new Set(runs.filter((r) => !AGGREGATORS[r.key]).map((r) => r.key));
+  for (const r of runs) {
+    if (!AGGREGATORS[r.key]) {
+      expanded.push(r);
+      continue;
+    }
+    // `in ()` is not valid SQL; a key with no communes carries no portals.
+    if (scope.communeInsee.length === 0) continue;
+    const hosts = await db.execute<{ host: string }>(sql`
+      select distinct substring(x->>'url' from '^https?://([^/]+)') as host
+      from ${portalListings} l
+      join ${portalSources} s on s.id = l.source_id,
+      jsonb_array_elements(coalesce(l.raw->'listings', '[]'::jsonb)) x
+      where s.key = ${r.key} and l.status = 'active'
+        and l.commune_insee in (${sql.join(scope.communeInsee.map((c) => sql`${c}`), sql`, `)})
+    `);
+    const keys = new Set(
+      (hosts.rows as { host: string | null }[])
+        .map((h) => (h.host ? shownAs(`https://${h.host}/`)?.key : null))
+        .filter((k): k is string => !!k && !direct.has(k)),
+    );
+    for (const key of [...keys].sort()) expanded.push({ ...r, key, via: r.key });
+  }
+
   return {
     lastSuccessfulCollectionAt: at ? new Date(at).toISOString() : null,
     properties: count,
-    sources: runs.map((r) => ({
+    sources: expanded.map((r) => ({
       key: r.key,
       lastRunAt: r.lastRunAt ? new Date(r.lastRunAt).toISOString() : null,
       lastOutcome: r.lastOutcome,
+      ...(r.via ? { via: r.via } : {}),
     })),
   };
 }

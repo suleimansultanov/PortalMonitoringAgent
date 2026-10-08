@@ -65,15 +65,21 @@ const property = {
       items: {
         type: "object",
         properties: {
-          source: { type: "string", example: "figaro", description: "Which of our collectors brought it. `stream-estate` is an aggregator, not a portal — see `portal`." },
-          sourceName: { type: "string", example: "Propriétés Le Figaro" },
-          portal: {
+          source: {
             type: "string",
-            example: "bellesdemeures",
+            example: "seloger",
             description:
-              "The site `url` opens, read off the URL. Equal to `source` for a portal collected directly; for `source: stream-estate` it is the portal the advert is actually on. Show this to an agent, not `source`.",
+              "The portal the advert is on. Always a portal: a property carried by an aggregator is sent as one listing per portal it was found on, each with that portal's link. Single-agency websites are grouped as `agency-sites`.",
           },
-          portalName: { type: "string", example: "Belles Demeures" },
+          sourceName: { type: "string", example: "SeLoger" },
+          via: {
+            type: "string",
+            nullable: true,
+            example: "stream-estate",
+            description: "The aggregator that carried it, or null when we read the portal ourselves.",
+          },
+          portal: { type: "string", description: "Same as `source`." },
+          portalName: { type: "string", description: "Same as `sourceName`." },
           url: { type: "string" },
           externalId: { type: "string" },
           priceEur: { type: "integer", nullable: true },
@@ -239,6 +245,11 @@ export const openApiDocument = {
                           key: { type: "string" },
                           lastRunAt: { type: "string", format: "date-time", nullable: true },
                           lastOutcome: { type: "string", enum: ["done", "aborted", "error", "running", "never"] },
+                          via: {
+                            type: "string",
+                            description:
+                              "Present on a portal carried by an aggregator: its run is the aggregator's. The aggregator itself is not listed.",
+                          },
                         },
                       },
                     },

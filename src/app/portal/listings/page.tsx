@@ -272,12 +272,13 @@ export default async function ListingsPage({
                   </div>
                 )}
 
-                {r.sourceCount > 1 && (
+                {/* Counted from the chips, not `sourceCount`: one Stream.Estate row can be three portals. */}
+                {byPortal(r.portals).length > 1 && (
                   <span
                     className="absolute left-2.5 top-2.5 rounded-md bg-black/70 px-2 py-1 text-[10px] font-medium text-white backdrop-blur"
                     title="The same property found on more than one portal and merged into this one card"
                   >
-                    × {r.sourceCount} portals
+                    × {byPortal(r.portals).length} portals
                   </span>
                 )}
                 {r.daysOnMarket !== null && (
