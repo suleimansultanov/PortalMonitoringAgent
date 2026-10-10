@@ -1,11 +1,12 @@
 import "server-only";
 import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { portalListings, portalRuns, portalSources } from "@/lib/db/schema";
+import { portalListings, portalRuns, portalSnapshots, portalSources } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
+import { contentHash } from "@/lib/utils/crypto";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing, PoliteFetch } from "../types";
-import { diffListings, needsRefresh, shouldAbort } from "./diff";
+import { changedInHand, diffListings, needsRefresh, shouldAbort } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
 
@@ -912,6 +913,46 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         `[run:${source.key}] discovery incomplete — ${diff.suppressedRemovals.length} ` +
           `listings left active rather than delisted`,
       );
+    }
+
+    // ── 4b. Records in hand that changed since we stored them ─────────────
+    /**
+     * Per source, by `refreshOnChange` — see `changedInHand` in diff.ts for
+     * why this exists and why it is not the default. One query for the hashes
+     * of everything stored, no request to the source.
+     */
+    if (cfg.refreshOnChange === true) {
+      const inHand = diff.present.filter((id) => discovered.get(id)?.document !== undefined);
+      if (inHand.length > 0) {
+        const storedRows = await db.execute<{ external_id: string; content_hash: string }>(sql`
+          select distinct on (external_id) external_id, content_hash
+          from ${portalSnapshots}
+          where source_id = ${source.id}
+          order by external_id, fetched_at desc
+        `);
+        const storedHash = new Map(
+          (storedRows.rows as { external_id: string; content_hash: string }[]).map((r) => [
+            r.external_id,
+            r.content_hash,
+          ]),
+        );
+        const changed = changedInHand({
+          present: inHand,
+          offered: (id) => {
+            const doc = discovered.get(id)?.document;
+            return doc === undefined ? undefined : contentHash(doc);
+          },
+          stored: (id) => storedHash.get(id),
+          alreadyRefreshing: diff.refresh,
+        });
+        if (changed.length > 0) {
+          diff.refresh.push(...changed);
+          console.log(
+            `[run:${source.key}] ${changed.length} of ${inHand.length} known records differ from ` +
+              `what we stored — re-reading them from discovery, no requests`,
+          );
+        }
+      }
     }
 
     // ── 5. Ingest ─────────────────────────────────────────────────────────

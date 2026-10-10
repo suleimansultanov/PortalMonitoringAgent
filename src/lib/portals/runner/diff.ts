@@ -189,3 +189,49 @@ export function needsRefresh(
   if (!stated || !row.storedSourceUpdatedAt) return true;
   return stated.getTime() > row.storedSourceUpdatedAt.getTime();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Records discovery already holds whose content is not what we stored.
+ *
+ * WHY THIS EXISTS. An API source (Stream.Estate) hands over every property
+ * whole, every night. The pass then stored only the NEW ones: a listing we
+ * already knew was re-read only once its row had sat untouched for
+ * REFRESH_AFTER_DAYS — and the resolver touches most rows nightly, so for
+ * many that day never came. Three nights in October 2026: 11, 1 552 and
+ * 2 543 records stored, exactly the new ones each time, not one refresh. A
+ * price cut on SeLoger was in our hands every night and never written down;
+ * so were the photographs Stream.Estate attaches late (their own fault, in
+ * writing 2026-10-09, with "no change event will tell you").
+ *
+ * Comparing a hash costs no request. It is only sound where the record is
+ * stable — where it changes when the property does and not on its own:
+ * measured on Stream.Estate, 83 of 88 records byte-identical two days apart
+ * and the other five really changed. Bien'ici's records are NOT stable (231
+ * listings re-offered nightly had ten different snapshots in ten nights), so
+ * this is switched on per source (`refreshOnChange`), never by default.
+ *
+ * A record with no stored hash is taken as changed: we hold a listing row and
+ * no page behind it, and the only way to have one is to store this.
+ */
+export function changedInHand(input: {
+  /** Known and seen again tonight. */
+  present: string[];
+  /** Hash of the record discovery holds, or undefined when it holds none. */
+  offered: (externalId: string) => string | undefined;
+  /** Hash of the last snapshot we stored. */
+  stored: (externalId: string) => string | undefined;
+  /** Already queued by the stale-refresh rule; not listed twice. */
+  alreadyRefreshing: Iterable<string>;
+}): string[] {
+  const queued = new Set(input.alreadyRefreshing);
+  const out: string[] = [];
+  for (const id of input.present) {
+    if (queued.has(id)) continue;
+    const offered = input.offered(id);
+    if (offered === undefined) continue;
+    if (input.stored(id) !== offered) out.push(id);
+  }
+  return out;
+}

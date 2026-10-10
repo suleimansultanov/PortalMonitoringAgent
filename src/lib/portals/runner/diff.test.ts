@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffListings, shouldAbort, needsRefresh } from "./diff";
+import { changedInHand, diffListings, shouldAbort, needsRefresh } from "./diff";
 
 test("splits discovered ids into added and present", () => {
   const r = diffListings({ known: ["a", "b"], discovered: ["b", "c"], complete: true });
@@ -236,4 +236,18 @@ test("a listing we have never fetched is always fetched", () => {
     needsRefresh({ externalId: "1", fetchedAt: null, storedSourceUpdatedAt: null }, null, ceiling),
     true,
   );
+});
+
+test("a record in hand that differs from the stored one is re-read; an identical one is not", () => {
+  const offered: Record<string, string> = { a: "h1", b: "h2-new", c: "h3", d: "h4" };
+  const stored: Record<string, string> = { a: "h1", b: "h2-old", c: "h3-old" };
+  const changed = changedInHand({
+    present: ["a", "b", "c", "d", "e"],
+    offered: (id) => offered[id],
+    stored: (id) => stored[id],
+    alreadyRefreshing: ["c"],
+  });
+  // a: identical. b: changed. c: changed but already queued as stale — not twice.
+  // d: we hold a row and no stored page — taken as changed. e: discovery holds no record.
+  assert.deepEqual(changed, ["b", "d"]);
 });

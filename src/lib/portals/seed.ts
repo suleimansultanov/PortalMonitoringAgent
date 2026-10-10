@@ -714,6 +714,14 @@ function sourceSeeds(): SourceSeed[] {
          * d'Esquières, San Peïre. The same fragments as `communes.ts`.
          */
         localities: { "83107": ["issambres", "esquieres", "san peire"] },
+        /**
+         * Re-read a known property when the record they hand over tonight
+         * differs from the one we stored — a price change, photographs that
+         * arrive late. Their records are stable (83 of 88 identical two days
+         * apart, 2026-10-10), so this fires on real changes. See
+         * `changedInHand` in runner/diff.ts.
+         */
+        refreshOnChange: true,
       },
     },
   ];
