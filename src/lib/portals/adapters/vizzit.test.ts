@@ -104,3 +104,21 @@ test("a page served in dollars to the US runner still gives the euro price", () 
   assert.deepEqual(raw.foreignPrice, { currency: "USD", shown: "1 564 723 $" });
   assert.deepEqual(raw.priceEurFrom, { where: "euro-line" });
 });
+
+test("a listing that exists only on Vizzit keeps its photographs on Vizzit's own image host", () => {
+  /**
+   * The fixture is a listing that is also on Green-Acres, so its photographs
+   * sit on `lb1.green-acres.com`. One that is on Vizzit alone serves them from
+   * `lb1.vizzit.com` — read off a stored page on 2026-10-11:
+   * `https://lb1.vizzit.com/48322a/A247xmbjgz1oavpb/Photos/A247xmbjgz1oavpb_1.jpg`.
+   * With only the first host named, 1 941 of 3 566 Vizzit listings had an
+   * empty gallery and showed the cover alone. The same page with the host as
+   * such a listing has it must give the same eight photographs.
+   */
+  const onVizzitOnly = LISTING.replaceAll("lb1.green-acres.com", "lb1.vizzit.com");
+  const r = vizzitAdapter.parse(onVizzitOnly, LISTING_URL);
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.listing.imageUrls.length, 8);
+  for (const u of r.listing.imageUrls) assert.match(u, /^https:\/\/lb1\.vizzit\.com\//);
+  assert.equal(r.listing.imageUrls[0], r.listing.imageUrl, "the cover is the first photograph, once");
+});

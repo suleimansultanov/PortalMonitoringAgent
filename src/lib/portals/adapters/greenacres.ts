@@ -518,8 +518,17 @@ function decodeBase64(raw: string): string | null {
  */
 function galleryFor(html: string, externalId: string): string[] {
   const escaped = externalId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  /**
+   * Both of the engine's image hosts. A listing that exists on Green-Acres
+   * serves its photographs from `lb1.green-acres.com` even on a Vizzit page;
+   * one that exists only on Vizzit serves them from `lb1.vizzit.com`
+   * (`https://lb1.vizzit.com/48322a/<id>/Photos/<id>_1.jpg`). With only the
+   * first host named, 1 941 of 3 566 Vizzit listings had an empty gallery on
+   * 2026-10-11 and showed the `og:image` cover alone — the fixture this was
+   * written against happened to be one that is on both.
+   */
   const pattern = new RegExp(
-    `https://lb\\d+\\.green-acres\\.com/[^"'\\s)\\\\]*${escaped}[^"'\\s)\\\\]*\\.(?:jpg|jpeg|png|webp)`,
+    `https://lb\\d+\\.(?:green-acres|vizzit)\\.com/[^"'\\s)\\\\]*${escaped}[^"'\\s)\\\\]*\\.(?:jpg|jpeg|png|webp)`,
     "gi",
   );
   /**
