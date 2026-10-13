@@ -43,6 +43,7 @@
     "sitemap:check": "tsx src/lib/portals/sitemapCheck.ts",
     "db:audit": "tsx src/lib/db/audit.ts",
     "pilot:stream": "tsx src/lib/portals/streamPilot.ts",
+    "stream:history": "tsx src/lib/portals/streamHistory.ts",
     "source": "tsx src/lib/portals/sourceCli.ts"
   },
   "dependencies": {

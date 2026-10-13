@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { COLLECTION_INSEE, GULF_OF_SAINT_TROPEZ } from "./communes";
+import { createV1Client, type V1Client } from "./streamV1";
 
 /**
  * Stream.Estate pilot: what would their API give us for the gulf, and how
@@ -84,18 +85,18 @@ function apiKey(): string {
 
 const outDir = path.join(process.cwd(), ".pages", "stream-estate", new Date().toISOString().slice(0, 10));
 
+/**
+ * Every request goes through the meter in `streamV1.ts` — the same ledger,
+ * cap and cache as `npm run stream:history`. Until 2026-10-14 this function
+ * called `fetch` itself, with nothing counting what `--sample` or `--full`
+ * spent: fine on a trial key, not on the client's 15 000-item plan.
+ */
+let meter: V1Client | null = null;
 async function call(query: URLSearchParams, label: string): Promise<{ total: number; items: Property[] }> {
-  const url = `${BASE}/documents/properties?${query.toString()}`;
-  const res = await fetch(url, { headers: { "X-API-KEY": apiKey(), Accept: "application/ld+json" } });
-  const text = await res.text();
-  await fs.mkdir(outDir, { recursive: true });
-  await fs.writeFile(path.join(outDir, `${label}.json`), text);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on ${label}: ${text.slice(0, 300)}`);
-  const j = JSON.parse(text) as Record<string, unknown>;
-  return {
-    total: Number(j["hydra:totalItems"] ?? 0),
-    items: (j["hydra:member"] as Property[] | undefined) ?? [],
-  };
+  meter ??= createV1Client({ dir: path.join(process.cwd(), ".pages", "stream-estate-v1"), apiKey });
+  void label;
+  const r = await meter.call(query);
+  return { total: r.total, items: r.items as Property[] };
 }
 
 /**
