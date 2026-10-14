@@ -51,7 +51,7 @@ import { emptyListing, type DiscoverContext, type DiscoveredListing, type ParseR
 const SOURCE_KEY = "stream-estate-v1";
 
 /** Portals we collect directly, as their URLs name them: a property seen only there is already ours. */
-const OWN_SOURCES = ["vizzit", "bienici", "luxuryestate", "green-acres", "etreproprio", "superimmo"];
+const OWN_SOURCES = ["vizzit", "bienici", "luxuryestate", "green-acres", "etreproprio"];
 
 /**
  * Where a commune is asked for by something narrower than its INSEE code:

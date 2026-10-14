@@ -699,8 +699,8 @@ function sourceSeeds(): SourceSeed[] {
         "not needed for V2.",
       config: {
         apiKeyEnv: "STREAM_ESTATE_V2_API_KEY",
-        /** As Stream.Estate names them: the portals we collect ourselves. */
-        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"],
+        /** As Stream.Estate names them: the portals we collect ourselves. Superimmo's own collector is off since 2026-10-14. */
+        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio"],
         /** Emptied 2026-10-07 on the operator's decision — see permissionNote. Was ["leboncoin", "seloger"]. */
         heldBack: [],
         /** Off: a listing with no URL cannot be stored (NOT NULL). Since 2026-10-08 their listings carry one. */
@@ -756,8 +756,12 @@ function sourceSeeds(): SourceSeed[] {
         periodAnchorDay: 14,
         /** The first pass takes properties not expired and touched within this many days. */
         freshDays: 30,
-        /** As their URLs name them: the portals we collect ourselves. */
-        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "etreproprio", "superimmo"],
+        /**
+         * As their URLs name them: the portals we collect ourselves. Superimmo
+         * left this list on 2026-10-14 when its own collector was switched off
+         * (429 and Turnstile): a property seen only there is now taken here.
+         */
+        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "etreproprio"],
       },
     },
   ];

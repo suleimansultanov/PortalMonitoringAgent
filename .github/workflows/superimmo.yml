@@ -42,7 +42,13 @@ on:
     # CET window LuxuryEstate asked us to keep. Running first solves both: even
     # a pass that burns its full 180-minute watchdog ends by 18:00 UTC, three
     # hours before the main night begins at 21:00 UTC.
-    - cron: "0 15 * * *"
+    #
+    # SWITCHED OFF 2026-10-14. The portal answers 429 and a Turnstile challenge
+    # to every address; thirty-odd listings a night at best. Superimmo's
+    # adverts now arrive through Stream.Estate V1 (`stream-estate-v1`), and the
+    # source is disabled in the database — which `--sources=superimmo` would
+    # override, so the schedule itself goes. Hand runs stay possible below.
+    # - cron: "0 15 * * *"
   workflow_dispatch:
     inputs:
       communes:

@@ -686,7 +686,9 @@ export async function status(scope: KeyScope): Promise<{
       order by completed_at desc
       limit 1
     ) r on true
-    where s.id in (${sql.join(
+    -- A source switched off is not one the client is receiving: its last
+    -- outcome, weeks old by now, would only read as a portal that is failing.
+    where s.enabled and s.id in (${sql.join(
       scope.sourceIds.map((id) => sql`${id}::uuid`),
       sql`, `,
     )})

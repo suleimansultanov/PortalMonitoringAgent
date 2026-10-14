@@ -58,7 +58,7 @@ import {
 const API = "https://api-v2.stream.estate";
 
 /** Portals we collect ourselves, as Stream.Estate names them. */
-const OWN_SOURCES = ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio", "superimmo"];
+const OWN_SOURCES = ["vizzit", "bienici", "luxuryestate", "green-acres", "greenacres", "etreproprio"];
 /**
  * The fallback when the source's config carries no `heldBack` — deliberately
  * the cautious one. The decision to take Leboncoin lives in `seed.ts`, where
