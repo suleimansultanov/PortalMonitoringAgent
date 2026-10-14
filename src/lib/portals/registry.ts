@@ -11,6 +11,7 @@ import { figaroImmobilierAdapter } from "./adapters/figaroimmobilier";
 import { vizzitAdapter } from "./adapters/vizzit";
 import { zooplaAdapter } from "./adapters/zoopla";
 import { streamEstateAdapter } from "./adapters/streamestate";
+import { streamEstateV1Adapter } from "./adapters/streamestatev1";
 
 /**
  * Adapter registry.
@@ -40,6 +41,7 @@ const ADAPTERS: PortalAdapter[] = [
   vizzitAdapter,
   zooplaAdapter,
   streamEstateAdapter,
+  streamEstateV1Adapter,
   // avivAdapter,
 ];
 

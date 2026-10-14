@@ -99,7 +99,7 @@ export function portalOf(url: string): { key: string; name: string } | null {
 }
 
 /** Sources that carry other portals' listings, with the name to say "via". */
-export const AGGREGATORS: Record<string, string> = { "stream-estate": "Stream.Estate" };
+export const AGGREGATORS: Record<string, string> = { "stream-estate": "Stream.Estate", "stream-estate-v1": "Stream.Estate" };
 
 /**
  * Listing portals: sites where many agencies advertise. Everything else an

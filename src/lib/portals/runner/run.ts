@@ -575,6 +575,18 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       !opts.limit;
     const knownIds = new Set(known.map((k) => k.externalId));
 
+    /**
+     * A source that reports what CHANGED rather than what exists: a metered
+     * API read for its deltas (Stream.Estate V1, billed per property
+     * returned). Such a pass sees a fraction of the market by design, so the
+     * guard — which would read that fraction as the market vanishing — is
+     * off, and nothing is delisted for being unseen. What the source itself
+     * reports gone arrives through `ctx.gone` and is delisted by name below.
+     * Not lifted by a full sweep: for this source "everything" is the month.
+     */
+    const changesOnly = cfg.changesOnly === true;
+    const goneIds = new Set<string>();
+
     if (deltaEnabled) {
       /**
        * Set BEFORE discovery, not as a consequence of it.
@@ -589,6 +601,12 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       console.log(
         `[run:${source.key}] delta pass — each commune stops after ${deltaAfter} known ` +
           `listings in a row; nothing will be delisted`,
+      );
+    } else if (changesOnly) {
+      complete = false;
+      console.log(
+        `[run:${source.key}] changes-only pass — the source reports what moved; ` +
+          `nothing is delisted for being unseen, only what it names`,
       );
     }
 
@@ -607,6 +625,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         delta: deltaEnabled
           ? { knows: (externalId) => knownIds.has(externalId), after: deltaAfter }
           : undefined,
+        gone: (externalId) => {
+          goneIds.add(externalId);
+        },
       })) {
         discovered.set(item.externalId, item);
 
@@ -842,6 +863,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       );
     }
 
+    // What the source reported gone is not fetched; it is delisted by name in step 4.
+    for (const id of goneIds) discovered.delete(id);
+
     // ── 3. The guard ──────────────────────────────────────────────────────
     const threshold = await getNumberSetting(
       SETTING_KEYS.ABORT_THRESHOLD,
@@ -861,7 +885,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      * delta pass already declares itself incomplete, so nothing can be
      * delisted either way.
      */
-    if (verdict.abort && !deltaEnabled) {
+    if (verdict.abort && !deltaEnabled && !changesOnly) {
       const reason = discoveryError
         ? `${verdict.reason} Discovery also errored: ${discoveryError}`
         : verdict.reason;
@@ -903,6 +927,16 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       complete,
       incomplete: shielded,
     });
+
+    if (goneIds.size > 0) {
+      // On the source's own word, whatever the pass saw: these are held, named gone, and not already going.
+      const named = [...goneIds].filter((id) => knownIds.has(id) && !diff.removed.includes(id));
+      diff.removed.push(...named);
+      console.log(
+        `[run:${source.key}] ${named.length} listings delisted on the source's own word ` +
+          `(${goneIds.size} reported gone, ${goneIds.size - named.length} of them not held)`,
+      );
+    }
 
     for (const [insee, reason] of partialCommunes) {
       console.warn(`[run:${source.key}] ${insee}: incomplete — ${reason}`);

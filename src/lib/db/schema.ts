@@ -673,3 +673,33 @@ export const clientApiKeys = pgTable(
     clientIdx: index("client_api_keys_client_idx").on(t.clientId),
   }),
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Metered APIs — what was asked and what it cost
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row per request to an API billed per item (Stream.Estate V1). Appended
+ * before the next request is sent and summed per billing period by the meter
+ * in `portals/streamV1.ts`, which refuses a paid page that would pass the cap.
+ * Append-only: a request that failed in transit stays as an `uncertain` row
+ * costing the page size, because it may have been billed. See
+ * `drizzle/0007_api_usage.sql`.
+ */
+export const apiUsage = pgTable(
+  "api_usage",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceKey: text("source_key").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    paid: boolean("paid").notNull(),
+    /** Canonical query string. Never the key. */
+    query: text("query").notNull(),
+    items: integer("items").notNull().default(0),
+    uncertain: boolean("uncertain").notNull().default(false),
+    note: text("note"),
+  },
+  (t) => ({
+    sourceAtIdx: index("api_usage_source_at_idx").on(t.sourceKey, t.at),
+  }),
+);

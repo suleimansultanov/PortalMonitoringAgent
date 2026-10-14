@@ -194,6 +194,13 @@ export type DiscoverContext = {
   incomplete(communeInsee: string, reason: string): void;
 
   /**
+   * The source itself says this listing is gone — an API that reports
+   * expiries. The runner delists it by name, even on a pass that did not see
+   * the market whole. Absent for sources that only show what exists.
+   */
+  gone?(externalId: string): void;
+
+  /**
    * The delta stop, present only on a pass that is allowed to end early.
    *
    * WHY THE ADAPTER AND NOT THE RUNNER. The runner sees one flat stream of

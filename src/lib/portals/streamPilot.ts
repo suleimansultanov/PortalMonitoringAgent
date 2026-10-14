@@ -4,7 +4,8 @@ import { createRequire } from "node:module";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { COLLECTION_INSEE, GULF_OF_SAINT_TROPEZ } from "./communes";
-import { createV1Client, type V1Client } from "./streamV1";
+import { createV1Client, withDiskCache, type V1Client } from "./streamV1";
+import { dbLedgerStore } from "./streamV1Db";
 
 /**
  * Stream.Estate pilot: what would their API give us for the gulf, and how
@@ -93,7 +94,7 @@ const outDir = path.join(process.cwd(), ".pages", "stream-estate", new Date().to
  */
 let meter: V1Client | null = null;
 async function call(query: URLSearchParams, label: string): Promise<{ total: number; items: Property[] }> {
-  meter ??= createV1Client({ dir: path.join(process.cwd(), ".pages", "stream-estate-v1"), apiKey });
+  meter ??= createV1Client({ store: withDiskCache(dbLedgerStore("stream-estate-v1"), path.join(process.cwd(), ".pages", "stream-estate-v1")), apiKey });
   void label;
   const r = await meter.call(query);
   return { total: r.total, items: r.items as Property[] };

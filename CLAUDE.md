@@ -86,6 +86,12 @@ questioned and reversed.
   `stream-estate`, but the advert is on Belles Demeures, Leboncoin, Idealista…
   Show the portal read off the URL (`portalOf.ts`), never their source slug:
   they file every `.co.uk` domain as `co` — Rightmove hid behind it.
+- **Stream.Estate V1 is billed per property returned, on the client's card.**
+  15 000 a month, EUR 0.003 each beyond. Every request goes through the meter
+  in `portals/streamV1.ts` (ledger in `api_usage`, cap checked before each
+  paid page, no retries); nothing may call `api.stream.estate` around it. The
+  `stream-estate-v1` source reads the stock once and then changes only
+  (`changesOnly`): no full sweep, ever — four of them would be the month.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 

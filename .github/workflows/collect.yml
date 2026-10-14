@@ -191,6 +191,10 @@ jobs:
           PMA_RESIDENTIAL_PROXY: ${{ secrets.PMA_RESIDENTIAL_PROXY }}
           # Stream.Estate's API key (V2 beta). Read by the adapter from the environment only.
           STREAM_ESTATE_V2_API_KEY: ${{ secrets.STREAM_ESTATE_V2_API_KEY }}
+          # The client's V1 key: billed per item, 15 000 a month. Every request goes
+          # through the meter in src/lib/portals/streamV1.ts, which keeps its count in
+          # the database and refuses a page that would pass the cap.
+          STREAM_ESTATE_API_KEY: ${{ secrets.STREAM_ESTATE_API_KEY }}
 
       # `always()`, because the summary matters most on the night that failed.
       - name: Publish the summary

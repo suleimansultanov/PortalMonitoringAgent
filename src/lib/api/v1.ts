@@ -248,9 +248,16 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
   }
   for (const r of rows) {
     const list = byProperty.get(r.id) ?? [];
-    // A portal we collect directly is our own reading of it; the same portal seen via an aggregator is dropped.
+    // A portal we collect directly is our own reading of it; the same portal seen via an aggregator is
+    // dropped — and so is the same portal seen via two aggregators (V2 and V1 both carry SeLoger).
     const direct = new Set(list.filter((l) => !l.via).map((l) => l.source));
-    r.listings = list.filter((l) => !l.via || !direct.has(l.source));
+    const sent = new Set<string>();
+    r.listings = list.filter((l) => {
+      if (!l.via) return true;
+      if (direct.has(l.source) || sent.has(l.source)) return false;
+      sent.add(l.source);
+      return true;
+    });
   }
 
   await withLastPriceChange(rows);

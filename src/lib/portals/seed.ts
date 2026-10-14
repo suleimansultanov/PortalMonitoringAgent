@@ -724,6 +724,42 @@ function sourceSeeds(): SourceSeed[] {
         refreshOnChange: true,
       },
     },
+    {
+      key: "stream-estate-v1",
+      name: "Stream.Estate V1",
+      hosts: ["api.stream.estate"],
+      baseUrl: "https://api.stream.estate",
+      /** Ours. Their limit is per item, not per minute. */
+      crawlDelayMs: 500,
+      permissionNote:
+        "The same provider as `stream-estate`, under the same Terms and Acceptable Use Policy " +
+        "(see that source's note), through their paid V1 API. The subscription is the " +
+        "CLIENT'S: Med-Estates' account (ai@med-estates.com), Starter plan since 2026-10-14, " +
+        "15 000 items a month and EUR 0.003 each beyond, on his card. Billing in writing " +
+        "from Thomas, 2026-10-05: every property returned is one item, the same property " +
+        "returned again is another, count requests (itemsPerPage=0) are free.\n\n" +
+        "WHY V1 BESIDE V2: V2 carries no Propriétés Le Figaro, Figaro Immobilier or " +
+        "Superimmo in the gulf and starts on 2026-06-24; V1 carries all three and goes " +
+        "back to 2022. Read changes-only each night after one reading of the stock " +
+        "(`changesOnly`), and never in a Sunday full sweep — four of those would be the month.\n\n" +
+        "THE METER (src/lib/portals/streamV1.ts) is the condition this runs under: a ledger " +
+        "in `api_usage`, a cap of monthlyItems − reserve checked before every paid page, " +
+        "no retries. The key is read from the environment only (STREAM_ESTATE_API_KEY).",
+      config: {
+        apiKeyEnv: "STREAM_ESTATE_API_KEY",
+        /** The runner: no abort guard on a fraction of the market, nothing delisted for being unseen. */
+        changesOnly: true,
+        /** The plan, and what is left unspent on purpose. Cap = monthlyItems − reserve. */
+        monthlyItems: 15_000,
+        reserve: 1_000,
+        /** The plan renews on this day of the month (2026-10-14 → 2026-11-13). */
+        periodAnchorDay: 14,
+        /** The first pass takes properties not expired and touched within this many days. */
+        freshDays: 30,
+        /** As their URLs name them: the portals we collect ourselves. */
+        ownSources: ["vizzit", "bienici", "luxuryestate", "green-acres", "etreproprio", "superimmo"],
+      },
+    },
   ];
 }
 

@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BillingFault, BudgetError, canonical, createV1Client, readLedger, V1_PLAN_ITEMS } from "./streamV1";
+import {
+  BillingFault,
+  BudgetError,
+  canonical,
+  createV1Client,
+  diskLedgerStore,
+  periodStart,
+  V1_PLAN_ITEMS,
+  withDiskCache,
+  type LedgerEntry,
+  type LedgerStore,
+} from "./streamV1";
 
 /**
  * The meter in front of a per-item API on someone else's card. Each test is a
@@ -26,104 +37,123 @@ function fake(answer: (url: string) => { status?: number; body: string } | Error
 }
 
 const q = (params: Record<string, string>) => new URLSearchParams(params);
+const client = (dir: string, fetchImpl: typeof fetch, extra: { cap?: number; allowOverage?: boolean } = {}) =>
+  createV1Client({ store: diskLedgerStore(dir), apiKey: () => "k", fetchImpl, ...extra });
+
+test("the period starts on the plan's renewal day: the 14th, this month or last", () => {
+  assert.equal(periodStart(new Date("2026-10-14T00:00:00Z")).toISOString(), "2026-10-14T00:00:00.000Z");
+  assert.equal(periodStart(new Date("2026-11-13T23:59:59Z")).toISOString(), "2026-10-14T00:00:00.000Z");
+  assert.equal(periodStart(new Date("2026-11-14T00:00:00Z")).toISOString(), "2026-11-14T00:00:00.000Z");
+  assert.equal(periodStart(new Date("2027-01-02T12:00:00Z")).toISOString(), "2026-12-14T00:00:00.000Z");
+});
 
 test("a count request is free: nothing is added, and the answer is the total", async () => {
-  const dir = tmp();
   const { fetchImpl, asked } = fake(() => ({ body: page(0, 4321) }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
+  const c = client(tmp(), fetchImpl);
   const r = await c.call(q({ itemsPerPage: "0", transactionType: "0" }));
   assert.equal(r.total, 4321);
   assert.equal(r.spent, 0);
-  assert.equal(c.ledger().items, 0);
+  assert.equal((await c.totals()).items, 0);
+  assert.equal((await c.totals()).freeRequests, 1);
   assert.equal(asked.length, 1);
 });
 
 test("a count request that comes back with items stops everything", async () => {
   const dir = tmp();
   const { fetchImpl } = fake(() => ({ body: page(10) }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
+  const c = client(dir, fetchImpl);
   await assert.rejects(c.call(q({ itemsPerPage: "0" })), BillingFault);
   // Counted, so the next run starts from the truth.
-  assert.equal(readLedger(dir).items, 10);
+  assert.equal((await c.totals()).items, 10);
 });
 
-test("a paid page is counted by what came back, and written to disk", async () => {
+test("a paid page is counted by what came back, and kept on disk", async () => {
   const dir = tmp();
   const { fetchImpl } = fake(() => ({ body: page(30) }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
+  const c = client(dir, fetchImpl);
   const r = await c.call(q({ itemsPerPage: "30", page: "1" }));
   assert.equal(r.spent, 30);
-  assert.equal(readLedger(dir).items, 30);
-  assert.equal(c.remaining(), c.cap - 30);
+  assert.equal((await c.totals()).items, 30);
+  assert.equal(await c.remaining(), c.cap - 30);
+  assert.equal(fs.readdirSync(path.join(dir, "responses")).length, 1);
 });
 
 test("the same question asked twice is answered from disk: no request, no charge", async () => {
   const dir = tmp();
   const { fetchImpl, asked } = fake(() => ({ body: page(30) }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
-  await c.call(q({ itemsPerPage: "30", page: "1", transactionType: "0" }));
+  await client(dir, fetchImpl).call(q({ itemsPerPage: "30", page: "1", transactionType: "0" }));
   // Same parameters in another order, and from a fresh client — a re-run.
-  const again = createV1Client({ dir, apiKey: () => "k", fetchImpl });
-  const r = await again.call(q({ transactionType: "0", page: "1", itemsPerPage: "30" }));
+  const r = await client(dir, fetchImpl).call(q({ transactionType: "0", page: "1", itemsPerPage: "30" }));
   assert.equal(r.fromCache, true);
   assert.equal(r.spent, 0);
   assert.equal(asked.length, 1);
-  assert.equal(readLedger(dir).items, 30);
+  assert.equal((await client(dir, fetchImpl).totals()).items, 30);
 });
 
 test("a page that would pass the cap is refused before it is sent", async () => {
   const dir = tmp();
   const { fetchImpl, asked } = fake(() => ({ body: page(30) }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl, cap: 50 });
+  const c = client(dir, fetchImpl, { cap: 50 });
   await c.call(q({ itemsPerPage: "30", page: "1" }));
   await assert.rejects(c.call(q({ itemsPerPage: "30", page: "2" })), BudgetError);
   assert.equal(asked.length, 1, "the second request never left");
-  assert.equal(readLedger(dir).items, 30);
+  assert.equal((await c.totals()).items, 30);
 });
 
-test("the cap holds across runs: a second process starts from what the first spent", async () => {
+test("the cap holds across processes: a second one starts from what the first spent", async () => {
   const dir = tmp();
   const a = fake(() => ({ body: page(30) }));
-  await createV1Client({ dir, apiKey: () => "k", fetchImpl: a.fetchImpl, cap: 40 }).call(q({ itemsPerPage: "30", page: "1" }));
+  await client(dir, a.fetchImpl, { cap: 40 }).call(q({ itemsPerPage: "30", page: "1" }));
   const b = fake(() => ({ body: page(30) }));
-  const second = createV1Client({ dir, apiKey: () => "k", fetchImpl: b.fetchImpl, cap: 40 });
-  await assert.rejects(second.call(q({ itemsPerPage: "30", page: "2" })), BudgetError);
+  await assert.rejects(client(dir, b.fetchImpl, { cap: 40 }).call(q({ itemsPerPage: "30", page: "2" })), BudgetError);
   assert.equal(b.asked.length, 0);
 });
 
+test("spending in a previous period does not count against this one", async () => {
+  const dir = tmp();
+  const store = diskLedgerStore(dir);
+  const old: LedgerEntry = { at: new Date("2026-09-20T00:00:00Z"), paid: true, query: "x", items: 14_000, uncertain: false };
+  await store.append(old);
+  const { fetchImpl } = fake(() => ({ body: page(30) }));
+  const c = createV1Client({ store, apiKey: () => "k", fetchImpl, now: () => new Date("2026-10-20T00:00:00Z") });
+  assert.equal((await c.totals()).items, 0);
+  await c.call(q({ itemsPerPage: "30", page: "1" }));
+  assert.equal((await c.totals()).items, 30);
+});
+
 test("a cap above the plan needs to be said out loud", () => {
-  assert.throws(() => createV1Client({ dir: tmp(), apiKey: () => "k", cap: V1_PLAN_ITEMS + 1 }), BudgetError);
-  assert.doesNotThrow(() => createV1Client({ dir: tmp(), apiKey: () => "k", cap: V1_PLAN_ITEMS + 1, allowOverage: true }));
+  const s = diskLedgerStore(tmp());
+  assert.throws(() => createV1Client({ store: s, apiKey: () => "k", cap: V1_PLAN_ITEMS + 1 }), BudgetError);
+  assert.doesNotThrow(() => createV1Client({ store: s, apiKey: () => "k", cap: V1_PLAN_ITEMS + 1, allowOverage: true }));
 });
 
 test("the default cap leaves a reserve under the plan", () => {
-  const c = createV1Client({ dir: tmp(), apiKey: () => "k" });
+  const c = createV1Client({ store: diskLedgerStore(tmp()), apiKey: () => "k" });
   assert.ok(c.cap < V1_PLAN_ITEMS, `${c.cap} < ${V1_PLAN_ITEMS}`);
 });
 
 test("a paid request that fails in transit is counted at the worst case and not retried", async () => {
   const dir = tmp();
   const { fetchImpl, asked } = fake(() => new Error("socket hang up"));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
+  const c = client(dir, fetchImpl);
   await assert.rejects(c.call(q({ itemsPerPage: "30", page: "1" })), BillingFault);
   assert.equal(asked.length, 1);
-  const l = readLedger(dir);
-  assert.equal(l.items, 30);
-  assert.equal(l.uncertain, 30);
+  const t = await c.totals();
+  assert.equal(t.items, 30);
+  assert.equal(t.uncertain, 30);
 });
 
 test("a refused request costs nothing and is not retried", async () => {
-  const dir = tmp();
   const { fetchImpl, asked } = fake(() => ({ status: 402, body: '{"message":"Insufficient credits"}' }));
-  const c = createV1Client({ dir, apiKey: () => "k", fetchImpl });
+  const c = client(tmp(), fetchImpl);
   await assert.rejects(c.call(q({ itemsPerPage: "30", page: "1" })), /HTTP 402/);
   assert.equal(asked.length, 1);
-  assert.equal(readLedger(dir).items, 0);
+  assert.equal((await c.totals()).items, 0);
 });
 
 test("a request that does not say how many items it wants is never sent", async () => {
   const { fetchImpl, asked } = fake(() => ({ body: page(10) }));
-  const c = createV1Client({ dir: tmp(), apiKey: () => "k", fetchImpl });
+  const c = client(tmp(), fetchImpl);
   // Their default is ten items: an unmetered request is ten items nobody asked for.
   await assert.rejects(c.call(q({ transactionType: "0" })), BudgetError);
   await assert.rejects(c.call(q({ itemsPerPage: "31" })), BudgetError);
@@ -133,10 +163,61 @@ test("a request that does not say how many items it wants is never sent", async 
 test("the key is sent as a header and never written to the ledger", async () => {
   const dir = tmp();
   const { fetchImpl } = fake(() => ({ body: page(1) }));
-  await createV1Client({ dir, apiKey: () => "SECRET-KEY", fetchImpl }).call(q({ itemsPerPage: "1" }));
+  await createV1Client({ store: diskLedgerStore(dir), apiKey: () => "SECRET-KEY", fetchImpl }).call(q({ itemsPerPage: "1" }));
   for (const f of fs.readdirSync(dir, { recursive: true }) as string[]) {
     const full = path.join(dir, f);
     if (fs.statSync(full).isFile()) assert.equal(fs.readFileSync(full, "utf8").includes("SECRET-KEY"), false, f);
   }
   assert.equal(canonical(q({ b: "2", a: "1" })), "a=1&b=2");
+});
+
+test("a store without a cache asks again, and a cache wrapped around it answers from disk", async () => {
+  const dir = tmp();
+  const entries: LedgerEntry[] = [];
+  const bare: LedgerStore = {
+    async totals(since) {
+      const mine = entries.filter((e) => e.at >= since);
+      return { items: mine.reduce((a, e) => a + e.items, 0), uncertain: 0, paidRequests: mine.filter((e) => e.paid).length, freeRequests: 0 };
+    },
+    async append(e) {
+      entries.push(e);
+    },
+  };
+  const { fetchImpl, asked } = fake(() => ({ body: page(5) }));
+  const first = createV1Client({ store: bare, apiKey: () => "k", fetchImpl });
+  await first.call(q({ itemsPerPage: "5", page: "1" }));
+  await first.call(q({ itemsPerPage: "5", page: "1" }));
+  assert.equal(asked.length, 2, "no cache: asked twice, paid twice");
+  assert.equal((await first.totals()).items, 10);
+
+  const cached = createV1Client({ store: withDiskCache(bare, dir), apiKey: () => "k", fetchImpl });
+  await cached.call(q({ itemsPerPage: "5", page: "2" }));
+  const again = await cached.call(q({ itemsPerPage: "5", page: "2" }));
+  assert.equal(again.fromCache, true);
+  assert.equal(asked.length, 3);
+  assert.equal((await cached.totals()).items, 15, "the ledger is still the bare store's");
+});
+
+test("an older ledger.json is converted once, and its paid items keep counting", async () => {
+  const dir = tmp();
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "ledger.json"),
+    JSON.stringify({
+      since: "2026-10-13T22:17:00.000Z",
+      items: 27,
+      log: [
+        { at: "2026-10-13T22:20:00.000Z", query: "includedInseeCodes[]=83079&itemsPerPage=0", items: 0 },
+        { at: "2026-10-14T01:00:00.000Z", query: "includedInseeCodes[]=83079&itemsPerPage=30&page=1", items: 27 },
+      ],
+    }),
+  );
+  const store = diskLedgerStore(dir);
+  const t = await store.totals(new Date("2026-10-14T00:00:00Z"));
+  assert.equal(t.items, 27);
+  assert.equal(t.paidRequests, 1);
+  assert.equal(t.freeRequests, 0, "the count request was in the previous period");
+  assert.ok(fs.existsSync(path.join(dir, "ledger.jsonl")));
+  assert.ok(fs.existsSync(path.join(dir, "ledger-legacy.json")));
+  assert.ok(!fs.existsSync(path.join(dir, "ledger.json")));
 });

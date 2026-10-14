@@ -6,36 +6,39 @@ import {
   BillingFault,
   BudgetError,
   createV1Client,
-  readLedger,
   V1_DEFAULT_RESERVE,
   V1_PAGE,
   V1_PLAN_ITEMS,
+  withDiskCache,
   type V1Client,
 } from "./streamV1";
+import { dbLedgerStore } from "./streamV1Db";
 
 /**
  * Stream.Estate V1: the gulf's history, pulled once, on a meter.
  *
  *   npm run stream:history                       — THE PLAN. Counts only; spends nothing.
- *   npm run stream:history -- --ledger           — what has been spent so far.
+ *   npm run stream:history -- --ledger           — what has been spent this period, from the database.
  *   npm run stream:history -- --pull=price-changes            — says what it would do; spends nothing.
  *   npm run stream:history -- --pull=price-changes --yes      — does it, up to the cap.
  *   npm run stream:history -- --pull=… --yes --communes=83079 --max-pages=1   — one page of 30, to reconcile
  *                                                                               our ledger with their dashboard.
  *   npm run stream:history -- --analyse          — reads what is on disk; spends nothing.
- *   npm run stream:history -- --new-period --yes — start the count again after the plan renews (the 13th).
+ *
+ * THE SAME LEDGER AS THE NIGHTLY PASS. The `stream-estate-v1` source reads
+ * changes from this API every night on the same plan, so what this tool
+ * spends and what the runner spends are one count, in the `api_usage` table.
+ * The responses this tool pays for are also kept on disk, so a re-run or an
+ * analysis sends nothing.
  *
  * WHAT V1 HAS THAT V2 DOES NOT (Thomas, in writing, 2026-10-09): on our
  * communes, properties continuously since 2022 and price changes since July
  * 2021. Its dates are those of THEIR first detection, not the portal's
- * publication date. V2 starts on 24 June 2026. So V1 is for one thing: the
- * history. The nightly collector stays on V2 and never touches this.
+ * publication date. V2 starts on 24 June 2026.
  *
  * WHAT IT COSTS. One item per property returned, 30 a page, 15 000 a month on
- * the client's Starter plan, EUR 0.003 each beyond that on his card. The
- * gulf held 66 070 not-expired sale properties on 2026-09-25 with three
- * communes at the 10 000-per-query ceiling, so "everything" does not fit and
- * the plan exists to choose. Three families, each a different question:
+ * the client's Starter plan, EUR 0.003 each beyond that on his card. Three
+ * families, each a different question:
  *
  *   price-changes  properties with a price change since 2021-07-01 — the
  *                  history a market report is made of.
@@ -51,6 +54,7 @@ import {
  * Read its header before changing anything here.
  */
 
+const SOURCE_KEY = "stream-estate-v1";
 const DIR = path.join(process.cwd(), ".pages", "stream-estate-v1");
 const HISTORY_FROM = "2021-07-01";
 
@@ -73,11 +77,12 @@ function apiKey(): string {
     // not installed: the error below says what is missing
   }
   const k = process.env.STREAM_ESTATE_API_KEY?.trim();
-  if (!k) throw new Error("STREAM_ESTATE_API_KEY is not set — add the client's V1 key to .env.local (never to GitHub: the nightly pass must not hold it).");
+  if (!k) throw new Error("STREAM_ESTATE_API_KEY is not set — add the client's V1 key to .env.local.");
   return k;
 }
 
-const name = (insee: string) => GULF_OF_SAINT_TROPEZ.find((c) => c.insee === insee && !c.localityOf)?.label ?? GULF_OF_SAINT_TROPEZ.find((c) => c.insee === insee)?.label ?? insee;
+const name = (insee: string) =>
+  GULF_OF_SAINT_TROPEZ.find((c) => c.insee === insee && !c.localityOf)?.label ?? GULF_OF_SAINT_TROPEZ.find((c) => c.insee === insee)?.label ?? insee;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -161,20 +166,20 @@ async function windowsFor(client: V1Client, insee: string, family: string): Prom
   return { windows, truncated };
 }
 
-function showLedger(): void {
-  const l = readLedger(DIR);
-  console.log(`\n── ledger (${path.relative(process.cwd(), path.join(DIR, "ledger.json"))})`);
-  console.log(`   counting since   ${l.since.slice(0, 16).replace("T", " ")} UTC`);
-  console.log(`   items counted    ${l.items}   of the plan's ${V1_PLAN_ITEMS}`);
-  console.log(`   of them unsure   ${l.uncertain}   (paid requests that failed in transit, counted at the worst case)`);
-  console.log(`   requests         ${l.paidRequests} paid, ${l.freeRequests} free`);
-  console.log(`   Their dashboard is the bill. If the two disagree, theirs is right and this file is the thing to fix.`);
+async function showLedger(client: V1Client): Promise<void> {
+  const t = await client.totals();
+  console.log(`\n── ledger (table api_usage, source ${SOURCE_KEY}) — the nightly pass and this tool share it`);
+  console.log(`   period from      ${client.periodStart.toISOString().slice(0, 10)}`);
+  console.log(`   items counted    ${t.items}   of the plan's ${V1_PLAN_ITEMS}; cap ${client.cap}, ${await client.remaining()} left`);
+  console.log(`   of them unsure   ${t.uncertain}   (paid requests that failed in transit, counted at the worst case)`);
+  console.log(`   requests         ${t.paidRequests} paid, ${t.freeRequests} free`);
+  console.log(`   Their dashboard is the bill. If the two disagree, theirs is right and this table is the thing to fix.`);
 }
 
 const statePath = path.join(DIR, "state.json");
-const readState = (): { families: string[] } => {
+const readState = (): { families: string[]; period?: string } => {
   try {
-    return JSON.parse(fs.readFileSync(statePath, "utf8")) as { families: string[] };
+    return JSON.parse(fs.readFileSync(statePath, "utf8")) as { families: string[]; period?: string };
   } catch {
     return { families: [] };
   }
@@ -199,8 +204,9 @@ async function plan(client: V1Client): Promise<void> {
   if (capped.length > 0) {
     console.log(`\n   "+" = at their ${QUERY_CEILING}-per-query ceiling: the real figure is higher. A pull splits those by year, then month.`);
   }
-  const left = client.remaining();
-  console.log(`\n   Budget: ${client.ledger().items} counted so far, cap ${client.cap}, ${left} left this period.`);
+  const left = await client.remaining();
+  console.log(`\n   Budget: ${(await client.totals()).items} counted so far, cap ${client.cap}, ${left} left this period.`);
+  console.log(`   The nightly changes-only pass of the same source spends from the same count: ~200 a day.`);
   for (const [family, f] of Object.entries(FAMILIES)) {
     const n = sums[family];
     const over = Math.max(0, n - V1_PLAN_ITEMS);
@@ -209,18 +215,18 @@ async function plan(client: V1Client): Promise<void> {
         (n <= left ? `FITS in what is left.` : `Does NOT fit: ${n - left} over the cap` + (over > 0 ? `; beyond the plan ≈ EUR ${(over * 0.003).toFixed(0)} at 0.003.` : `.`)),
     );
   }
-  console.log(`\n   Next, to check our count against their dashboard with one page of ${V1_PAGE}:`);
-  console.log(`   npm run stream:history -- --pull=price-changes --yes --communes=83079 --max-pages=1`);
 }
 
 async function pull(client: V1Client, family: string): Promise<void> {
   if (!FAMILIES[family]) throw new Error(`unknown family "${family}" — one of: ${Object.keys(FAMILIES).join(", ")}`);
+  const period = client.periodStart.toISOString().slice(0, 10);
   const state = readState();
-  const others = state.families.filter((f) => f !== family);
+  const pulledThisPeriod = state.period === period ? state.families : [];
+  const others = pulledThisPeriod.filter((f) => f !== family);
   if (others.length > 0 && !flag("allow-overlap")) {
     throw new BudgetError(
       `"${others.join(", ")}" was already pulled this period, and families overlap: a property in both is billed twice. ` +
-        `Pass --allow-overlap if that is understood, or --new-period after the plan renews.`,
+        `Pass --allow-overlap if that is understood.`,
     );
   }
   const communes = (arg("communes")?.split(",").map((s) => s.trim()).filter(Boolean) ?? COLLECTION_INSEE).filter((c) =>
@@ -241,11 +247,12 @@ async function pull(client: V1Client, family: string): Promise<void> {
   }
   const need = all.reduce((a, w) => a + w.total, 0);
   const pages = all.reduce((a, w) => a + Math.ceil(w.total / V1_PAGE), 0);
+  const left = await client.remaining();
   console.log(`   ${all.length} windows, ${need} items, ${pages} pages of ${V1_PAGE}`);
   for (const t of truncated) console.warn(`   ⚠ ${t}`);
-  console.log(`   budget: ${client.ledger().items} counted so far, cap ${client.cap}, ${client.remaining()} left`);
-  if (need > client.remaining()) {
-    console.log(`   → does not fit: the pull will stop at the cap with ${need - client.remaining()} items not taken. Pages already on disk are not asked for again.`);
+  console.log(`   budget: ${(await client.totals()).items} counted so far, cap ${client.cap}, ${left} left`);
+  if (need > left) {
+    console.log(`   → does not fit: the pull will stop at the cap with ${need - left} items not taken. Pages already on disk are not asked for again.`);
   }
   if (!flag("yes")) {
     console.log(`\n   Nothing was requested. Add --yes to pull.`);
@@ -253,7 +260,7 @@ async function pull(client: V1Client, family: string): Promise<void> {
   }
 
   fs.mkdirSync(DIR, { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify({ families: [...new Set([...state.families, family])] }));
+  fs.writeFileSync(statePath, JSON.stringify({ period, families: [...new Set([...pulledThisPeriod, family])] }));
 
   let got = 0;
   let fromCache = 0;
@@ -279,14 +286,14 @@ async function pull(client: V1Client, family: string): Promise<void> {
         }
         if (r.items.length === 0) break;
       }
-      console.log(`   ${name(w.insee).padEnd(22)} ${w.from ? `${w.from}…${w.to}` : "all dates".padEnd(21)}  ${String(w.total).padStart(6)} stated — ledger ${client.ledger().items}`);
+      console.log(`   ${name(w.insee).padEnd(22)} ${w.from ? `${w.from}…${w.to}` : "all dates".padEnd(21)}  ${String(w.total).padStart(6)} stated — counted ${(await client.totals()).items}`);
     }
   } catch (err) {
     if (err instanceof BudgetError) console.log(`\n   Stopped: ${err.message}`);
     else throw err;
   }
   console.log(`\n   This run: ${got} items paid for in ${asked} requests, ${fromCache} read from disk for nothing.`);
-  showLedger();
+  await showLedger(client);
 }
 
 function analyse(): void {
@@ -319,30 +326,16 @@ function analyse(): void {
 }
 
 async function main(): Promise<void> {
-  if (flag("ledger")) return showLedger();
   if (flag("analyse")) return analyse();
-  if (flag("new-period")) {
-    if (!flag("yes")) {
-      showLedger();
-      console.log(`\n   --new-period sets the count back to zero. Only after the plan has renewed. Add --yes to do it.`);
-      return;
-    }
-    const stamp = new Date().toISOString().slice(0, 10);
-    for (const f of ["ledger.json", "state.json"]) {
-      const p = path.join(DIR, f);
-      if (fs.existsSync(p)) fs.renameSync(p, path.join(DIR, `${f.replace(".json", "")}-until-${stamp}.json`));
-    }
-    console.log(`   New period started. The old ledger is kept beside it; responses on disk are untouched and still free to read.`);
-    return;
-  }
 
   const capArg = arg("cap");
   const client = createV1Client({
-    dir: DIR,
+    store: withDiskCache(dbLedgerStore(SOURCE_KEY), DIR),
     apiKey,
     cap: capArg ? Number(capArg) : V1_PLAN_ITEMS - V1_DEFAULT_RESERVE,
     allowOverage: flag("allow-overage"),
   });
+  if (flag("ledger")) return showLedger(client);
   apiKey(); // fail on a missing key before anything else is said
 
   const family = arg("pull");
