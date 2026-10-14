@@ -442,8 +442,9 @@ function toPayload(r: Record<string, unknown>): PropertyPayload {
     priceEur: (r.priceEur as number) ?? null,
     priceOnRequest: r.priceOnRequest === true,
     lastPriceChange: null,
-    areaM2: (r.areaM2 as number) ?? null,
-    landM2: (r.landM2 as number) ?? null,
+    // `numeric` arrives as a string from pg; the listing-level figures below are already numbers.
+    areaM2: r.areaM2 == null ? null : Number(r.areaM2),
+    landM2: r.landM2 == null ? null : Number(r.landM2),
     rooms: (r.rooms as number) ?? null,
     bedrooms: (r.bedrooms as number) ?? null,
     propertyType: (r.propertyType as string) ?? null,
@@ -530,9 +531,16 @@ export async function events(
   const conditions = [
     inArray(properties.communeInsee, opts.communeInsee),
     isNotNull(portalListings.propertyId),
-    // The event's own source still collected, and the property still served.
+    /**
+     * The event's own source still collected — and NOT `SERVED_PROPERTY`.
+     * A `delisted` event is written at the moment the listing's status flips,
+     * so for a single-portal property (most of them) no active listing is
+     * left at exactly that moment; requiring one would hide the one event the
+     * delta API exists for. For a few hours on 2026-10-14 it did: 580 of the
+     * week's delistings. A `listed` or `price_changed` event is on an active
+     * listing of an enabled source, so its property is served by construction.
+     */
     eq(portalSources.enabled, true),
-    SERVED_PROPERTY,
   ];
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
