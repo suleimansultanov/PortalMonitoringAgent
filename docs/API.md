@@ -74,6 +74,13 @@ page carried a price we did not read. Only the first is `priceOnRequest: true`.
 Print "on request" for a null price without checking it and you tell the agent
 the agency is hiding a number that was on the page.
 
+**Only sources still being collected are served.** A collector that is
+switched off leaves its rows in our database, but nobody checks them again, so
+the API does not send them: a property is served while at least one source
+still running carries it, with that source's listings only. Figaro, Superimmo
+and the others reach you through Stream.Estate under the portal's own name, as
+read last night. `/api/v1/status` lists the same set of sources.
+
 **`source` is always a portal.** `stream-estate` is an aggregator, not a
 portal, and it never appears as a `source`: each of its properties is sent as
 one listing per portal it was found on — `seloger`, `leboncoin`,

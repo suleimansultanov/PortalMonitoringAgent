@@ -14,6 +14,25 @@ import { AGGREGATORS, carriedPortals, shownAs } from "@/lib/portals/portalOf";
 import type { KeyScope } from "./keys";
 
 /**
+ * WHAT IS SERVED: listings from sources still being collected, and only
+ * properties that have at least one.
+ *
+ * A collector switched off (Propriétés Le Figaro since 16 September,
+ * JamesEdition, SMC, Superimmo on 2026-10-14) leaves its rows in the
+ * database, active, and nobody checks them again. Serving them tells a
+ * client a villa is on Figaro at a price nobody has looked at for a month.
+ * The same portals now reach us through Stream.Estate, whose rows are
+ * served under the portal's name — so "Figaro" in the API means Figaro as
+ * read last night, never Figaro as it was in September. The rows stay: a
+ * source switched back on serves them again, and nothing was deleted.
+ */
+const SERVED_PROPERTY = sql`exists (
+  select 1 from ${portalListings} l
+  join ${portalSources} s on s.id = l.source_id
+  where l.property_id = ${properties.id} and l.status = 'active' and s.enabled
+)`;
+
+/**
  * The queries behind /api/v1 — what a client instance is allowed to read.
  *
  * Separate from `lib/api/queries.ts`, which serves our own screens. The two
@@ -190,7 +209,7 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(and(inArray(portalListings.propertyId, ids), eq(portalListings.status, "active")));
+    .where(and(inArray(portalListings.propertyId, ids), eq(portalListings.status, "active"), eq(portalSources.enabled, true)));
 
   const byProperty = new Map<string, ListingPayload[]>();
   for (const l of links) {
@@ -334,7 +353,7 @@ async function withLastPriceChange(rows: PropertyPayload[]): Promise<void> {
     .innerJoin(portalListings, eq(portalListings.id, portalListingEvents.listingId))
     .innerJoin(portalSources, eq(portalSources.id, portalListingEvents.sourceId))
     .where(
-      and(eq(portalListingEvents.type, "price_changed"), inArray(portalListings.propertyId, ids)),
+      and(eq(portalListingEvents.type, "price_changed"), inArray(portalListings.propertyId, ids), eq(portalSources.enabled, true)),
     )
     .orderBy(desc(portalListingEvents.occurredAt));
 
@@ -459,6 +478,7 @@ export async function snapshot(
   const conditions = [
     eq(properties.status, "active"),
     inArray(properties.communeInsee, opts.communeInsee),
+    SERVED_PROPERTY,
   ];
   if (opts.after) conditions.push(gt(properties.id, opts.after));
 
@@ -510,6 +530,9 @@ export async function events(
   const conditions = [
     inArray(properties.communeInsee, opts.communeInsee),
     isNotNull(portalListings.propertyId),
+    // The event's own source still collected, and the property still served.
+    eq(portalSources.enabled, true),
+    SERVED_PROPERTY,
   ];
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
@@ -547,6 +570,7 @@ export async function events(
     .from(portalListingEvents)
     .innerJoin(portalListings, eq(portalListings.id, portalListingEvents.listingId))
     .innerJoin(properties, eq(properties.id, portalListings.propertyId))
+    .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
     .where(and(...conditions))
     .orderBy(asc(portalListingEvents.occurredAt), asc(portalListingEvents.id))
     .limit(opts.limit + 1);
@@ -625,6 +649,7 @@ export async function status(scope: KeyScope): Promise<{
     .where(
       and(
         eq(properties.status, "active"),
+        SERVED_PROPERTY,
         scope.communeInsee.length > 0
           ? inArray(properties.communeInsee, scope.communeInsee)
           : sql`false`,
@@ -728,7 +753,12 @@ export async function status(scope: KeyScope): Promise<{
         .map((h) => (h.host ? shownAs(`https://${h.host}/`)?.key : null))
         .filter((k): k is string => !!k && !direct.has(k)),
     );
-    for (const key of [...keys].sort()) expanded.push({ ...r, key, via: r.key });
+    for (const key of [...keys].sort()) {
+      // Two aggregators carrying the same portal (V2 and V1 both have SeLoger) are one row: the later run.
+      const seen = expanded.find((e) => e.key === key && e.via);
+      if (!seen) expanded.push({ ...r, key, via: r.key });
+      else if ((r.lastRunAt ?? "") > (seen.lastRunAt ?? "")) Object.assign(seen, { lastRunAt: r.lastRunAt, lastOutcome: r.lastOutcome, via: r.key });
+    }
   }
 
   return {
