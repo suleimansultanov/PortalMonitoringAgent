@@ -6,6 +6,7 @@ import {
   type PortalAdapter,
   type RawListing,
 } from "../types";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * JamesEdition — the luxury aggregator.
@@ -313,21 +314,27 @@ export const jameseditionAdapter: PortalAdapter = {
     const communes = (ctx.config.communes ?? []) as CommuneConfig[];
     const maxPages = (ctx.config.maxPages as number) ?? 30;
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        /**
-         * La Môle (83079) is the one we have no slug for. Their nearby-areas
-         * block names eleven of our twelve and not that one, and
-         * `la-mole-france` is exactly the guess this project has been punished
-         * for: an unknown area slug on these portals answers 200 with
-         * something else, which reads as a commune with nothing for sale and
-         * delists everything previously collected there.
-         */
-        console.warn(`[jamesedition] no area slug configured for INSEE ${insee} — skipping`);
-      }
-    }
+    /**
+     * La Môle (83079) is the one we have no slug for. Their nearby-areas
+     * block names eleven of our twelve and not that one, and
+     * `la-mole-france` is exactly the guess this project has been punished
+     * for: an unknown area slug on these portals answers 200 with
+     * something else, which reads as a commune with nothing for sale and
+     * delists everything previously collected there.
+     *
+     * So La Môle is reported incomplete on every pass, and that is correct
+     * rather than noisy: until 2026-10-15 it was skipped with a warning, the
+     * runner's baseline still counted it as visited, and any La Môle listing
+     * that reached us through a neighbour's page would have been delisted the
+     * first night it was not on one. Reported, it is shielded.
+     */
+    const wanted = addressableCommunes(ctx, {
+      source: "jamesedition",
+      what: "area slug",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       const seen = new Set<string>();
       let cutShort: string | null = null;
       let knownStreak = 0;

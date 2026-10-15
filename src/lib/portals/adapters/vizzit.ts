@@ -1,5 +1,6 @@
 import type { DiscoverContext, DiscoveredListing, PortalAdapter } from "../types";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 import { cardsOnPage, greenAcresAdapter } from "./greenacres";
 
 /**
@@ -53,13 +54,13 @@ export const vizzitAdapter: PortalAdapter = {
     const maxPages = (ctx.config.maxPages as number) ?? 60;
     const pageParam = (ctx.config.pageParam as string) ?? "p_n";
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        ctx.incomplete(insee, "no Vizzit commune configured");
-      }
-    }
+    const wanted = addressableCommunes(ctx, {
+      source: "vizzit",
+      what: "Vizzit commune",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       const seen = new Set<string>();
       let total: number | null = null;
       let knownStreak = 0;

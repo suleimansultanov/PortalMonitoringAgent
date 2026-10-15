@@ -9,6 +9,7 @@ import {
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
 import { normaliseCommuneName, resolveCommune } from "../communes";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Propriétés Le Figaro.
@@ -140,11 +141,11 @@ export const figaroAdapter: PortalAdapter = {
     const communes = (ctx.config.communes ?? []) as FigaroCommuneConfig[];
     const maxPages = (ctx.config.maxPages as number) ?? 60;
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        console.warn(`[figaro] no commune configured for INSEE ${insee} — skipping`);
-      }
-    }
+    const wanted = addressableCommunes(ctx, {
+      source: "figaro",
+      what: "commune",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
     /**
      * Run-level, not per-commune: Figaro promotes a listing onto the pages of
@@ -154,7 +155,7 @@ export const figaroAdapter: PortalAdapter = {
      */
     const yielded = new Set<string>();
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       /** Every exit from the loop that is not "the results ran out". */
       let cutShort: string | null = null;
       let kept = 0;

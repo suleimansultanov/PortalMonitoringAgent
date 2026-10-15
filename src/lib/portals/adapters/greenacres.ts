@@ -10,6 +10,7 @@ import {
 import { extractJsonLd, firstOffer, num, primaryOfferNode, str } from "../jsonld";
 import { collectCharacteristics, isEmpty } from "../attributes";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Green-Acres.
@@ -84,13 +85,13 @@ export const greenAcresAdapter: PortalAdapter = {
      */
     const pageParam = (ctx.config.pageParam as string) ?? "p_n";
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        console.warn(`[green-acres] no commune configured for INSEE ${insee} — skipping`);
-      }
-    }
+    const wanted = addressableCommunes(ctx, {
+      source: "green-acres",
+      what: "commune slug",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       const seen = new Set<string>();
       /**
        * Set by every exit from the loop that is not "the results ran out".

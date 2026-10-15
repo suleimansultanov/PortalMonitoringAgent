@@ -11,6 +11,7 @@ import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from ".
 import { ETREPROPRIO_SLUGS } from "../communePaths";
 import { GULF_OF_SAINT_TROPEZ } from "../communes";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Etreproprio.
@@ -50,12 +51,14 @@ export const etreproprioAdapter: PortalAdapter = {
     /** Listings their index pages offered from communes we do not watch. */
     let skippedElsewhere = 0;
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "etreproprio",
+      what: "commune slug",
+      has: (insee) => Boolean(slugs[insee]),
+    });
+
+    for (const insee of wanted) {
       const slug = slugs[insee];
-      if (!slug) {
-        console.warn(`[etreproprio] no commune slug for INSEE ${insee} — skipping`);
-        continue;
-      }
 
       /**
        * One flag for the commune, not one per property type. Houses and

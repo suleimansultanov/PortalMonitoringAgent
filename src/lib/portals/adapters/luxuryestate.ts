@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str, type JsonLdNode } from "../jsonld";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * LuxuryEstate.
@@ -55,12 +56,14 @@ export const luxuryEstateAdapter: PortalAdapter = {
     const paths = (ctx.config.communePaths ?? {}) as Record<string, string>;
     const maxPages = (ctx.config.maxPages as number) ?? 30;
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "luxuryestate",
+      what: "commune path",
+      has: (insee) => Boolean(paths[insee]),
+    });
+
+    for (const insee of wanted) {
       const path = paths[insee];
-      if (!path) {
-        console.warn(`[luxuryestate] no commune path for INSEE ${insee} — skipping`);
-        continue;
-      }
 
       const seen = new Set<string>();
       /** Every exit from the loop that is not "the results ran out". */

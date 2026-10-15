@@ -7,6 +7,7 @@ import {
   type PortalAdapter,
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, str } from "../jsonld";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Zoopla Overseas (zoopla.co.uk/overseas) — the British portal's foreign
@@ -245,12 +246,14 @@ export const zooplaAdapter: PortalAdapter = {
     const areas = (ctx.config.areas as Record<string, Area> | undefined) ?? AREAS;
     const maxPages = Number(ctx.config.maxPages ?? 40);
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "zoopla-overseas",
+      what: "Zoopla area",
+      has: (insee) => Boolean(areas[insee]),
+    });
+
+    for (const insee of wanted) {
       const area = areas[insee];
-      if (!area) {
-        ctx.incomplete(insee, "no Zoopla area configured for this commune");
-        continue;
-      }
 
       const seen = new Set<string>();
       let total: number | null = null;

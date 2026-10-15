@@ -7,6 +7,7 @@ import {
   type PortalAdapter,
 } from "../types";
 import { findByKeys, readNuxtData } from "../nuxtData";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Figaro Immobilier (immobilier.lefigaro.fr) — Groupe Figaro's mass-market
@@ -236,12 +237,14 @@ export const figaroImmobilierAdapter: PortalAdapter = {
     const communes = (ctx.config.communes as Record<string, Commune> | undefined) ?? COMMUNES;
     const maxPages = Number(ctx.config.maxPages ?? 40);
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "figaro-immobilier",
+      what: "Figaro Immobilier commune token",
+      has: (insee) => Boolean(communes[insee]),
+    });
+
+    for (const insee of wanted) {
       const commune = communes[insee];
-      if (!commune) {
-        ctx.incomplete(insee, "no Figaro Immobilier commune token configured");
-        continue;
-      }
 
       const seen = new Set<string>();
       let total: number | null = null;
