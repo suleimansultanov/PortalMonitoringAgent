@@ -191,7 +191,7 @@ Tomaz (`brain.med-estates.com`), оно читает наш `/api/v1`. **Реш�
 | Задача | Кто |
 |---|---|
 | Сверить расход V1 с кабинетом Stream.Estate после первой ночи | я + оператор |
-| Письмо в AVIV (SeLoger + Belles Demeures) — черновик по-французски в истории чата/ниже; адрес — ответом в переписку от 25.08 в почте оператора | оператор |
+| Письмо в AVIV (SeLoger + Belles Demeures) — черновик в §8; адрес — ответом в переписку от 25.08 в почте оператора (публичного адреса для данных у AVIV нет) | оператор |
 | Письма: Groupe Figaro (оба Figaro, разрешение на Propriétés есть), JamesEdition, Zoopla, SMC — черновики сентября в Obsidian `PMA — Portal Letters.md`, нужно обновить | я → оператор |
 | Vizzit reparse ради галерей: `npm run reparse -- --source=vizzit`, **~1,6 ГБ из S3**, только Wi-Fi | оператор |
 | Green-Acres reparse старых записей: **~2,2 ГБ из S3**, только Wi-Fi | оператор |
@@ -244,3 +244,30 @@ Stream.Estate — проверить, что в `.env.local` лежит не о�
 - Память Claude (`~/.claude/projects/…/memory/`): трафик, русский, биллинг
   Stream.Estate (V1 активен), доступ к базе и ограничения песочницы.
 - Obsidian: `PortalMonitoringAgent/PMA — *.md` — до 07.10.
+
+---
+
+## 8. Черновик письма в AVIV (не отправлено на 15.10)
+
+Отвечать в переписку от 25.08. **Не упоминать**, что SeLoger уже приходит
+через Stream.Estate. Вставить должность вместо `<FONCTION>`.
+
+> **Objet : Re: Autorisation du 25 août — un accès technique simple, sans adresse IP fixe**
+>
+> Bonjour,
+>
+> Vous nous avez accordé le 25 août 2026 l'autorisation écrite de collecter les données d'annonces de SeLoger et Belles Demeures pour notre client Med-Estates, agence du golfe de Saint-Tropez. Merci encore. À ce jour, nous n'avons pas pu en faire usage une seule fois : vos protections refusent nos requêtes sur les deux sites, aussi bien les pages de recherche que les pages d'annonces. Mesuré en août, puis de nouveau début octobre.
+>
+> Nous ne cherchons pas à contourner ce refus. Nous ne déguisons pas notre trafic, c'est pourquoi nous vous écrivons. Nous vous proposons trois solutions, par ordre de préférence :
+>
+> 1. **Un flux, une API ou un export** des annonces du Var (83), avec la commune et la date de publication. Une lecture par jour remplacerait toute requête sur votre site.
+> 2. **Une autorisation de notre robot par un en-tête d'identification.** Chaque requête porterait un en-tête dédié, dont vous choisiriez le nom et la valeur, qui vous permettrait de reconnaître notre trafic, de le limiter ou de le couper à tout moment, sans adresse IP fixe. Un autre portail a mis en place exactement ce dispositif avec nous, et il fonctionne. Notre robot s'identifie ainsi : `PortalMonitoringAgent/1.0 (+https://leadestate.com; contact@leadestate.com)`
+> 3. **Un refus explicite**, que nous respecterons sans insister.
+>
+> Notre profil : douze communes du Var, une fois par nuit, pages d'annonces uniquement, au rythme que vous fixerez. Chaque bien présenté à notre client cite la source et renvoie vers votre annonce.
+>
+> Nous restons à votre disposition pour tout détail technique.
+>
+> Cordialement,
+> Suleiman Sultanov, `<FONCTION>`
+> Lead Estate — suleiman@leadestate.com
