@@ -81,7 +81,28 @@ const SHINGLE_SIZE = 5;
  * property this is. Three-word windows match on those and inflate every score.
  * Five is long enough that a shared window means a shared sentence.
  */
-export function shingles(text: string, size = SHINGLE_SIZE): Set<string> {
+export function shingles(text: string, size = SHINGLE_SIZE): ReadonlySet<string> {
+  /**
+   * Memoised: a description meets every candidate in its commune, and each
+   * comparison shingled both sides afresh — six times per pair across
+   * `similarity`, `containment` and the length guard in score.ts (REVIEW §3).
+   * Read-only for that reason; the cache is dropped whole when it grows, which
+   * is cheaper than tracking age and only ever costs a recomputation.
+   */
+  const key = `${size}\u0000${text}`;
+  const hit = SHINGLE_CACHE.get(key);
+  if (hit) return hit;
+  if (SHINGLE_CACHE.size >= SHINGLE_CACHE_MAX) SHINGLE_CACHE.clear();
+  const out = shingle(text, size);
+  SHINGLE_CACHE.set(key, out);
+  return out;
+}
+
+const SHINGLE_CACHE = new Map<string, ReadonlySet<string>>();
+/** A commune's worth of descriptions with room to spare. */
+const SHINGLE_CACHE_MAX = 20_000;
+
+function shingle(text: string, size: number): Set<string> {
   const words = normaliseForCompare(text).split(" ").filter(Boolean);
   const out = new Set<string>();
   if (words.length < size) {

@@ -7,9 +7,8 @@ import { coverFromGallery } from "../images";
 import {
   candidatePairs,
   cluster,
-  incoherentAreas,
-  incoherentMembers,
   scoreMatch,
+  splitIncoherent,
   type Candidate,
   type MatchSignals,
 } from "./score";
@@ -198,39 +197,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * different kind of guard — it does not depend on getting the scoring right,
    * which is exactly why it is worth having.
    */
-  let evicted = 0;
-  for (const [key, group] of [...groups]) {
-    if (group.length < 2) continue;
-    /**
-     * Both dimensions, price first.
-     *
-     * A cluster welded together by measurement-only merges is coherent in
-     * price BY CONSTRUCTION — every such merge required the prices to be
-     * identical — so the price guard passes it and sees nothing. Area is what
-     * catches those, and a group has to survive both to stand.
-     */
-    const outliers = [
-      ...incoherentMembers(group.map((g) => ({ id: g.id, priceEur: g.priceEur }))),
-      ...incoherentAreas(
-        group.map((g) => ({
-          id: g.id,
-          areaM2: g.areaM2 === null ? null : Number(g.areaM2),
-          propertyType: g.propertyType,
-        })),
-      ),
-    ].filter((id, i, all) => all.indexOf(id) === i);
-    if (outliers.length === 0) continue;
-
-    const keep = group.filter((g) => !outliers.includes(g.id));
-    groups.set(key, keep);
-    // Each evicted listing becomes a property of its own. Wrongly separating
-    // two listings is a duplicate on a screen; wrongly merging them hides a
-    // property from the client entirely.
-    for (const row of group.filter((g) => outliers.includes(g.id))) {
-      groups.set(row.id, [row]);
-      evicted += 1;
-    }
-  }
+  const evicted = splitIncoherent(groups, matched);
   if (evicted > 0) {
     console.warn(
       `[resolve] ${communeInsee}: ${evicted} listing(s) split out of incoherent clusters ` +

@@ -34,6 +34,8 @@ export type MatchSignals = {
   priceDelta?: number;
   areaClose?: boolean;
   landClose?: boolean;
+  /** The plot agreed to the metre on a priced house, so the floor area was allowed its widest band. */
+  samePlot?: boolean;
   roomsEqual?: boolean;
   communeConflict?: boolean;
   /** Shingles on the shorter side — the divisor containment is computed over. */
@@ -73,6 +75,29 @@ const FLAT_AREA_TOLERANCE = 0.015;
  * cent of a large number.
  */
 const AREA_TOLERANCE_WITH_LAND = 0.1;
+/**
+ * And once the plot agrees to the square metre — within a rounding — on a
+ * house standing on a real piece of land, at a price identical to the euro.
+ *
+ * La Croix-Valmer, 4 490 000 €, reported by the client on 2026-10-15: their
+ * own mandate (ref 87276762) is 179 m² on 1 423 m²; John Taylor and Home Hunts
+ * sell the same villa as 210 m² on 1 423 m². Same price, same plot, same four
+ * bedrooms — two properties on the client's screen, because 179 against 210
+ * is 15% and the band above stops at 10. The client's search between 2.5 and
+ * 6 M€ in that commune showed seventeen properties with a same-price,
+ * same-plot twin: 210/230/250 m² on 2 500 m² at 4 290 000 €, 432/350 m² on
+ * 10 403 m², 173/195 m² on 1 234 m². Agencies quote habitable area, area with
+ * the pool house, area with the covered terraces; the cadastre quotes the plot
+ * once.
+ *
+ * Narrow on everything else on purpose: a plot of at least PLOT_MIN_M2 (a new
+ * build programme sells identical villas on identical small plots at one
+ * price), within LAND_EXACT_TOLERANCE, neither side a flat (a flat's "land" is
+ * the whole residence's) nor a bare plot.
+ */
+const AREA_TOLERANCE_WITH_EXACT_PLOT = 0.25;
+const LAND_EXACT_TOLERANCE = 0.01;
+const PLOT_MIN_M2 = 1000;
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
 /**
@@ -145,6 +170,12 @@ const MIN_SHINGLES = 12;
 export function isFlat(propertyType: string | null): boolean {
   if (!propertyType) return false;
   return /appart|apartment|flat|studio|duplex|loft|penthouse|triplex/i.test(propertyType);
+}
+
+/** A plot for sale with no house to measure: its "area" is the land. */
+export function isPlot(propertyType: string | null): boolean {
+  if (!propertyType) return false;
+  return /terrain|land|plot/i.test(propertyType);
 }
 
 export function looksLikeMandateRef(ref: string): boolean {
@@ -267,24 +298,14 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
      * Without that corroboration the narrow band stands, and it is what keeps
      * 480 m² away from 355 m² at the same price.
      */
-    const landKnown = a.landM2 !== null && b.landM2 !== null;
-    const landAgrees =
-      landKnown &&
-      Math.abs(a.landM2! - b.landM2!) / Math.max(a.landM2!, b.landM2!) <= LAND_TOLERANCE;
-
-    const flat = isFlat(a.propertyType) || isFlat(b.propertyType);
-    const tolerance = flat
-      ? FLAT_AREA_TOLERANCE
-      : landAgrees
-        ? AREA_TOLERANCE_WITH_LAND
-        : AREA_TOLERANCE;
-
+    const tolerance = areaTolerance(a, b);
     if (delta > tolerance) {
       signals.areaClose = false;
       signals.areaConflict = true;
       return { same: false, confidence: 0, signals };
     }
-    if (landAgrees) signals.landClose = true;
+    if (landDeltaOf(a, b) !== null && landDeltaOf(a, b)! <= LAND_TOLERANCE) signals.landClose = true;
+    if (tolerance === AREA_TOLERANCE_WITH_EXACT_PLOT) signals.samePlot = true;
   }
 
   // ── 2b. The measurements, for when the prose cannot speak ──────────────
@@ -336,8 +357,16 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
         ? Math.abs(a.landM2! - b.landM2!) / Math.max(a.landM2!, b.landM2!)
         : null;
 
-      // Both already checked above — a disagreement on either never gets here.
-    if (a.priceEur === b.priceEur && areaDelta <= AREA_TOLERANCE) {
+      /**
+       * The floor area agrees inside the rounding — or, on the same plot to the
+       * metre, inside the widest band (AREA_TOLERANCE_WITH_EXACT_PLOT). Not the
+       * 10% band between those two: measured on 2026-10-15, letting every
+       * plot within 5% widen this rule chained 200–215–230 m² houses into
+       * clusters the coherence guard then had to break, and the market came
+       * out with MORE properties than before.
+       */
+      const tolerance = areaTolerance(a, b) === AREA_TOLERANCE_WITH_EXACT_PLOT ? AREA_TOLERANCE_WITH_EXACT_PLOT : AREA_TOLERANCE;
+      if (a.priceEur === b.priceEur && areaDelta <= tolerance) {
         if (landDelta !== null && landDelta > LAND_TOLERANCE) {
           signals.landConflict = true;
         } else {
@@ -459,6 +488,27 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
   return { same, confidence: round(confidence), signals };
 }
 
+/** Relative disagreement of the two plots, or null when either is unknown. */
+function landDeltaOf(a: Candidate, b: Candidate): number | null {
+  if (a.landM2 === null || b.landM2 === null || a.landM2 <= 0 || b.landM2 <= 0) return null;
+  return Math.abs(a.landM2 - b.landM2) / Math.max(a.landM2, b.landM2);
+}
+
+/** How far two floor areas may disagree and still be one property — see the constants. */
+export function areaTolerance(a: Candidate, b: Candidate): number {
+  if (isFlat(a.propertyType) || isFlat(b.propertyType)) return FLAT_AREA_TOLERANCE;
+  const land = landDeltaOf(a, b);
+  if (land === null || land > LAND_TOLERANCE) return AREA_TOLERANCE;
+  const samePlot =
+    land <= LAND_EXACT_TOLERANCE &&
+    Math.min(a.landM2!, b.landM2!) >= PLOT_MIN_M2 &&
+    !isPlot(a.propertyType) &&
+    !isPlot(b.propertyType) &&
+    a.priceEur !== null &&
+    a.priceEur === b.priceEur;
+  return samePlot ? AREA_TOLERANCE_WITH_EXACT_PLOT : AREA_TOLERANCE_WITH_LAND;
+}
+
 /**
  * Which pairs are worth scoring at all.
  *
@@ -484,18 +534,88 @@ export function candidatePairs(candidates: Candidate[]): [Candidate, Candidate][
   const pairs: [Candidate, Candidate][] = [];
 
   for (const [key, list] of blocks) {
-    // Everything inside a commune against everything else inside it.
-    for (let i = 0; i < list.length; i++) {
-      for (let j = i + 1; j < list.length; j++) pairs.push([list[i], list[j]]);
-    }
+    // Everything inside a commune that could match everything else inside it.
+    pairsWithin(list, pairs);
     // Unplaced listings are compared against every commune, because "unknown"
     // is a parse gap, not a location.
-    if (key !== "unknown") {
-      for (const u of unknown) for (const c of list) pairs.push([u, c]);
-    }
+    if (key !== "unknown") pairsAcross(unknown, list, pairs);
   }
 
   return pairs;
+}
+
+/**
+ * BLOCKED BY PRICE TOO, because `scoreMatch` vetoes on it.
+ *
+ * Two different asking prices are two properties (rule 2a) unless the agency's
+ * own mandate reference says otherwise (rule 1). So the only pairs worth
+ * scoring are: equal prices, a price missing on either side, or the same
+ * agency and mandate reference. Everything else was allocated, scored and
+ * vetoed on its first numeric comparison — 11.9 million pairs for
+ * Sainte-Maxime on 2026-10-14, 97.5% of them thrown away that way (REVIEW §3).
+ * The verdicts are identical; `score.test.ts` checks that against scoring
+ * every pair.
+ */
+function pairsWithin(list: Candidate[], out: [Candidate, Candidate][]): void {
+  const byPrice = new Map<number, Candidate[]>();
+  const unpriced: Candidate[] = [];
+  for (const c of list) {
+    if (c.priceEur === null) unpriced.push(c);
+    else {
+      const bucket = byPrice.get(c.priceEur);
+      if (bucket) bucket.push(c);
+      else byPrice.set(c.priceEur, [c]);
+    }
+  }
+  for (const bucket of byPrice.values()) {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) out.push([bucket[i], bucket[j]]);
+    }
+  }
+  // A listing without a price can be anything: it meets the whole block.
+  for (let i = 0; i < unpriced.length; i++) {
+    for (let j = i + 1; j < unpriced.length; j++) out.push([unpriced[i], unpriced[j]]);
+    for (const c of list) if (c.priceEur !== null) out.push([unpriced[i], c]);
+  }
+  // Different prices, same mandate: the one exception to the price veto.
+  for (const bucket of byMandate(list).values()) {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        if (bucket[i].priceEur !== bucket[j].priceEur) out.push([bucket[i], bucket[j]]);
+      }
+    }
+  }
+}
+
+function pairsAcross(unplaced: Candidate[], list: Candidate[], out: [Candidate, Candidate][]): void {
+  if (unplaced.length === 0) return;
+  const mandates = byMandate(list);
+  for (const u of unplaced) {
+    const sameMandate = new Set(mandates.get(mandateKey(u) ?? "") ?? []);
+    for (const c of list) {
+      if (u.priceEur === null || c.priceEur === null || u.priceEur === c.priceEur || sameMandate.has(c)) {
+        out.push([u, c]);
+      }
+    }
+  }
+}
+
+/** Same agency and a reference that looks like a mandate number — rule 1's own test. */
+function mandateKey(c: Candidate): string | null {
+  if (!c.agencyId || !c.agencyRef || !looksLikeMandateRef(c.agencyRef)) return null;
+  return `${c.agencyId}|${c.agencyRef.trim().toLowerCase()}`;
+}
+
+function byMandate(list: Candidate[]): Map<string, Candidate[]> {
+  const out = new Map<string, Candidate[]>();
+  for (const c of list) {
+    const key = mandateKey(c);
+    if (!key) continue;
+    const bucket = out.get(key);
+    if (bucket) bucket.push(c);
+    else out.set(key, [c]);
+  }
+  return out;
 }
 
 /**
@@ -596,7 +716,7 @@ export function incoherentMembers(
  * has to be coherent in both.
  */
 export function incoherentAreas(
-  members: { id: string; areaM2: number | null; propertyType?: string | null }[],
+  members: { id: string; areaM2: number | null; propertyType?: string | null; landM2?: number | null }[],
 ): string[] {
   /**
    * Flats are held to the tighter figure, for the reason the pair rules give:
@@ -608,8 +728,24 @@ export function incoherentAreas(
     members.length > 0 && members.every((m) => m.propertyType === undefined || isFlat(m.propertyType));
   return incoherentBy(
     members.map((m) => ({ id: m.id, value: m.areaM2 })),
-    allFlats ? CLUSTER_FLAT_AREA_SPAN : CLUSTER_AREA_SPAN,
+    allFlats ? CLUSTER_FLAT_AREA_SPAN : onePlot(members) ? AREA_TOLERANCE_WITH_EXACT_PLOT : CLUSTER_AREA_SPAN,
   );
+}
+
+/**
+ * Every member that states a plot states the same one — to the metre, on a
+ * real piece of land, and none of them a flat or a bare plot. The pair rule
+ * lets floor areas disagree by a quarter on exactly that evidence; a guard on
+ * the cluster that did not would undo every merge it makes (measured: 633
+ * listings split back out instead of 102).
+ */
+function onePlot(members: { propertyType?: string | null; landM2?: number | null }[]): boolean {
+  const plots = members.map((m) => m.landM2).filter((v): v is number => v !== null && v !== undefined && v > 0);
+  if (plots.length < 2) return false;
+  if (members.some((m) => isFlat(m.propertyType ?? null) || isPlot(m.propertyType ?? null))) return false;
+  const lo = Math.min(...plots);
+  const hi = Math.max(...plots);
+  return lo >= PLOT_MIN_M2 && (hi - lo) / hi <= LAND_EXACT_TOLERANCE;
 }
 
 /**
@@ -666,6 +802,113 @@ function incoherentBy(
   return known
     .filter((m) => (medianIsAbove ? m.value < sorted[gapAt] : m.value >= sorted[gapAt]))
     .map((m) => m.id);
+}
+
+/**
+ * Break apart clusters that are not internally plausible. Mutates `groups`;
+ * returns how many listings were split out.
+ *
+ * WHAT IS SPLIT OUT IS RE-CLUSTERED, not scattered. The evicted listings are
+ * grouped again by the edges that joined them to each other, and each group
+ * is checked the same way. They used to become one property each: a cluster
+ * of 29 at 2 990 000 € in La Croix-Valmer (2026-10-15) held three or four
+ * villas chained through listings that state no plot, and the guard kept one
+ * villa and turned the other three into fourteen single-listing cards — more
+ * duplicates on the client's screen than before the merge, from the step
+ * meant to remove them.
+ *
+ * And each split-out group gets a key of its own. It used to be keyed by its
+ * listing id — and when the outlier was the union-find ROOT, that id was the
+ * cluster's own key, so `set` replaced the members just kept with the outlier
+ * alone. They were never written, and the outlier inherited the old property
+ * row: the split was undone in the line that made it (REVIEW §2).
+ */
+export function splitIncoherent<
+  T extends {
+    id: string;
+    priceEur: number | null;
+    areaM2: string | number | null;
+    landM2: string | number | null;
+    propertyType: string | null;
+  },
+>(groups: Map<string, T[]>, edges: [string, string][] = []): number {
+  const neighbours = new Map<string, string[]>();
+  const link = (from: string, to: string) => {
+    const list = neighbours.get(from);
+    if (list) list.push(to);
+    else neighbours.set(from, [to]);
+  };
+  for (const [a, b] of edges) {
+    link(a, b);
+    link(b, a);
+  }
+
+  let evicted = 0;
+  let minted = 0;
+  const queue = [...groups.keys()];
+  while (queue.length > 0) {
+    const key = queue.pop()!;
+    const group = groups.get(key)!;
+    if (group.length < 2) continue;
+    /**
+     * Both dimensions, price first, ONE AT A TIME.
+     *
+     * A cluster welded together by measurement-only merges is coherent in
+     * price BY CONSTRUCTION — every such merge required the prices to be
+     * identical — so the price guard passes it and sees nothing. Area is what
+     * catches those, and a group has to survive both to stand.
+     *
+     * Each guard keeps the members around its own median, so applied one at a
+     * time something always stays. Applied together (2026-10-15) the price
+     * guard could keep the median price and the area guard evict it, the union
+     * evicted everyone, the whole group re-clustered into itself, and the loop
+     * never ended.
+     */
+    let outliers = new Set(incoherentMembers(group.map((g) => ({ id: g.id, priceEur: g.priceEur }))));
+    if (outliers.size === 0) {
+      outliers = new Set(
+        incoherentAreas(
+          group.map((g) => ({
+            id: g.id,
+            areaM2: g.areaM2 === null ? null : Number(g.areaM2),
+            propertyType: g.propertyType,
+            landM2: g.landM2 === null ? null : Number(g.landM2),
+          })),
+        ),
+      );
+    }
+    if (outliers.size === 0) continue;
+    const kept = group.filter((g) => !outliers.has(g.id));
+    if (kept.length === 0) throw new Error("splitIncoherent: a guard evicted its own median — the loop would not end");
+
+    groups.set(key, kept);
+    queue.push(key); // what stays is checked again, on the other dimension too
+    evicted += outliers.size;
+
+    // Wrongly separating two listings is a duplicate on a screen; wrongly
+    // merging them hides a property from the client entirely. So the split
+    // is final, and only what still joins among the split-out stays together.
+    const out = group.filter((g) => outliers.has(g.id));
+    const parts = cluster(
+      out.map((g) => g.id),
+      out.flatMap((g) => (neighbours.get(g.id) ?? []).filter((n) => outliers.has(n)).map((n): [string, string] => [g.id, n])),
+    );
+    const byRoot = new Map<string, T[]>();
+    for (const g of out) {
+      const root = parts.get(g.id) ?? g.id;
+      const list = byRoot.get(root);
+      if (list) list.push(g);
+      else byRoot.set(root, [g]);
+    }
+    for (const part of byRoot.values()) {
+      // Minted, never derived from a listing id: a part split out a second
+      // time would otherwise land on its parent's key and overwrite it.
+      const partKey = `evicted:${++minted}`;
+      groups.set(partKey, part);
+      queue.push(partKey);
+    }
+  }
+  return evicted;
 }
 
 function round(n: number): number {

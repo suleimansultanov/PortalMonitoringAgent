@@ -4,8 +4,7 @@ import { portalListings, portalSources } from "@/lib/db/schema";
 import {
   candidatePairs,
   cluster,
-  incoherentAreas,
-  incoherentMembers,
+  splitIncoherent,
   scoreMatch,
   type Candidate,
 } from "./matching/score";
@@ -157,23 +156,10 @@ async function main(): Promise<void> {
      * real run will never produce. Measuring a pipeline without the half that
      * corrects it is worse than not measuring: it reads as evidence.
      */
-    for (const [root, ids] of [...sizes]) {
-      if (ids.length < 2) continue;
-      const m = ids.map((id) => byId.get(id)!);
-      const out = new Set([
-        ...incoherentMembers(m.map((x) => ({ id: x.id, priceEur: x.priceEur }))),
-        ...incoherentAreas(
-          m.map((x) => ({ id: x.id, areaM2: x.areaM2, propertyType: x.propertyType })),
-        ),
-      ]);
-      if (out.size === 0) continue;
-      sizes.set(
-        root,
-        ids.filter((id) => !out.has(id)),
-      );
-      for (const id of out) sizes.set(id, [id]);
-      split += out.size;
-    }
+    const rowsBy = new Map<string, Candidate[]>([...sizes].map(([k, ids]) => [k, ids.map((id) => byId.get(id)!)]));
+    split += splitIncoherent(rowsBy, matched);
+    sizes.clear();
+    for (const [k, members] of rowsBy) if (members.length > 0) sizes.set(k, members.map((x) => x.id));
 
     listings += candidates.length;
     clusters += sizes.size;

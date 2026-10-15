@@ -7,6 +7,8 @@ import {
   incoherentAreas,
   incoherentMembers,
   looksLikeMandateRef,
+  splitIncoherent,
+  areaTolerance,
   type Candidate,
 } from "./score";
 import { containment, normaliseForCompare } from "./text";
@@ -538,4 +540,121 @@ test("an agreeing plot does not excuse a floor area from another house", () => {
   const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 5_300_000, areaM2: 355, landM2: 13_100 });
 
   assert.equal(scoreMatch(a, b).same, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Price blocking (2026-10-15): fewer pairs, the same verdicts
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("blocking by price and mandate finds every match that scoring all pairs finds", () => {
+  // Deterministic pseudo-random corpus: few prices, few agencies, shared texts —
+  // dense in exactly the collisions blocking must not lose.
+  let seed = 42;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const pick = <T,>(xs: T[]): T => xs[Math.floor(rnd() * xs.length)];
+  const texts = [BARNES, BARNES_TRUNCATED, OTHER_VILLA, null];
+  const list: Candidate[] = Array.from({ length: 160 }, (_, i) => ({
+    ...base,
+    id: String(i),
+    sourceId: pick(["s1", "s2", "s3"]),
+    communeInsee: pick(["83101", "83101", "83068", null]),
+    priceEur: pick([9_500_000, 9_500_000, 9_400_000, 1_200_000, null]),
+    areaM2: pick([320, 320, 210, null]),
+    agencyId: pick(["ag1", "ag2", null]),
+    agencyRef: pick(["Réf 70880", "réf 70880 ", "12345", null]),
+    description: pick(texts),
+  }));
+
+  const matches = (pairs: [Candidate, Candidate][]) =>
+    new Set(
+      pairs
+        .filter(([a, b]) => scoreMatch(a, b).same)
+        .map(([a, b]) => [a.id, b.id].sort().join("|")),
+    );
+
+  // The pairing before blocking by price: every pair in a commune, and the unplaced against all.
+  const everyPair: [Candidate, Candidate][] = [];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const [a, b] = [list[i], list[j]];
+      if (a.communeInsee === b.communeInsee || a.communeInsee === null || b.communeInsee === null) everyPair.push([a, b]);
+    }
+  }
+
+  const blocked = candidatePairs(list);
+  assert.ok(blocked.length < everyPair.length, "blocking has to remove something to be worth having");
+  const byId = new Map(list.map((x) => [x.id, x]));
+  const all = [...matches(everyPair)].map((k) => k.split("|").map((id) => byId.get(id)!));
+  assert.ok(all.some(([a, b]) => a.priceEur !== null && b.priceEur !== null && a.priceEur !== b.priceEur),
+    "the corpus must hold a mandate match across two prices, or the exception is untested");
+  assert.ok(all.some(([a, b]) => a.communeInsee === null || b.communeInsee === null),
+    "and a match reaching an unplaced listing");
+  assert.deepEqual([...matches(blocked)].sort(), [...matches(everyPair)].sort());
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Eviction (2026-10-15): what is split out stays split, regrouped, and the loop ends
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Row = { id: string; priceEur: number | null; areaM2: number | null; landM2: number | null; propertyType: string | null };
+const row = (id: string, priceEur: number | null, areaM2: number | null, landM2: number | null = null): Row =>
+  ({ id, priceEur, areaM2, landM2, propertyType: "Maison" });
+
+test("an outlier that is the cluster's own key does not overwrite the members kept", () => {
+  // Union-find named the cluster after "x", and "x" is the one that does not fit.
+  const groups = new Map([["x", [row("x", 1_000_000, 480), row("a", 1_000_000, 355), row("b", 1_000_000, 356)]]]);
+  splitIncoherent(groups);
+  const sets = [...groups.values()].map((g) => g.map((r) => r.id).sort().join(","));
+  assert.deepEqual(sets.sort(), ["a,b", "x"]);
+});
+
+test("listings split out together stay together when they still match each other", () => {
+  // Three villas at one price, chained into one cluster; the guard keeps one,
+  // and the other two come back as two properties — not as five single cards.
+  const villa = (p: string, n: number, area: number) => Array.from({ length: n }, (_, i) => row(`${p}${i}`, 2_990_000, area));
+  const all = [...villa("a", 4, 200), ...villa("b", 3, 314), ...villa("c", 2, 240)];
+  const edges: [string, string][] = [];
+  for (const p of ["a", "b", "c"]) {
+    const ids = all.filter((r) => r.id.startsWith(p)).map((r) => r.id);
+    for (let i = 1; i < ids.length; i++) edges.push([ids[0], ids[i]]);
+  }
+  edges.push(["a0", "b0"], ["b0", "c0"]); // the bad links that welded them
+  const groups = new Map([["a0", all]]);
+  splitIncoherent(groups, edges);
+  const sets = [...groups.values()].filter((g) => g.length > 0).map((g) => g.map((r) => r.id[0]).join(""));
+  assert.deepEqual(sets.sort(), ["aaaa", "bbb", "cc"]);
+});
+
+test("price and area pointing at different medians still ends, with something kept", () => {
+  // The member at the median price is an area outlier and vice versa — the
+  // shape that made the two guards together evict everyone and loop for ever.
+  const groups = new Map([
+    ["k", [row("p1", 1_000_000, 100), row("p2", 1_000_000, 100), row("p3", 2_000_000, 300), row("p4", 2_000_000, 300), row("p5", 1_000_000, 300)]],
+  ]);
+  const edges: [string, string][] = [["p1", "p2"], ["p2", "p3"], ["p3", "p4"], ["p4", "p5"], ["p5", "p1"]];
+  splitIncoherent(groups, edges);
+  const members = [...groups.values()].flat().map((r) => r.id).sort();
+  assert.deepEqual(members, ["p1", "p2", "p3", "p4", "p5"], "nobody lost, nobody twice");
+});
+
+test("the same plot to the metre lets two agencies' floor areas disagree — La Croix-Valmer, ref 87276762", () => {
+  const theirs = c({ id: "jt", communeInsee: "83048", priceEur: 4_490_000, areaM2: 210, landM2: 1423, agencyId: "johntaylor", description: OTHER_VILLA, title: null });
+  const ours = c({ id: "me", communeInsee: "83048", priceEur: 4_490_000, areaM2: 179, landM2: 1423, agencyId: "med", description: BARNES, title: null });
+  const v = scoreMatch(ours, theirs);
+  assert.equal(v.same, true);
+  assert.equal(v.signals.samePlot, true);
+  assert.ok(v.confidence >= 0.8);
+});
+
+test("the same-plot band never reaches flats, small plots, bare land or two prices", () => {
+  const house = { communeInsee: "83048", priceEur: 4_490_000, areaM2: 179, landM2: 1423, propertyType: "Maison" };
+  const wide = 0.25;
+  assert.equal(areaTolerance(c({ id: "1", ...house }), c({ id: "2", ...house, areaM2: 210 })), wide);
+  assert.notEqual(areaTolerance(c({ id: "1", ...house, propertyType: "Appartement" }), c({ id: "2", ...house })), wide);
+  assert.notEqual(areaTolerance(c({ id: "1", ...house, landM2: 600 }), c({ id: "2", ...house, landM2: 600 })), wide);
+  assert.notEqual(areaTolerance(c({ id: "1", ...house, propertyType: "Terrain" }), c({ id: "2", ...house })), wide);
+  assert.notEqual(areaTolerance(c({ id: "1", ...house, landM2: 1500 }), c({ id: "2", ...house })), wide);
+  assert.notEqual(areaTolerance(c({ id: "1", ...house, priceEur: 4_400_000 }), c({ id: "2", ...house })), wide);
+  // And 210 against 179 without a plot is still two houses.
+  assert.equal(scoreMatch(c({ id: "1", ...house, landM2: null, description: BARNES }), c({ id: "2", ...house, areaM2: 210, landM2: null, description: OTHER_VILLA })).same, false);
 });
