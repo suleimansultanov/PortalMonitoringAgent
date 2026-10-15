@@ -191,6 +191,12 @@ Deploying the app for a client: `docs/DEPLOY.md`.
   and surfaces as "Unsupported state". This has already bitten the sibling
   project; do not repeat it.
 - Zod-parse at every DB and network boundary — no `as` casts on fetched data.
+- **Every status-like column has a `CHECK`** (`status`, `type`, `kind`, `role`,
+  `mode`, `parse_status`, `criteria_source`, `discovery_mode`; drizzle/0011).
+  A new value in code — an event type, a run status — needs a migration that
+  widens the constraint, or its first write fails mid-nightly.
+  `src/lib/db/checks.test.ts` compares each list with the union type it comes
+  from and fails first.
 - Honour each source's `crawl_delay_ms`. It comes from their robots.txt.
 - `portal_sources.permission_note` records *why* we are allowed to collect from
   a source. Fill it in. The day someone asks, the answer needs to be next to the
