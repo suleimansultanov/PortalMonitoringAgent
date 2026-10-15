@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { db, withDbRetry } from "@/lib/db/client";
 import { portalListings, portalSources, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { coverFromGallery } from "../images";
@@ -100,7 +100,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * number REVIEW §2 found.
    */
   const enabledSources = new Set(
-    (await db.select({ id: portalSources.id }).from(portalSources).where(eq(portalSources.enabled, true))).map((r) => r.id),
+    (await withDbRetry(() => db.select({ id: portalSources.id }).from(portalSources).where(eq(portalSources.enabled, true)))).map((r) => r.id),
   );
 
   const threshold = await getNumberSetting(
@@ -108,7 +108,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     DEFAULT_MATCH_THRESHOLD,
   );
 
-  const rows = await db
+  const rows = await withDbRetry(() => db
     .select({
       id: portalListings.id,
       sourceId: portalListings.sourceId,
@@ -138,7 +138,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
         eq(portalListings.communeInsee, communeInsee),
         eq(portalListings.status, "active"),
       ),
-    );
+    ));
 
   if (rows.length === 0) {
     return { communeInsee, listings: 0, properties: 0, merged: 0 };
@@ -239,7 +239,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * a leftover from a merge made before the commune was known, or from an
    * earlier over-merge across commune boundaries — and must not be reused here.
    */
-  const ownRows = await db
+  const ownRows = await withDbRetry(() => db
     .select({
       id: properties.id,
       title: properties.title,
@@ -261,7 +261,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       lastSeenAt: properties.lastSeenAt,
     })
     .from(properties)
-    .where(eq(properties.communeInsee, communeInsee));
+    .where(eq(properties.communeInsee, communeInsee)));
   const ownedByThisCommune = new Set(ownRows.map((r) => r.id));
   /** The rows as they stand, so a write that would change nothing can be skipped. */
   const storedProperties = new Map(ownRows.map((r) => [r.id, r]));
@@ -417,7 +417,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       if (unchanged) {
         propertyNoops += 1;
       } else {
-        await db.update(properties).set(values).where(eq(properties.id, existingId));
+        await withDbRetry(() => db.update(properties).set(values).where(eq(properties.id, existingId)));
         propertyWrites += 1;
       }
       propertyId = existingId;
@@ -444,10 +444,14 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
         continue;
       }
 
-      await db
-        .update(portalListings)
-        .set({ propertyId, matchConfidence, matchSignals, updatedAt: new Date() })
-        .where(eq(portalListings.id, row.id));
+      // Every write here is by id and idempotent, so a dropped connection is retried, not fatal:
+      // on 2026-10-15 one read timeout ended a whole-market resolve at commune 5 of 12.
+      await withDbRetry(() =>
+        db
+          .update(portalListings)
+          .set({ propertyId, matchConfidence, matchSignals, updatedAt: new Date() })
+          .where(eq(portalListings.id, row.id)),
+      );
       listingWrites += 1;
     }
   }
@@ -468,7 +472,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * the id may be bookmarked, and a property that returns should come back as
    * itself rather than as a new one.
    */
-  const orphaned = await db.execute<{ n: number }>(sql`
+  const orphaned = await withDbRetry(() => db.execute<{ n: number }>(sql`
     UPDATE ${properties} p
        SET status = 'delisted', updated_at = now()
      WHERE p.commune_insee = ${communeInsee}
@@ -477,7 +481,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
          SELECT 1 FROM ${portalListings} l
           WHERE l.property_id = p.id AND l.status = 'active'
        )
-  `);
+  `));
   const orphanCount = Number((orphaned as { rowCount?: number }).rowCount ?? 0);
   if (orphanCount > 0) {
     console.warn(
