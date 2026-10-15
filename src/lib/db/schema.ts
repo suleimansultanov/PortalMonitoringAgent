@@ -400,6 +400,12 @@ export const portalListingEvents = pgTable(
     priceTo: bigint("price_to", { mode: "number" }),
     payload: jsonb("payload").$type<Record<string, unknown>>(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * When we recorded it. Differs from `occurredAt` for what reparse finds in
+     * old snapshots, which happened in the past and is recorded now — and is
+     * what the /api/v1/events cursor walks, so nothing lands behind it (0009).
+     */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     listingIdx: index("portal_listing_events_listing_idx").on(t.listingId, t.occurredAt),

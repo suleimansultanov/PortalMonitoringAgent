@@ -560,15 +560,21 @@ export async function events(
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
     /**
-     * Strictly after (occurred_at, id). The pair, not the timestamp: two events
+     * Strictly after (created_at, id). The pair, not the timestamp: two events
      * written in the same millisecond with a timestamp-only cursor means one of
      * them is stepped over, and stepped over silently.
+     *
+     * `created_at`, not `occurred_at` (2026-10-15): reparse records today what
+     * happened in a snapshot weeks old, and on `occurred_at` that event sorted
+     * behind every cursor already handed out — a client never saw it. The
+     * cursor's own field is still named `occurredAt` inside the encoding; it
+     * was always opaque to clients, and old cursors decode to the same instant.
      */
     conditions.push(
       or(
-        gt(portalListingEvents.occurredAt, cursor.occurredAt),
+        gt(portalListingEvents.createdAt, cursor.occurredAt),
         and(
-          eq(portalListingEvents.occurredAt, cursor.occurredAt),
+          eq(portalListingEvents.createdAt, cursor.occurredAt),
           gt(portalListingEvents.id, cursor.id),
         ),
       )!,
@@ -586,6 +592,7 @@ export async function events(
       eventId: portalListingEvents.id,
       type: portalListingEvents.type,
       occurredAt: portalListingEvents.occurredAt,
+      createdAt: portalListingEvents.createdAt,
       priceFrom: portalListingEvents.priceFrom,
       priceTo: portalListingEvents.priceTo,
       ...propertyColumns,
@@ -595,7 +602,7 @@ export async function events(
     .innerJoin(properties, eq(properties.id, portalListings.propertyId))
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
     .where(and(...conditions))
-    .orderBy(asc(portalListingEvents.occurredAt), asc(portalListingEvents.id))
+    .orderBy(asc(portalListingEvents.createdAt), asc(portalListingEvents.id))
     .limit(opts.limit + 1);
 
   const page = rows.slice(0, opts.limit);
@@ -615,7 +622,7 @@ export async function events(
   return {
     rows: out,
     nextCursor:
-      rows.length > opts.limit && last ? encodeCursor(last.occurredAt, last.eventId) : null,
+      rows.length > opts.limit && last ? encodeCursor(last.createdAt, last.eventId) : null,
   };
 }
 

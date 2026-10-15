@@ -394,8 +394,10 @@ export const openApiDocument = {
           "event carries the full property, so acting on one needs no second call.\n\n" +
           "**The walk:** call with no cursor, act on the page, keep `nextCursor`, call " +
           "again with `since=` until it comes back null.\n\n" +
-          "The cursor encodes `(occurred_at, id)` — the pair. A timestamp alone steps " +
-          "silently over one of two events written in the same millisecond.\n\n" +
+          "The cursor encodes `(recorded_at, id)` — the pair, and when we recorded the " +
+          "event rather than `occurredAt`, so an event found today that happened last " +
+          "week still arrives after your cursor. Events come in recorded order; " +
+          "`occurredAt` can occasionally step backwards.\n\n" +
           "A malformed `since` is a 400, not a restart from the beginning: silently " +
           "replaying the whole history would have you announce every property you " +
           "already know as new.",

@@ -111,8 +111,12 @@ property, so acting on one needs no second call.
 The walk: call with no cursor, act on the page, keep `nextCursor`, call again
 with `since=` until it comes back null.
 
-The cursor encodes `(occurred_at, id)` — the pair. A timestamp alone steps
-silently over one of two events written in the same millisecond.
+The cursor encodes `(recorded_at, id)` — the pair, and the moment we recorded
+the event rather than `occurredAt`. A timestamp alone steps silently over one of
+two events written in the same millisecond; and an event we find today that
+happened last week (re-reading an old page) must still arrive after your
+cursor. Events therefore come in the order we recorded them, and `occurredAt`
+can occasionally go backwards from one event to the next.
 
 A malformed `since` is a `400`, not a restart from the beginning. Silently
 replaying the whole history would have an instance announce every property it
