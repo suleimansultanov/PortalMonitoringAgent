@@ -335,8 +335,9 @@ jobs:
               printf '%s\n' "$SUMMARY"
               echo '```'
             else
-              echo "No summary was written: the run stopped before the collector finished"
-              echo "(install, migrations, preflight, the 330-minute limit, or the runner itself)."
+              echo "No summary reached this report. Either the run stopped before the collector"
+              echo "finished (install, migrations, preflight, the 330-minute limit, the runner"
+              echo "itself), or GitHub withheld it for containing a secret's value."
               echo "The run's log says which."
             fi
           } > "$BODY"
