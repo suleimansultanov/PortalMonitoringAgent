@@ -168,6 +168,17 @@ npm run user:create -- --list
 npm run user:create -- --email=… --deactivate
 ```
 
+**Rate limits and the request journal** (`src/lib/api/rateLimit.ts`, tables
+`rate_limits` and `api_request_log`, drizzle/0010): 120 requests a minute per
+API key, 30 unauthorised requests per 10 minutes per address, 10 failed
+sign-ins per 15 minutes per email+address (50 per address). Fixed windows
+counted in Postgres — on Vercel a counter in memory dies with the function.
+Over the limit: `429` with `Retry-After`. The limiter **fails open**: if it
+cannot write its count, the request goes through. Every `/api/v1` request is
+journalled with its key (null when refused), path and status; v1 routes are
+written as `export const GET = keyedRoute(…)` (`lib/api/guard.ts`), and a
+meta-test fails on any that is not.
+
 Deploying the app for a client: `docs/DEPLOY.md`.
 
 ## Commands

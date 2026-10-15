@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
-import { authorise, DATE_CAVEAT } from "@/lib/api/guard";
+import { DATE_CAVEAT, keyedRoute } from "@/lib/api/guard";
 import { scopeCommunes } from "@/lib/api/keys";
 import { snapshot } from "@/lib/api/v1";
 import { dbErrorMessage } from "@/lib/db/errors";
@@ -25,10 +25,8 @@ const Query = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(200),
 });
 
-export async function GET(req: NextRequest) {
-  const auth = await authorise(req);
-  if ("response" in auth) return auth.response;
-
+// Key, rate limit and journal: keyedRoute (lib/api/guard.ts).
+export const GET = keyedRoute(async (req, scope) => {
   const parsed = Query.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (!parsed.success) {
     return NextResponse.json(
@@ -39,8 +37,8 @@ export async function GET(req: NextRequest) {
 
   try {
     // The intersection, not the request. See scopeCommunes.
-    const communes = scopeCommunes(auth.scope, parsed.data.commune);
-    const { rows, nextCursor } = await snapshot(auth.scope, {
+    const communes = scopeCommunes(scope, parsed.data.commune);
+    const { rows, nextCursor } = await snapshot(scope, {
       communeInsee: communes,
       after: parsed.data.after,
       limit: parsed.data.limit,
@@ -56,4 +54,4 @@ export async function GET(req: NextRequest) {
     console.error("[api/v1/properties]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
-}
+});

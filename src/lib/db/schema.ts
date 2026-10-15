@@ -719,6 +719,45 @@ export const apiUsage = pgTable(
 );
 
 /**
+ * Fixed-window request counters: one row per bucket (`v1-key:…`, `login:…`),
+ * reset when its window passes. Read and written by `lib/api/rateLimit.ts`
+ * only; see drizzle/0010 for why in Postgres.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    bucket: text("bucket").primaryKey(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => ({
+    windowIdx: index("rate_limits_window_idx").on(t.windowStart),
+  }),
+);
+
+/**
+ * One row per /api/v1 request, answered or refused: so a 401, a 429 and a
+ * client polling every second can be seen. Append-only, kept 90 days.
+ */
+export const apiRequestLog = pgTable(
+  "api_request_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    /** Null when no key was accepted — the rows worth reading. */
+    keyId: uuid("key_id").references(() => clientApiKeys.id, { onDelete: "set null" }),
+    path: text("path").notNull(),
+    status: integer("status").notNull(),
+    ip: text("ip"),
+    durationMs: integer("duration_ms"),
+  },
+  (t) => ({
+    atIdx: index("api_request_log_at_idx").on(t.at),
+    keyAtIdx: index("api_request_log_key_at_idx").on(t.keyId, t.at),
+  }),
+);
+
+/**
  * Where a changes-only source stands, per commune: the adapter's own JSON
  * (`{ stockedAt, stockCursor, changesSince }` for Stream.Estate V1). Per
  * commune, because a pass stopped at the cap must not leave the communes it

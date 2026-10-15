@@ -35,6 +35,15 @@ which communes exist.
 Every failure — unknown key, revoked, expired, inactive client — answers the
 same `401`.
 
+**`429` — slow down.** Each key may make 120 requests a minute, counted in
+fixed one-minute windows; requests without an acceptable key are limited to 30
+per ten minutes per address. Over the limit the answer is `429` with a
+`Retry-After` header (seconds) and `{ "error": "rate_limited", "retryAfter": n }`:
+wait that long and repeat the same request — a cursor stays valid. A seed walk
+of the whole market at `limit=200` is about forty requests, so an instance
+pulling when `lastSuccessfulCollectionAt` advances never meets it. Every
+request, answered or refused, is recorded with its key, path and status.
+
 ## `GET /api/v1/properties` — the snapshot
 
 For an instance starting from empty, and for periodic reconciliation.
