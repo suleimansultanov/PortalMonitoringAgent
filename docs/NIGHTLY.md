@@ -53,6 +53,12 @@ read about it at eight in the morning.
 
 ## The schedule
 
+> **What runs every night is `.github/workflows/collect.yml`:** 21:00 UTC
+> Monday to Saturday, the full sweep on Sunday, on GitHub's runners or on the
+> EU box when the repository variable `PMA_RUNNER` says so
+> (`scripts/aws/README.md`). The launchd agent below is the laptop setup it
+> replaced, kept because it still works on a machine of your own.
+
 ```bash
 ./scripts/install-nightly.sh              # 03:00 daily, this Mac
 ./scripts/install-nightly.sh --uninstall
@@ -85,16 +91,34 @@ It also appends one line per night to `logs/history.log`. The per-night
 directory holds the detail; that file is the only place that answers "has this
 been running at all?" in one screen, which is the question that comes up most.
 
-## Pointing the collector at Supabase
+## The database, and TLS
 
-`DATABASE_URL` is the only thing that changes — the collector does not care
-where Postgres is. Two traps specific to this repository:
+Since 2026-08-29 the collector writes straight into the one Supabase database
+the app and the API read (`DEPLOY.md`). `DATABASE_URL` is the only thing that
+says where — the repository secret for the nightly, `.env.local` by hand — and
+the collector does not care where Postgres is. What is specific to this
+repository:
 
-**SSL is only configured under `NODE_ENV=production`** (`db/client.ts`). The
-nightly runs from the CLI, where it is not set, so the `ssl` option is absent.
-Put `?sslmode=require` in the connection string, or the connection is refused
-or silently unencrypted. `npm run nightly -- --check` is how you find out in two
-seconds instead of at 03:00.
+**TLS is decided by the host, not by `NODE_ENV`, and nothing has to be set
+for it.** `db/client.ts` turns TLS on for every host that is not loopback
+(`localhost`, `127.0.0.1`, `::1`, `0.0.0.0`), with `rejectUnauthorized:
+false`: Supabase's pooler presents a certificate that does not chain to a
+root Node trusts, so this encrypts without verifying the chain, the standard
+setup for PgBouncer in front of Supabase. It used to depend on
+`NODE_ENV=production`, which the CLI never sets, so the nightly — the one
+process that talks to a remote database for hours a night — connected
+without it. It no longer does.
+
+**So never put `sslmode=` in `DATABASE_URL`.** A connection string's
+parameters override the `ssl` option `client.ts` passes, and `pg` reads
+`sslmode=require` as full verification (libpq reads it as "encrypt, do not
+verify"). Add `?sslmode=require` and every Node connection — the collector,
+migrations, every `npm run` script — fails with `SELF_SIGNED_CERT_IN_CHAIN`,
+while `psql` with the very same string works and makes it look like the
+network. The only `sslmode` the code expects is `sslmode=disable`, for a
+remote host reached through a tunnel. `psql` and `pg_dump` get theirs from
+`PGSSLMODE=require` on the command line. `npm run nightly -- --check` is how
+you find out in two seconds instead of at 03:00.
 
 **Pick the pooler deliberately.** The pool sets `statement_timeout` as a startup
 parameter, and PgBouncer in transaction mode rejects unknown startup parameters
@@ -103,11 +127,12 @@ way, use the session pooler for the collector. The 10-second `query_timeout` is
 also worth watching once queries cross a network rather than a loopback —
 clustering reads every listing in a commune at once.
 
-**Take a backup first.** There are no backups on the Supabase free plan:
-`./scripts/dump-data.sh backup-$(date +%F).sql`.
-
-Once this is done `sync-to-supabase.sh` leaves the daily cycle — the collector
-fills the database the client is already looking at.
+**There is no copy between the collector and the client.** What a night
+writes, the client reads, so a bad pass is live the moment it lands — which
+is what the abort guard is for. There are no backups on the Supabase free
+plan; before anything that rewrites rows in bulk, take one:
+`./scripts/dump-data.sh backup-$(date +%F).sql`. (The old
+`sync-to-supabase.sh` step between the two is gone; `DEPLOY.md` says why.)
 
 ## What it leaves behind
 
@@ -134,7 +159,9 @@ Thirty nights are kept, then dropped.
 
 - **FAILED** — the pass did not finish: aborted by the sanity guard, threw, or
   stopped part-way through fetching. The picture of that portal is incomplete.
-  This is the only condition that sets a non-zero exit code.
+  This is the only condition that sets a non-zero exit code. On GitHub that
+  turns the run red, and a red run opens an issue labelled `nightly-failure`
+  (or comments on the open one), which is what emails the repository's owner.
 - **warn** — individual listings could not be fetched, or nobody subscribes to
   the source. Some of that is ordinary: a URL that 404s between discovery and
   ingestion is a listing that sold this afternoon, and LuxuryEstate refusing 43
@@ -196,6 +223,10 @@ looks for it.
 Until this is done, the laptop's `.pages/` is the only copy. Do not clear it.
 
 ## Where it should run
+
+> Decided since this was written: GitHub Actions (`collect.yml`), with a
+> self-hosted EU runner behind `PMA_RUNNER` for when a fixed address matters.
+> The reasoning below is what that decision weighed.
 
 Undecided. The script is host-agnostic on purpose: cron on a server, launchd on
 a laptop and a CI job all invoke the same command and read the same files, so
