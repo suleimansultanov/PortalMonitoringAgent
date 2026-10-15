@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { portalListings, properties } from "@/lib/db/schema";
+import { portalListings, portalSources, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { coverFromGallery } from "../images";
 import {
@@ -91,6 +91,18 @@ export function canonicalJson(v: unknown): string {
 }
 
 export async function resolveCommuneIdentities(communeInsee: string): Promise<ResolveSummary> {
+  /**
+   * Sources still being collected. A switched-off collector's rows stay in the
+   * database and still take part in matching — they are real adverts, and they
+   * often carry the mandate reference that ties two portals together — but
+   * they are never what the property SAYS: Figaro's September price on a card
+   * the API serves because Stream.Estate read SeLoger last night is the stale
+   * number REVIEW §2 found.
+   */
+  const enabledSources = new Set(
+    (await db.select({ id: portalSources.id }).from(portalSources).where(eq(portalSources.enabled, true))).map((r) => r.id),
+  );
+
   const threshold = await getNumberSetting(
     SETTING_KEYS.MATCH_THRESHOLD,
     DEFAULT_MATCH_THRESHOLD,
@@ -333,7 +345,10 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       ownedByThisCommune,
     );
     if (existingId) claimed.add(existingId);
-    const best = pickRepresentative(group);
+    // Spoken for by a source still collected, whenever the group has one.
+    const served = group.filter((g) => enabledSources.has(g.sourceId));
+    const speakers = served.length > 0 ? served : group;
+    const best = pickRepresentative(speakers);
 
     const values = {
       title: best.title,
@@ -376,7 +391,7 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       communeInsee,
       agencyId: best.agencyId,
       agencyRef: best.agencyRef,
-      sourceCount: new Set(group.map((g) => g.sourceId)).size,
+      sourceCount: new Set(speakers.map((g) => g.sourceId)).size,
       status: "active" as const,
       firstListedAt: group.reduce<Date>(
         (min, g) => (g.firstSeenAt < min ? g.firstSeenAt : min),
