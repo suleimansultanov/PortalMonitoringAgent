@@ -1,7 +1,7 @@
 import "server-only";
 import { coverFromGallery } from "../images";
-import { and, desc, eq } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { db, withDbRetry } from "@/lib/db/client";
 import { portalListingEvents, portalListings, portalSnapshots } from "@/lib/db/schema";
 import { contentHash } from "@/lib/utils/crypto";
 import { pageKey, putPage } from "@/lib/s3/pages";
@@ -17,6 +17,13 @@ import { computeEvents, mergeParsed, type ListingState } from "./events";
  * anything tries to understand it, precisely so a parse failure leaves evidence
  * rather than nothing. Rolling that back on a parser bug would throw away the
  * only copy of the thing we need in order to fix the parser.
+ *
+ * EVERY DATABASE CALL GOES THROUGH `withDbRetry`. Until 2026-10-15 none here
+ * did (only reparse had it), so one dropped pooler connection on listing N
+ * ended the pass as `error`, abandoned the rest of the fetch queue, and wrote
+ * no delistings although discovery had been complete — twelve such rows sit in
+ * `portal_runs`. A retry is only safe where the write can be repeated, which
+ * is why the row and its events are now written together (see `reconcile`).
  */
 
 export type IngestDeps = {
@@ -56,19 +63,21 @@ export async function ingestListing(
   const hash = contentHash(html);
 
   // ── 2. Skip work the page itself says is unnecessary ────────────────────
-  const [lastSnapshot] = await db
-    .select({ contentHash: portalSnapshots.contentHash })
-    .from(portalSnapshots)
-    .where(
-      and(
-        eq(portalSnapshots.sourceId, deps.sourceId),
-        eq(portalSnapshots.externalId, externalId),
-      ),
-    )
-    .orderBy(desc(portalSnapshots.fetchedAt))
-    .limit(1);
+  const [lastSnapshot] = await withDbRetry(() =>
+    db
+      .select({ contentHash: portalSnapshots.contentHash })
+      .from(portalSnapshots)
+      .where(
+        and(
+          eq(portalSnapshots.sourceId, deps.sourceId),
+          eq(portalSnapshots.externalId, externalId),
+        ),
+      )
+      .orderBy(desc(portalSnapshots.fetchedAt))
+      .limit(1),
+  );
 
-  const existing = await loadListing(deps.sourceId, externalId);
+  const existing = await withDbRetry(() => loadListing(deps.sourceId, externalId));
 
   if (lastSnapshot?.contentHash === hash && existing && existing.status === "active") {
     // Byte-identical to what we already parsed. Parsing again cannot produce a
@@ -76,25 +85,31 @@ export async function ingestListing(
     // delisted row: an identical page coming back IS a change — a relisting —
     // and the parse path below is what writes the `relisted` event and clears
     // `delisted_at`; this shortcut used to resurrect it silently.
-    await db
-      .update(portalListings)
-      .set({ lastSeenAt: new Date(), status: "active", updatedAt: new Date() })
-      .where(eq(portalListings.id, existing.id));
+    await withDbRetry(() =>
+      db
+        .update(portalListings)
+        .set({ lastSeenAt: new Date(), status: "active", updatedAt: new Date() })
+        .where(eq(portalListings.id, existing.id)),
+    );
     return { externalId, status: "unchanged", listingId: existing.id };
   }
 
   // ── 3. Store the page before interpreting it ────────────────────────────
   const s3Key = pageKey(deps.sourceKey, externalId);
   await putPage(s3Key, html);
-  await db.insert(portalSnapshots).values({
-    sourceId: deps.sourceId,
-    runId: deps.runId,
-    externalId,
-    url,
-    s3Key,
-    byteSize: Buffer.byteLength(html, "utf8"),
-    contentHash: hash,
-  });
+  // Repeated on a lost answer, this can leave the same snapshot twice: harmless
+  // history, where losing the pass over it is not.
+  await withDbRetry(() =>
+    db.insert(portalSnapshots).values({
+      sourceId: deps.sourceId,
+      runId: deps.runId,
+      externalId,
+      url,
+      s3Key,
+      byteSize: Buffer.byteLength(html, "utf8"),
+      contentHash: hash,
+    }),
+  );
 
   // ── 4. Parse ────────────────────────────────────────────────────────────
   const result = deps.adapter.parse(html, url);
@@ -106,15 +121,17 @@ export async function ingestListing(
      * record — and the page is in S3 to re-parse once the adapter is fixed.
      */
     if (existing) {
-      await db
-        .update(portalListings)
-        .set({
-          parseStatus: "failed",
-          parseError: result.error.slice(0, 500),
-          lastSeenAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(portalListings.id, existing.id));
+      await withDbRetry(() =>
+        db
+          .update(portalListings)
+          .set({
+            parseStatus: "failed",
+            parseError: result.error.slice(0, 500),
+            lastSeenAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(portalListings.id, existing.id)),
+      );
     }
     return { externalId, status: "parse_failed", error: result.error };
   }
@@ -123,14 +140,17 @@ export async function ingestListing(
   const parseStatus = result.status === "partial" ? "partial" : "ok";
 
   // ── 5. Normalise ────────────────────────────────────────────────────────
-  const agencyId = parsed.agencyName
-    ? await resolveAgency({
-        name: parsed.agencyName,
-        address: parsed.agencyAddress,
-        postalCode: parsed.agencyPostalCode,
-        city: parsed.agencyCity,
-        phone: parsed.agencyPhone,
-      })
+  const agencyName = parsed.agencyName;
+  const agencyId = agencyName
+    ? await withDbRetry(() =>
+        resolveAgency({
+          name: agencyName,
+          address: parsed.agencyAddress,
+          postalCode: parsed.agencyPostalCode,
+          city: parsed.agencyCity,
+          phone: parsed.agencyPhone,
+        }),
+      )
     : null;
 
   const commune = resolveCommune(
@@ -197,15 +217,76 @@ export async function ingestListing(
   };
 
   // ── 6. Reconcile and record history ─────────────────────────────────────
-  const before: ListingState | null = existing
-    ? {
-        priceEur: existing.priceEur,
-        areaM2: existing.areaM2 === null ? null : Number(existing.areaM2),
-        rooms: existing.rooms,
-        availability: existing.availability,
-        status: existing.status === "delisted" ? "delisted" : "active",
-      }
-    : null;
+  const written = await reconcile(deps, externalId, incoming, parseStatus, existing, {
+    areaM2: parsed.areaM2,
+    availability: parsed.availability,
+  });
+
+  return { externalId, status: "ingested", listingId: written.listingId, events: written.events };
+}
+
+type Incoming = Omit<typeof portalListings.$inferInsert, "sourceId" | "externalId">;
+type StoredListing = typeof portalListings.$inferSelect;
+
+/**
+ * Write the row and the events it implies, as one unit, and only over the
+ * state the events were computed from.
+ *
+ * TWO WAYS THE OLD READ-THEN-WRITE RECORDED THINGS TWICE.
+ *
+ *   Two passes of one source at once (a manual run over the nightly one) both
+ *   read the row at price A, both wrote B, and both logged `price_changed`
+ *   A→B — or both found no row and both logged `listed`. The unique index
+ *   kept the ROW single; nothing kept the history single.
+ *
+ *   A retried write. With the retry above, a write whose COMMIT reached the
+ *   database but whose answer was lost would run again and log its events a
+ *   second time.
+ *
+ * Both are the same question — "is the row still what I computed from?" —
+ * so the update carries the answer as its condition (the five fields events
+ * are derived from), the insert yields to an existing row instead of
+ * updating it, and the events go in the same transaction. Nothing written →
+ * someone else (or our own lost commit) got there first: read the row again
+ * and recompute, which finds no change and logs nothing.
+ */
+async function reconcile(
+  deps: IngestDeps,
+  externalId: string,
+  incoming: Incoming,
+  parseStatus: "ok" | "partial",
+  first: StoredListing | null,
+  parsed: { areaM2: number | null; availability: string | null },
+): Promise<{ listingId: string; events: string[] }> {
+  let existing = first;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const done = await withDbRetry(() => writeOnce(deps, externalId, incoming, parseStatus, existing, parsed));
+    if (done) return done;
+    existing = await withDbRetry(() => loadListing(deps.sourceId, externalId));
+  }
+  throw new Error(`${externalId}: the row kept changing underneath the write — gave up after 3 attempts`);
+}
+
+/** The state events are computed from. The write is conditional on exactly these fields. */
+export function stateOf(row: Pick<StoredListing, "priceEur" | "areaM2" | "rooms" | "availability" | "status">): ListingState {
+  return {
+    priceEur: row.priceEur,
+    areaM2: row.areaM2 === null ? null : Number(row.areaM2),
+    rooms: row.rooms,
+    availability: row.availability,
+    status: row.status === "delisted" ? "delisted" : "active",
+  };
+}
+
+async function writeOnce(
+  deps: IngestDeps,
+  externalId: string,
+  incoming: Incoming,
+  parseStatus: "ok" | "partial",
+  existing: StoredListing | null,
+  parsed: { areaM2: number | null; availability: string | null },
+): Promise<{ listingId: string; events: string[] } | null> {
+  const before = existing ? stateOf(existing) : null;
 
   /**
    * From what is STORED, not from the raw parse. `sane()` drops an impossible
@@ -214,94 +295,106 @@ export async function ingestListing(
    * to 5e14 while the row kept its old price.
    */
   const after: ListingState = {
-    priceEur: incoming.priceEur,
+    priceEur: incoming.priceEur ?? null,
     areaM2: parsed.areaM2,
-    rooms: incoming.rooms,
+    rooms: incoming.rooms ?? null,
     availability: parsed.availability,
     status: "active",
   };
 
   const events = computeEvents(before, after);
-
-  let listingId: string;
   const now = new Date();
 
-  if (existing) {
-    /**
-     * mergeParsed drops nulls, so a degraded parse can only ever add
-     * information. Better a stale number than a hole: a stale number is wrong
-     * in a way somebody eventually notices, a hole just quietly shrinks the
-     * dataset.
-     */
-    const patch = mergeParsed(existing as unknown as Record<string, unknown>, incoming);
-    await db
-      .update(portalListings)
-      .set({
-        ...patch,
-        status: "active",
-        delistedAt: null,
-        parseStatus,
-        parseError: null,
-        lastSeenAt: now,
-        updatedAt: now,
-      })
-      .where(eq(portalListings.id, existing.id));
-    listingId = existing.id;
-  } else {
-    const [created] = await db
-      .insert(portalListings)
-      .values({
-        sourceId: deps.sourceId,
-        externalId,
-        ...incoming,
-        status: "active",
-        parseStatus,
-        firstSeenAt: now,
-        lastSeenAt: now,
-      })
+  return db.transaction(async (tx) => {
+    let listingId: string;
+
+    if (existing) {
+      /**
+       * mergeParsed drops nulls, so a degraded parse can only ever add
+       * information. Better a stale number than a hole: a stale number is wrong
+       * in a way somebody eventually notices, a hole just quietly shrinks the
+       * dataset.
+       */
+      const patch = mergeParsed(existing as unknown as Record<string, unknown>, incoming);
+      const [row] = await tx
+        .update(portalListings)
+        .set({
+          ...patch,
+          status: "active",
+          delistedAt: null,
+          parseStatus,
+          parseError: null,
+          lastSeenAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(portalListings.id, existing.id),
+            sql`${portalListings.priceEur} is not distinct from ${existing.priceEur}::bigint`,
+            sql`${portalListings.areaM2} is not distinct from ${existing.areaM2}::numeric`,
+            sql`${portalListings.rooms} is not distinct from ${existing.rooms}::integer`,
+            sql`${portalListings.availability} is not distinct from ${existing.availability}::text`,
+            eq(portalListings.status, existing.status),
+          ),
+        )
+        .returning({ id: portalListings.id });
+      if (!row) return null;
+      listingId = row.id;
+    } else {
       // Two passes can reach the same new listing at once. The unique index is
-      // the arbiter; the loser updates rather than exploding.
-      .onConflictDoUpdate({
-        target: [portalListings.sourceId, portalListings.externalId],
-        set: { lastSeenAt: now, updatedAt: now },
-      })
-      .returning({ id: portalListings.id });
-    listingId = created.id;
-  }
+      // the arbiter, and the loser goes back round as an update of the
+      // winner's row — whose `listed` event is the only one there should be.
+      const [row] = await tx
+        .insert(portalListings)
+        .values({
+          sourceId: deps.sourceId,
+          externalId,
+          ...incoming,
+          status: "active",
+          parseStatus,
+          firstSeenAt: now,
+          lastSeenAt: now,
+        })
+        .onConflictDoNothing({ target: [portalListings.sourceId, portalListings.externalId] })
+        .returning({ id: portalListings.id });
+      if (!row) return null;
+      listingId = row.id;
+    }
 
-  if (events.length > 0) {
-    await db.insert(portalListingEvents).values(
-      events.map((e) => ({
-        listingId,
-        /**
-         * Filled where it is known, which is every listing that has been
-         * clustered at least once.
-         *
-         * It was omitted here until 2026-08-31, so `delisted` rows carried a
-         * property and `listed` and `price_changed` rows carried null — the
-         * exact inverse of what the column is for, and enough to make a
-         * property-level query over events return nothing for a new listing.
-         *
-         * Null remains correct and expected for a listing seen for the first
-         * time: clustering runs after collection, so nothing knows yet which
-         * property this is. Readers must therefore resolve the property through
-         * `portal_listings` rather than trusting this column — which is also
-         * the right thing to do after a merge reassigns a listing, since this
-         * value is a snapshot and the join is the current answer.
-         */
-        propertyId: existing?.propertyId ?? null,
-        sourceId: deps.sourceId,
-        runId: deps.runId,
-        type: e.type,
-        priceFrom: e.priceFrom ?? null,
-        priceTo: e.priceTo ?? null,
-        payload: e.payload ?? null,
-        occurredAt: now,
-      })),
-    );
-  }
+    if (events.length > 0) {
+      await tx.insert(portalListingEvents).values(
+        events.map((e) => ({
+          listingId,
+          /**
+           * Filled where it is known, which is every listing that has been
+           * clustered at least once.
+           *
+           * It was omitted here until 2026-08-31, so `delisted` rows carried a
+           * property and `listed` and `price_changed` rows carried null — the
+           * exact inverse of what the column is for, and enough to make a
+           * property-level query over events return nothing for a new listing.
+           *
+           * Null remains correct and expected for a listing seen for the first
+           * time: clustering runs after collection, so nothing knows yet which
+           * property this is. Readers must therefore resolve the property through
+           * `portal_listings` rather than trusting this column — which is also
+           * the right thing to do after a merge reassigns a listing, since this
+           * value is a snapshot and the join is the current answer.
+           */
+          propertyId: existing?.propertyId ?? null,
+          sourceId: deps.sourceId,
+          runId: deps.runId,
+          type: e.type,
+          priceFrom: e.priceFrom ?? null,
+          priceTo: e.priceTo ?? null,
+          payload: e.payload ?? null,
+          occurredAt: now,
+        })),
+      );
+    }
 
-  return { externalId, status: "ingested", listingId, events: events.map((e) => e.type) };
+    return { listingId, events: events.map((e) => e.type) };
+  });
 }
 
 /**
@@ -321,30 +414,45 @@ export async function delistListings(
   const now = new Date();
   let count = 0;
 
-  for (const externalId of externalIds) {
-    const existing = await loadListing(sourceId, externalId);
-    if (!existing || existing.status === "delisted") continue;
-
-    await db
-      .update(portalListings)
-      .set({ status: "delisted", delistedAt: now, updatedAt: now })
-      .where(eq(portalListings.id, existing.id));
-
-    await db.insert(portalListingEvents).values({
-      listingId: existing.id,
-      propertyId: existing.propertyId,
-      sourceId,
-      runId,
-      type: "delisted",
-      priceFrom: existing.priceEur,
-      payload: { lastAvailability: existing.availability },
-      occurredAt: now,
-    });
-    count += 1;
+  /**
+   * ONE STATEMENT: the flip and its event, for a chunk at a time.
+   *
+   * This was a loop of read, update, insert per listing — three round trips
+   * each, and check-then-write: two passes of one source at once both read
+   * `active` and both logged `delisted`. Now the update only takes rows that
+   * are not delisted yet and the event is written from what it RETURNS, in
+   * the same statement, so the second pass finds nothing to flip and logs
+   * nothing. The same property makes a retry safe: a chunk whose commit landed
+   * but whose answer was lost flips nothing the second time.
+   */
+  for (let i = 0; i < externalIds.length; i += DELIST_CHUNK) {
+    const chunk = externalIds.slice(i, i + DELIST_CHUNK);
+    const result = await withDbRetry(() =>
+      db.execute(sql`
+        with gone as (
+          update ${portalListings}
+          set status = 'delisted', delisted_at = ${now}, updated_at = ${now}
+          where source_id = ${sourceId}::uuid
+            and external_id in (${sql.join(chunk.map((id) => sql`${id}`), sql`, `)})
+            and status <> 'delisted'
+          returning id, property_id, price_eur, availability
+        )
+        insert into ${portalListingEvents}
+          (listing_id, property_id, source_id, run_id, type, price_from, payload, occurred_at)
+        select id, property_id, ${sourceId}::uuid, ${runId}::uuid, 'delisted', price_eur,
+               jsonb_build_object('lastAvailability', availability), ${now}
+        from gone
+        returning id
+      `),
+    );
+    count += result.rows.length;
   }
 
   return count;
 }
+
+/** Large enough to make a thousand delistings a few statements, small enough for the 10 s statement timeout. */
+const DELIST_CHUNK = 500;
 
 async function loadListing(sourceId: string, externalId: string) {
   const [row] = await db
