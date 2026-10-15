@@ -129,21 +129,58 @@ export function str(v: unknown): string | null {
   return null;
 }
 
+/**
+ * "9,500,000", "2,666", "9,500,000.00": commas between groups of exactly three
+ * digits, the first group not starting with 0. That is English thousands
+ * grouping; a French decimal comma has one or two digits after it ("12,5",
+ * "240,62") and never more than one comma.
+ */
+const COMMA_GROUPED = /^-?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?$/;
+/**
+ * "1.900.000", "1.900.000,50": the same grouping with dots, as Italian and
+ * German pages print it. Two groups at least — a lone "1.900" stays the
+ * decimal a JSON number would mean by it.
+ */
+const DOT_GROUPED = /^-?[1-9]\d{0,2}(?:\.\d{3}){2,}(?:,\d+)?$/;
+
+/**
+ * A number out of whatever a portal wrote.
+ *
+ * "1 900 000 €", "9,500,000", "240,62 m²" — everything but digits and
+ * separators is stripped, which is how spaces (plain, non-breaking U+00A0,
+ * narrow U+202F, thin U+2009) work as thousands separators: they are simply
+ * gone. Then the separator left over is read as grouping or decimal.
+ *
+ * Until 2026-10-15 a comma was decimal whenever it came last, so "9,500,000"
+ * became "9.500.000" and then null, and "2,666" became 2.666 — an English
+ * rendering of a surface read as two and a half square metres. Latent, as the
+ * review said: no price reached here with commas at the time. Green-Acres
+ * renders for its visitor, though, and the nightly runner is an American one.
+ *
+ * The rule chosen, and the case it gives up: a comma before exactly three
+ * digits is grouping. "1,250 ha" written to the thousandth of a hectare would
+ * read as 1 250 ha; no portal here prints a surface that way, while English
+ * thousands are what a US-rendered page prints everywhere.
+ */
 export function num(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    // "1 900 000 €", "9,500,000", "240,62 m²" — strip everything but digits and
-    // separators, then decide which separator was decimal.
-    const cleaned = v.replace(/[^\d.,-]/g, "");
-    if (!cleaned) return null;
-    const normalised =
-      cleaned.includes(",") && cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")
-        ? cleaned.replace(/\./g, "").replace(",", ".")
-        : cleaned.replace(/,/g, "");
-    const n = Number(normalised);
-    return Number.isFinite(n) ? n : null;
+  if (typeof v !== "string") return null;
+  const cleaned = v.replace(/[^\d.,-]/g, "");
+  // No digit, no number — and never let a lone separator reach Number(""), which is 0.
+  if (!/\d/.test(cleaned)) return null;
+  let normalised: string;
+  if (COMMA_GROUPED.test(cleaned)) {
+    normalised = cleaned.replace(/,/g, "");
+  } else if (DOT_GROUPED.test(cleaned)) {
+    normalised = cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (cleaned.includes(",") && cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")) {
+    // The French decimal comma, with any dots before it as grouping: "1.900,50".
+    normalised = cleaned.replace(/\./g, "").replace(",", ".");
+  } else {
+    normalised = cleaned.replace(/,/g, "");
   }
-  return null;
+  const n = Number(normalised);
+  return Number.isFinite(n) ? n : null;
 }
 
 /** Follow `offers`, which may be an object or an array of them. */

@@ -10,6 +10,7 @@ import {
 import { num } from "../jsonld";
 import { collectCharacteristics, isEmpty } from "../attributes";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Superimmo.
@@ -68,13 +69,13 @@ export const superimmoAdapter: PortalAdapter = {
      */
     const sort = (ctx.config.sort as string | undefined) ?? null;
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        console.warn(`[superimmo] no commune configured for INSEE ${insee} — skipping`);
-      }
-    }
+    const wanted = addressableCommunes(ctx, {
+      source: "superimmo",
+      what: "commune",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       const seen = new Set<string>();
       /** Every exit from the loop that is not "the results ran out". */
       let cutShort: string | null = null;

@@ -175,6 +175,44 @@ test("price is the euro figure, not the currency the visitor last chose", () => 
   assert.equal(l.priceEur, 4_700_000);
 });
 
+/**
+ * The listing's price object rewritten as a dollar session with no euro field:
+ * `value` pointing at the USD figure, `valueEUR` gone. Their payload is a flat
+ * devalue array, so the object holds indices into it.
+ */
+function dollarsOnly(html: string): string {
+  return html.replace(
+    /(<script[^>]*id="__NUXT_DATA__"[^>]*>)([\s\S]*?)(<\/script>)/,
+    (_m, open: string, body: string, close: string) => {
+      const data = JSON.parse(body) as unknown[];
+      for (const el of data) {
+        if (!el || typeof el !== "object" || Array.isArray(el)) continue;
+        const p = el as Record<string, number>;
+        if (p.valueEUR === undefined || data[p.valueEUR] !== 4_700_000) continue;
+        p.value = p.valueUSD;
+        delete p.valueEUR;
+      }
+      return open + JSON.stringify(data) + close;
+    },
+  );
+}
+
+test("a payload without valueEUR gives no euro price — the visitor's dollars are never taken (review §2, 2026-10-15)", () => {
+  const html = dollarsOnly(fixture("figaro-listing"));
+  const record = readPayload(html).records.find((r) => r.id === "103041455");
+  assert.ok(record, "the listing's own record is still read");
+  // It used to fall back to `value`: 5 445 461, the dollar figure, filed as euros.
+  assert.equal(record.priceEur, null);
+  assert.equal(record.priceOnRequest, true);
+});
+
+test("without valueEUR the price comes from the JSON-LD offer in euros, or not at all", () => {
+  const html = dollarsOnly(fixture("figaro-listing"));
+  assert.equal(parsed(html).priceEur, 4_700_000, "the markup's EUR offer");
+  const noMarkup = html.replace(/<script type="application\/ld\+json"[^>]*>[\s\S]*?<\/script>/g, "");
+  assert.equal(parsed(noMarkup).priceEur, null);
+});
+
 test("size, rooms and land all come out separately", () => {
   const l = parsed(fixture("figaro-listing"));
   assert.equal(l.areaM2, 210);

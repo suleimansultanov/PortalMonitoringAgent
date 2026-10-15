@@ -6,6 +6,7 @@ import {
   type ParseResult,
   type PortalAdapter,
 } from "../types";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Bien'ici (bienici.com) — the portal of the agency networks (Century 21,
@@ -187,12 +188,14 @@ export const bieniciAdapter: PortalAdapter = {
     const zones = (ctx.config.zones as Record<string, string> | undefined) ?? ZONES;
     const maxPages = Number(ctx.config.maxPages ?? 20);
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "bienici",
+      what: "Bien'ici zone",
+      has: (insee) => Boolean(zones[insee]),
+    });
+
+    for (const insee of wanted) {
       const zone = zones[insee];
-      if (!zone) {
-        ctx.incomplete(insee, "no Bien'ici zone configured for this commune");
-        continue;
-      }
 
       const seen = new Set<string>();
       let total: number | null = null;

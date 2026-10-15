@@ -10,6 +10,7 @@ import {
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
 import { communeSlugMatcher, walkSitemap } from "../runner/sitemap";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * SMC France — Maisons et Appartements + Résidences Immobilier.
@@ -82,6 +83,21 @@ export const smcAdapter: PortalAdapter = {
     const sitemapRoot = ctx.config.sitemap as string | undefined;
 
     /**
+     * Decided once, here, for both routes below. Each route used to warn on
+     * its own, so a sitemap that came back empty reported every missing
+     * commune twice — and neither report told the runner, which delisted the
+     * commune. And a pass with nothing addressable asks them for nothing: a
+     * sitemap shard walked for no commune is requests spent on no one.
+     */
+    const communes = (ctx.config.communes ?? []) as CommuneEntry[];
+    const wanted = addressableCommunes(ctx, {
+      source: "smc",
+      what: "commune",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
+    if (wanted.length === 0) return;
+
+    /**
      * Sitemap first, index pages as a real fallback rather than a dead branch.
      *
      * The sitemap is the better route by a distance — one file instead of a
@@ -112,7 +128,7 @@ export const smcAdapter: PortalAdapter = {
     if (sitemapRoot) {
       let found = 0;
       try {
-        for await (const item of discoverViaSitemap(ctx, sitemapRoot)) {
+        for await (const item of discoverViaSitemap(ctx, sitemapRoot, wanted)) {
           found += 1;
           yield item;
         }
@@ -125,7 +141,7 @@ export const smcAdapter: PortalAdapter = {
       console.warn("[smc] sitemap yielded nothing — falling back to index pages");
     }
 
-    yield* discoverViaIndex(ctx);
+    yield* discoverViaIndex(ctx, wanted);
   },
 
   parse(html: string, url: string): ParseResult {
@@ -245,11 +261,10 @@ export const smcAdapter: PortalAdapter = {
 async function* discoverViaSitemap(
   ctx: DiscoverContext,
   root: string,
+  addressable: string[],
 ): AsyncIterable<DiscoveredListing> {
   const communes = (ctx.config.communes ?? []) as CommuneEntry[];
-  const wanted = communes.filter((c) => ctx.communeInsee.includes(c.insee));
-
-  warnUncovered(ctx, communes);
+  const wanted = communes.filter((c) => addressable.includes(c.insee));
 
   /**
    * Both spellings. Their index pages use `st-tropez` and `ste-maxime`, but a
@@ -299,7 +314,10 @@ async function* discoverViaSitemap(
   }
 }
 
-async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
+async function* discoverViaIndex(
+  ctx: DiscoverContext,
+  addressable: string[],
+): AsyncIterable<DiscoveredListing> {
   /**
    * A list, not a map keyed by INSEE. SMC publishes district pages — Port
    * Grimaud and Marines de Cogolin have their own — and a district shares its
@@ -310,9 +328,7 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
   const host = (ctx.config.host as string) ?? "https://www.maisonsetappartements.fr";
   const maxPages = (ctx.config.maxPages as number) ?? 30;
 
-  warnUncovered(ctx, communes);
-
-  for (const entry of communes.filter((c) => ctx.communeInsee.includes(c.insee))) {
+  for (const entry of communes.filter((c) => addressable.includes(c.insee))) {
     const seen = new Set<string>();
     /**
      * Reported against the INSEE code, which several district pages share —
@@ -380,15 +396,6 @@ async function* discoverViaIndex(ctx: DiscoverContext): AsyncIterable<Discovered
     }
 
     if (cutShort) ctx.incomplete(entry.insee, cutShort);
-  }
-}
-
-function warnUncovered(ctx: DiscoverContext, communes: CommuneEntry[]): void {
-  for (const insee of ctx.communeInsee) {
-    if (communes.some((c) => c.insee === insee)) continue;
-    // Loud, because a missing entry is a whole commune silently absent from the
-    // product — the kind of gap that reads as "the market is quiet".
-    console.warn(`[smc] no commune configured for INSEE ${insee} — skipping`);
   }
 }
 

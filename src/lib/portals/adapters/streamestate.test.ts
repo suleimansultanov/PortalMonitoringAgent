@@ -163,3 +163,38 @@ test("a total that moved by one while the cursor walked is not a hole in the mar
   const holed = JSON.stringify({ ...p, meta: { ...p.meta, totalItems: p.data.length + 50 } });
   assert.match((await discoverWith(() => holed)).incomplete[0][1], /read 30 of the 80/);
 });
+
+test("their createdAt is their first sighting, never the publication date (Stream.Estate, 2026-10-09)", async () => {
+  const { out } = await discoverWith(() => PAGE);
+  const d = out[0];
+  const rec = JSON.parse(d.document!) as StreamRecord;
+  const createdAt = rec.property.createdAt as string;
+  assert.ok(createdAt, "the fixture's property carries createdAt");
+
+  // No advert states a date: nothing to call a publication date.
+  const undated = { ...rec, listings: rec.listings.map((l) => ({ ...l, publishedAt: null })) };
+  const r = streamEstateAdapter.parse(JSON.stringify(undated), d.url);
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.listing.publishedAt, null);
+  // Kept, under the name V1 gives it, where nothing reads it as the portal's date.
+  assert.equal((r.listing.raw as { firstSeenByThem: string | null }).firstSeenByThem, createdAt);
+});
+
+test("the publication date is the earliest one a portal states for its advert", async () => {
+  const { out } = await discoverWith(() => PAGE);
+  const d = out[0];
+  const rec = JSON.parse(d.document!) as StreamRecord;
+  const dated = {
+    ...rec,
+    property: { ...rec.property, createdAt: "2026-10-01T00:00:00+00:00" },
+    listings: rec.listings.map((l, i) => ({ ...l, publishedAt: i === 0 ? "2026-07-14T08:00:00+00:00" : "2026-08-01T08:00:00+00:00" })),
+  };
+  const r = streamEstateAdapter.parse(JSON.stringify(dated), d.url);
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.listing.publishedAt?.toISOString(), "2026-07-14T08:00:00.000Z");
+
+  const garbled = { ...dated, listings: dated.listings.map((l) => ({ ...l, publishedAt: "not a date" })) };
+  const g = streamEstateAdapter.parse(JSON.stringify(garbled), d.url);
+  if (g.status === "failed") return assert.fail(g.error);
+  assert.equal(g.listing.publishedAt, null);
+});

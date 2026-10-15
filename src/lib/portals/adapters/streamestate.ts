@@ -401,15 +401,29 @@ export const streamEstateAdapter: PortalAdapter = {
     ];
     listing.imageUrl = listing.imageUrls[0] ?? null;
 
-    const dates = rec.listings.map((l) => l.publishedAt).filter((d): d is string => !!d).sort();
-    const published = dates[0] ?? str(p.createdAt);
-    listing.publishedAt = published ? new Date(published) : null;
+    /**
+     * The earliest date a PORTAL states for one of its adverts, or none.
+     *
+     * Their property `createdAt` was the fallback until 2026-10-15, and it is
+     * not a publication date: it is when Stream.Estate first saw the property
+     * (Thomas, in writing, 2026-10-09) — the V1 adapter refused it from its
+     * first day. On 2026-10-15, 2 205 of 4 789 active rows from this source
+     * carried it as `published_at`, so "days on market" there counted from
+     * their crawler's discovery. Kept in `raw.firstSeenByThem`, V1's name for
+     * the same field, where nothing will mistake it for the portal's date.
+     */
+    const dates = rec.listings
+      .map((l) => l.publishedAt)
+      .filter((d): d is string => !!d && !Number.isNaN(new Date(d).getTime()))
+      .sort();
+    listing.publishedAt = dates[0] ? new Date(dates[0]) : null;
     // `updatedAt` is not taken: theirs moves on every re-crawl, not on change.
 
     listing.raw = {
       source: "stream-estate",
       sources: [...new Set(rec.listings.map((l) => l.source))],
       listings: rec.listings.map((l) => ({ source: l.source, url: l.url, publishedAt: l.publishedAt })),
+      firstSeenByThem: str(p.createdAt),
       heldBack: rec.heldBack,
       mandate: rec.publishers.find((x) => x.reference === reference)?.mandate ?? null,
       saleType: str(obj(p.transaction).saleType),

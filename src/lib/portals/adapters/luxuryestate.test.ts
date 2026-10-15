@@ -94,6 +94,20 @@ test("the site's own logo is not one of the property's photographs", () => {
   assert.ok(l.imageUrls.every((u) => !u.includes("/logos/")));
 });
 
+test("datePosted is the day the page was served, so it is never the publication date", () => {
+  /**
+   * The fixture was read on 2026-08-26 and says "2026-08-26" for a listing
+   * that existed days earlier. Six weeks of data settled it on 2026-10-15:
+   * 2 491 of 2 495 listings carried the date of their latest fetch, rewritten
+   * on every parse — every listing freshly published, every night.
+   */
+  const l = parseFixture();
+  assert.equal(l.publishedAt, null);
+  // Not thrown away: it stays in the node it came from, for whoever asks again.
+  const node = (l.raw as { listing: { datePosted?: string } }).listing;
+  assert.equal(node.datePosted, "2026-08-26");
+});
+
 test("a listing with no gallery markup still gets its cover from og:image", () => {
   // Their gallery is the part most likely to be restyled; og:image is the part
   // they publish for everyone else to link, so it is the sturdier fallback.

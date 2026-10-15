@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str, type JsonLdNode } from "../jsonld";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * LuxuryEstate.
@@ -55,12 +56,14 @@ export const luxuryEstateAdapter: PortalAdapter = {
     const paths = (ctx.config.communePaths ?? {}) as Record<string, string>;
     const maxPages = (ctx.config.maxPages as number) ?? 30;
 
-    for (const insee of ctx.communeInsee) {
+    const wanted = addressableCommunes(ctx, {
+      source: "luxuryestate",
+      what: "commune path",
+      has: (insee) => Boolean(paths[insee]),
+    });
+
+    for (const insee of wanted) {
       const path = paths[insee];
-      if (!path) {
-        console.warn(`[luxuryestate] no commune path for INSEE ${insee} — skipping`);
-        continue;
-      }
 
       const seen = new Set<string>();
       /** Every exit from the loop that is not "the results ran out". */
@@ -174,19 +177,24 @@ export const luxuryEstateAdapter: PortalAdapter = {
     if (fromCrumb) listing.communeRaw = fromCrumb;
 
     /**
-     * `datePosted` — CHECK BEFORE TRUSTING.
+     * `datePosted` — CHECKED, AND IT IS NOT THE PUBLICATION DATE.
      *
      * On the page read on 2026-08-26 this was "2026-08-26", i.e. that day,
      * for a listing that already existed days earlier. It may be the date the
      * page was regenerated rather than the date the property came to market.
-     * Captured so the question can be answered from data after a week of
-     * collection; until then treat days-on-market from this field as unproven.
+     * Captured so the question could be answered from data after a week of
+     * collection.
+     *
+     * Answered on 2026-10-15, after six weeks: of 2 495 listings, 2 491 had
+     * a `published_at` on the very day of their latest fetch, and 504 had
+     * one later than the day we first saw them. It is the day the page was
+     * served. Stored as `publishedAt` it was rewritten on every parse, so
+     * the listing screen and `/api/v1` called every LuxuryEstate listing
+     * "published" on the night we last fetched it. So it is not stored as a
+     * date at all; the value stays in `raw.listing.datePosted` with the rest
+     * of the node, and how long a listing has been up comes from our own
+     * first sighting, as on Green-Acres.
      */
-    const posted = str(listingNode.datePosted);
-    if (posted) {
-      const d = new Date(posted);
-      if (!Number.isNaN(d.getTime())) listing.publishedAt = d;
-    }
 
     // ── Agency — the one thing not in the markup ──────────────────────────
     listing.agencyName = agencyFromHtml(html);

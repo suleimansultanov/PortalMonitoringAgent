@@ -9,6 +9,7 @@ import {
 import { extractJsonLd, firstOffer, nodesOfType, num, readAddress, str } from "../jsonld";
 import { normaliseCommuneName, resolveCommune } from "../communes";
 import { isPastLastPage } from "../runner/fetcher";
+import { addressableCommunes } from "./unconfigured";
 
 /**
  * Propriétés Le Figaro.
@@ -140,11 +141,11 @@ export const figaroAdapter: PortalAdapter = {
     const communes = (ctx.config.communes ?? []) as FigaroCommuneConfig[];
     const maxPages = (ctx.config.maxPages as number) ?? 60;
 
-    for (const insee of ctx.communeInsee) {
-      if (!communes.some((c) => c.insee === insee)) {
-        console.warn(`[figaro] no commune configured for INSEE ${insee} — skipping`);
-      }
-    }
+    const wanted = addressableCommunes(ctx, {
+      source: "figaro",
+      what: "commune",
+      has: (insee) => communes.some((c) => c.insee === insee),
+    });
 
     /**
      * Run-level, not per-commune: Figaro promotes a listing onto the pages of
@@ -154,7 +155,7 @@ export const figaroAdapter: PortalAdapter = {
      */
     const yielded = new Set<string>();
 
-    for (const c of communes.filter((x) => ctx.communeInsee.includes(x.insee))) {
+    for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       /** Every exit from the loop that is not "the results ran out". */
       let cutShort: string | null = null;
       let kept = 0;
@@ -835,10 +836,20 @@ function toRecord(node: unknown): FigaroRecord | null {
     title: str(n.titleFr),
     description: str(property.descriptionFr),
     /**
-     * `valueEUR`, explicitly. `value` is whatever currency the visitor last
-     * chose, and `valueUSD` and `valueGBP` sit beside it in the same object.
+     * `valueEUR`, explicitly, and nothing else. `value` is whatever currency
+     * the visitor last chose, and `valueUSD` and `valueGBP` sit beside it in
+     * the same object.
+     *
+     * There was a fallback to `value` when `valueEUR` was absent, removed
+     * 2026-10-15 (review §2). In every payload we hold the two are either
+     * equal or both absent — absent is "prix nous consulter" — so the
+     * fallback never supplied a euro figure; all it could ever supply is a
+     * dollar one, on the day a session's currency switch and a missing
+     * `valueEUR` met. `currencyCodeFr` cannot vouch for it either: it reads
+     * "EUR" on every payload we hold, all captured in euro sessions, so
+     * nothing shows that it follows the switch.
      */
-    priceEur: num(price.valueEUR) ?? num(price.value),
+    priceEur: num(price.valueEUR),
     areaM2: num(area.value),
     landM2: num(area.ground),
     rooms: rooms !== null && rooms > 0 ? rooms : null,
