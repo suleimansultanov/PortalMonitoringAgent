@@ -147,6 +147,28 @@ test("a withheld price is recorded as on request, not as a parse failure", () =>
   assert.equal(r.listing.raw.priceOnRequest, true);
 });
 
+test("'on request' is read off whole words: financement is not NC (review §2, 2026-10-15)", () => {
+  const onRequest = (priceLabel: string) => {
+    const r = figaroImmobilierAdapter.parse(
+      JSON.stringify({ id: "6", transaction: "vente", price: 0, priceLabel }),
+      listingUrl("6"),
+    );
+    if (r.status === "failed") return assert.fail(r.error);
+    assert.equal(r.listing.priceEur, null);
+    return r.listing.raw.priceOnRequest;
+  };
+  for (const label of ["Prix NC", "Prix sur demande", "Nous consulter", "Prix : nous consulter", "NC"]) {
+    assert.equal(onRequest(label), true, label);
+  }
+  // Each of these used to match: "nc" or "demande" inside a longer word, under the `i` flag.
+  for (const label of ["Financement possible", "Annonce Provence", "Demandeur"]) {
+    assert.equal(onRequest(label), false, label);
+  }
+  for (const label of ["Prix de vente", "", "0 €"]) {
+    assert.equal(onRequest(label), false, label);
+  }
+});
+
 test("promotion flags do not change the stored document", async () => {
   const { out } = await discoverWith(() => INDEX);
   for (const d of out) {

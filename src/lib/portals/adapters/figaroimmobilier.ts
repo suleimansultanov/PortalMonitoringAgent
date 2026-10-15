@@ -166,6 +166,18 @@ const positive = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 
 /**
+ * "Prix NC", "Prix sur demande", "Nous consulter" — whole words only.
+ *
+ * It read `/NC|demande|consulter/i` until 2026-10-15 (review §2), and with
+ * the `i` flag "NC" is any "nc": finaNCement, ProveNCe, annoNCe. A label
+ * mentioning financing on a listing whose price we failed to read would have
+ * said "on request", and CLAUDE.md is explicit that a null price is not that
+ * unless the page says so — `priceOnRequest` is the one field that tells the
+ * screens and `/api/v1` the difference.
+ */
+const PRICE_ON_REQUEST = /\b(?:NC|demande|consulter)\b/i;
+
+/**
  * Their dates carry no zone ("2026-09-29T05:16:04") and are Paris time — the
  * same record's price history prints "+02:00" for the same instant. Read as
  * UTC they would be one or two hours late; the offset is taken for that date.
@@ -369,7 +381,7 @@ export const figaroImmobilierAdapter: PortalAdapter = {
 
     /** Euros by construction: a French-only site with no currency picker. */
     listing.priceEur = positive(c.price);
-    const onRequest = listing.priceEur === null && /NC|demande|consulter/i.test(c.priceLabel ?? "");
+    const onRequest = listing.priceEur === null && PRICE_ON_REQUEST.test(c.priceLabel ?? "");
 
     listing.communeRaw = c.location?.district ? `${city} - ${c.location.district}` : city;
     listing.postalCode = c.location?.postalCode ?? null;
