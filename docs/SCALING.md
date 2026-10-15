@@ -1,5 +1,13 @@
 # Scaling: what actually runs out, and when
 
+> **Historical — written 2026-08-28, not maintained.** Reasoned from one
+> commune of measurements, before any nightly ran. The argument (collecting is
+> the wall, not serving; keep the collector apart from the app) still holds,
+> and `DEPLOY.md` relies on it. The numbers and the shopping list are
+> superseded: the nightly runs on GitHub Actions (`collect.yml`, with a
+> self-hosted EU runner, `scripts/aws/README.md`), and the portals that
+> throttle or refuse us come through Stream.Estate (`docs/HANDOFF.md` §1–3).
+
 The instinct is that one service serving many client instances will run out of
 capacity and need more servers. That instinct is right about the shape and wrong
 about the bottleneck — and the difference decides where money goes.

@@ -1,5 +1,13 @@
 # Moving to the leadestate Supabase
 
+> **Historical — written 2026-09-01, not maintained.** A one-off runbook: build
+> a new Supabase project from the laptop's Postgres and repoint everything at
+> it. Today there is one database, shared by `.env.local`, the nightly and
+> Vercel (`DEPLOY.md`, "One database"). The two scripts it runs,
+> `sync-to-supabase.sh` and `migrate-to-supabase.sh`, were removed on
+> 2026-10-15: with `.env.local` pointing at production, its step 7 would now
+> truncate the client's data. Moving to a new database is `DEPLOY.md` §3.
+
 Production currently runs on a **personal** Supabase project, and the collector
 writes to a Postgres on the laptop. Both move: one database, in the leadestate
 account, written by the collector and read by the API.

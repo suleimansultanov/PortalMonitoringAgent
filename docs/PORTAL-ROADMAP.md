@@ -1,5 +1,13 @@
 # The remaining portals, and what turns this into a product
 
+> **Historical — written 2026-08-29, last edited 2026-08-30, not maintained.**
+> The order of work for the remaining portals, from when two were collected.
+> Some of it was done (browser discovery, sitemaps, probes); the rest was
+> overtaken by Stream.Estate, which now carries the portals that refuse us
+> (V2, and the paid V1), with letters as the route for the others. Superseded
+> by `docs/HANDOFF.md` §1–3 and `npm run source`. DVF, below, is still not
+> built.
+
 Written 2026-08-29, after two portals were collected for real. `PIPELINE.md`
 says how to add a portal; this says **which ones, in what order, and why** — and
 argues that the order follows from one observation.

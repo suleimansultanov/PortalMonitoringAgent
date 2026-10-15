@@ -1,5 +1,13 @@
 # Portal Monitoring Agent — plan and decision log
 
+> **Historical — written 2026-08-25, not maintained.** The plan and decision
+> log from before the first collection ran ("collection not yet running").
+> Much of it has since happened or been decided otherwise: one shared
+> database rather than one per client, the client's own application reading
+> `/api/v1` (`API.md`), Stream.Estate for the portals that refuse us.
+> Superseded by `CLAUDE.md` (the rules and the code map), `docs/HANDOFF.md`
+> (state and decisions) and `docs/REVIEW-2026-10-15.md` (the work list).
+
 **Status:** foundation built, collection not yet running.
 **First client:** Med-Estates (Mark Daggers), 14 communes in the Gulf of Saint-Tropez.
 **Last updated:** 2026-08-25

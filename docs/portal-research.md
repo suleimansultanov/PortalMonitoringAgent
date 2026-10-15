@@ -1,5 +1,12 @@
 # Portal Monitoring — разведка перед PRD
 
+> **Historical — written 2026-08-24, not maintained.** The reconnaissance of
+> the fourteen portals before any code was written; every verdict, status and
+> recommendation below is as of that day. Superseded by `docs/HANDOFF.md` §1
+> (what each source is now; `npm run source`), `CLAUDE.md` "Portal traps",
+> each source's `portal_sources.permission_note` (why we may collect), and
+> Stream.Estate for the portals that refuse us.
+
 **Клиент:** Med-Estates (Mark Daggers). **Рынок:** залив Сен-Тропе, 14 коммун.
 **Дата:** 2026-08-24. **Статус:** разведка завершена по 12 порталам из 14.
 
