@@ -254,10 +254,18 @@ jobs:
       # .pages/ on the runner, which is destroyed with the job — so the run
       # would leave nothing to re-parse against, and `npm run reparse` would
       # have nothing to work on. This is a stopgap that shouts, not a solution.
+      #
+      # The test is in the script, not in `if:`. A step's own `env:` is not
+      # yet set when its `if:` is evaluated, so `env.S3_BUCKET == ''` read an
+      # empty value on every night and the warning printed whether S3 was
+      # configured or not. And the message is in single quotes: in double
+      # quotes the backticks around the command ran `npm run reparse`.
       - name: Warn if pages have nowhere to go
-        if: always() && env.S3_BUCKET == ''
+        if: always()
         run: |
-          echo "::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against tonight's collection."
+          if [ -z "$S3_BUCKET" ]; then
+            echo '::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against this collection.'
+          fi
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
 
