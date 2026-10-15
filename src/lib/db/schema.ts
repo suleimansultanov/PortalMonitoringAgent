@@ -50,8 +50,8 @@ export const clients = pgTable(
     communeInsee: text("commune_insee").array().notNull().default([]),
     /**
      * The client's own agency, as `portal_agencies.name_normalized` spells it on
-     * each portal. /api/v1 does not serve these listings back to the client,
-     * which has them from its own CRM (0009).
+     * each portal. On a property the client sells, /api/v1 serves only these
+     * listings — no other agency's duplicate of it (0009).
      */
     ownAgencyNames: text("own_agency_names").array().notNull().default([]),
     active: boolean("active").notNull().default(true),

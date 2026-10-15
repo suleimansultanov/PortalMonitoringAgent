@@ -24,23 +24,17 @@ import { portalListings, portalSources, properties } from "@/lib/db/schema";
  * screens — and the day they disagree, the client's app and our dashboard
  * show two different markets with nothing to say which is right.
  */
-export function servedProperty(sourceIds: string[] | null, notAgencies: string[] = []): SQL {
+export function servedProperty(sourceIds: string[] | null): SQL {
   const scoped =
     sourceIds === null
       ? sql``
       : sourceIds.length === 0
         ? sql` and false`
         : sql` and l.source_id in (${sql.join(sourceIds.map((id) => sql`${id}::uuid`), sql`, `)})`;
-  // `notAgencies`: the client's own (clients.own_agency_names, resolved to ids). A property
-  // only the client itself is selling is not served back to it.
-  const notOwn =
-    notAgencies.length === 0
-      ? sql``
-      : sql` and (l.agency_id is null or l.agency_id not in (${sql.join(notAgencies.map((id) => sql`${id}::uuid`), sql`, `)}))`;
   return sql`exists (
   select 1 from ${portalListings} l
   join ${portalSources} s on s.id = l.source_id
-  where l.property_id = ${properties.id} and l.status = 'active' and s.enabled${scoped}${notOwn}
+  where l.property_id = ${properties.id} and l.status = 'active' and s.enabled${scoped}
 )`;
 }
 

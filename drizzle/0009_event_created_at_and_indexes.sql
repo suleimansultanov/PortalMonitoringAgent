@@ -27,10 +27,10 @@ CREATE INDEX IF NOT EXISTS "properties_active_commune_id_idx"
 
 -- The client's own agency, under every name the portals print it with.
 --
--- A client has its own listings from its own CRM (Med-Estates from Animo) and
--- asked on 2026-10-15 not to be served them again: /api/v1 leaves out every
--- listing whose agency's normalised name is in this list, and a property only
--- the client itself is selling with it. Names, normalised as portal_agencies
+-- On a property the client itself is selling, /api/v1 serves only the client's
+-- own listings, not other agencies' duplicates of it (Med-Estates, 2026-10-15).
+-- Applied to production with the earlier wording of this comment; the column
+-- is unchanged. Names, normalised as portal_agencies
 -- normalises them, because the same agency is a different row per portal
 -- spelling — "Med-Estates", and on Green-Acres the agent, "Mark Voncken".
 ALTER TABLE "clients" ADD COLUMN IF NOT EXISTS "own_agency_names" text[] NOT NULL DEFAULT '{}';

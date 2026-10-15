@@ -160,16 +160,18 @@ export function decodeCursor(raw: string): { occurredAt: Date; id: string } | nu
 }
 
 /**
- * THE CLIENT'S OWN AGENCY IS NOT SERVED BACK TO IT.
+ * ON THE CLIENT'S OWN PROPERTIES, ONLY THE CLIENT'S OWN LISTINGS.
  *
- * Med-Estates has its listings from its own CRM (Animo) and asked on
- * 2026-10-15 not to find them again in the feed. Its listings are left out
- * wherever a listing is served — on a property, in an event, in the last price
- * change — and a property only the client is selling is not served at all. A
- * villa the client AND a competitor are selling stays, with the competitor's
- * listings only: that is the one the client wants to see.
+ * Mark Voncken, 2026-10-15: Med-Estates' listings stay in the feed, but not
+ * "the duplicate listings for our own properties (by other agents /
+ * platforms)". So where a property carries an active listing of the client's
+ * own agency, every other agency's listing of it is left out — of the
+ * property's listings, of the events, of the last price change. A competitor
+ * putting the client's villa on SeLoger is not news to the client; it would
+ * read as a new property, which is exactly what was reported. Properties the
+ * client does not sell are untouched.
  *
- * Read per request from `clients.own_agency_names`, matched on the agency's
+ * The agency comes from `clients.own_agency_names`, matched on the agency's
  * normalised name, because one agency is a row per portal spelling.
  */
 const ownCache = new WeakMap<KeyScope, Promise<string[]>>();
@@ -187,8 +189,20 @@ function ownAgencies(scope: KeyScope): Promise<string[]> {
   return p;
 }
 
-function notOwn(own: string[]) {
-  return own.length === 0 ? sql`true` : or(isNull(portalListings.agencyId), notInArray(portalListings.agencyId, own))!;
+/**
+ * The listing in `portal_listings` (as joined in the query) is the client's
+ * own, or sits on a property the client is not selling.
+ */
+function notADuplicateOfOwn(own: string[]) {
+  if (own.length === 0) return sql`true`;
+  const ids = sql.join(own.map((id) => sql`${id}::uuid`), sql`, `);
+  return sql`(
+    ${portalListings.agencyId} in (${ids})
+    or not exists (
+      select 1 from ${portalListings} o
+      where o.property_id = ${portalListings.propertyId} and o.status = 'active' and o.agency_id in (${ids})
+    )
+  )`;
 }
 
 /**
@@ -239,7 +253,7 @@ async function withListings(rows: PropertyPayload[], scope: KeyScope): Promise<P
         eq(portalListings.status, "active"),
         eq(portalSources.enabled, true),
         subscribed(portalListings.sourceId, scope),
-        notOwn(await ownAgencies(scope)),
+        notADuplicateOfOwn(await ownAgencies(scope)),
       ),
     );
 
@@ -400,7 +414,7 @@ async function withLastPriceChange(rows: PropertyPayload[], scope: KeyScope): Pr
         inArray(portalListings.propertyId, ids),
         eq(portalSources.enabled, true),
         subscribed(portalListingEvents.sourceId, scope),
-        notOwn(await ownAgencies(scope)),
+        notADuplicateOfOwn(await ownAgencies(scope)),
       ),
     )
     .orderBy(desc(portalListingEvents.occurredAt));
@@ -527,7 +541,7 @@ export async function snapshot(
   const conditions = [
     eq(properties.status, "active"),
     inArray(properties.communeInsee, opts.communeInsee),
-    servedProperty(scope.sourceIds, await ownAgencies(scope)),
+    servedProperty(scope.sourceIds),
   ];
   if (opts.after) conditions.push(gt(properties.id, opts.after));
 
@@ -591,7 +605,7 @@ export async function events(
     eq(portalSources.enabled, true),
     // Only what this client subscribes to (`client_sources`), as the key's documentation promises (REVIEW 1.5).
     subscribed(portalListings.sourceId, scope),
-    notOwn(await ownAgencies(scope)),
+    notADuplicateOfOwn(await ownAgencies(scope)),
   ];
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
@@ -715,7 +729,7 @@ export async function status(scope: KeyScope): Promise<{
     .where(
       and(
         eq(properties.status, "active"),
-        servedProperty(scope.sourceIds, await ownAgencies(scope)),
+        servedProperty(scope.sourceIds),
         scope.communeInsee.length > 0
           ? inArray(properties.communeInsee, scope.communeInsee)
           : sql`false`,
