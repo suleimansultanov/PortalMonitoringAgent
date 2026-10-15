@@ -1,0 +1,60 @@
+name: CI
+
+# Typecheck and tests, on every push and every pull request.
+#
+# Until 2026-10-15 nothing ran them but whoever remembered to, on their own
+# machine. Both take seconds — the whole suite is about two — and between
+# them they hold most of what this project has learned the expensive way:
+# the abort guard, the commune-scoped delist baseline, the Stream.Estate V1
+# meter, the backup's table list, each with a test named after the incident.
+# A test that runs only when someone thinks of it guards nothing on the day
+# they do not.
+#
+# No database, no secrets, no network beyond installing packages: the suite
+# is pure by construction, and this job is given nothing that could change
+# that. Which is also why a pull request from a fork can run it safely.
+#
+# Vercel builds `main` on push regardless of this result. Red here means
+# "do not merge", and on `main` it means "what just deployed is suspect".
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same branch makes the older run's answer moot.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # No Chromium: the `playwright` package installs no browser by itself
+      # (see collect.yml), and no test drives one.
+      - run: npm ci
+
+      # tsconfig includes `.next/types/**`, which only `next build` or
+      # `next dev` writes. A clean checkout has none, and that is the honest
+      # state to check: locally a stale `.next/types` is what makes this fail
+      # on code that is fine (`rm -rf .next` clears it).
+      - name: Typecheck
+        run: npm run typecheck
+
+      # What `npm test` runs, written out. The glob is quoted so Node expands
+      # it (`--test` does, since Node 21), not the shell, which would need
+      # globstar to read `**` as more than one level.
+      - name: Tests
+        run: node --import tsx --test "src/**/*.test.ts"
