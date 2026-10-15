@@ -101,6 +101,12 @@ concurrency:
   group: nightly-collection
   cancel-in-progress: false
 
+# Read the repository, nothing more. The collecting job runs `npm ci` and
+# parses other people's pages; it has no business holding a token that can
+# write anywhere. The one job that writes (an issue, below) asks for that alone.
+permissions:
+  contents: read
+
 jobs:
   collect:
     # `PMA_RUNNER` (repo variable) = `self-hosted` moves the pass to our EU box
@@ -110,6 +116,10 @@ jobs:
     # leaves a `running` row in portal_runs and no summary; being killed by this
     # leaves the same, but at a time we chose and can reason about.
     timeout-minutes: 330
+    outputs:
+      # The night's summary.txt, so the failure report below can quote it.
+      # Empty when the run died before writing one.
+      summary: ${{ steps.summary.outputs.text }}
 
     steps:
       - uses: actions/checkout@v4
@@ -210,6 +220,7 @@ jobs:
 
       # `always()`, because the summary matters most on the night that failed.
       - name: Publish the summary
+        id: summary
         if: always()
         run: |
           if [ -f logs/latest/summary.txt ]; then
@@ -218,6 +229,14 @@ jobs:
               cat logs/latest/summary.txt
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Also as the job's output, for the issue a failed night opens.
+            # printf, so the last line ends in a newline whatever the file
+            # does: a delimiter glued to it is not found, and the step fails.
+            {
+              echo "text<<PMA_SUMMARY_$GITHUB_RUN_ID"
+              printf '%s\n' "$(cat logs/latest/summary.txt)"
+              echo "PMA_SUMMARY_$GITHUB_RUN_ID"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "No summary was written — the run died before it got that far." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -241,3 +260,95 @@ jobs:
           echo "::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against tonight's collection."
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+  # ── A red night has to reach a person ─────────────────────────────────────
+  #
+  # JamesEdition kept this workflow red for four weeks — refused with 403 from
+  # 16 September, switched off on 14 October — and nobody was told. A red cross
+  # on the Actions tab is a signal only to someone who opens the Actions tab,
+  # and nobody does that to check on a job that is supposed to just work.
+  #
+  # So a failed night opens an issue labelled `nightly-failure`, mentioning
+  # the repository's owner, and GitHub sends that as an email. While it stays
+  # open, every further red night is a comment on it rather than a new issue:
+  # one thread per outage, not one per night. Close it when the night is green
+  # again; the next failure opens a fresh one.
+  #
+  # A JOB OF ITS OWN, not a last step of `collect`, for two reasons:
+  #   - It has to run when `collect` could not finish: killed at 330 minutes,
+  #     or the self-hosted box gone mid-run, where a last step of that job may
+  #     never get to run. This one runs on GitHub's runner whatever happened
+  #     to the other.
+  #   - It is the only thing here that writes to the repository. Kept apart,
+  #     the job that runs `npm ci` and parses portal pages never holds that
+  #     token.
+  #
+  # What counts as red: anything but success, except a run cancelled by hand
+  # (whoever cancelled it already knows). That includes a night where any
+  # source is graded FAIL: nightly.ts exits 1 for those, and that is what
+  # turns the Collect step red. A `warn` night exits 0 and stays quiet.
+  report-failure:
+    needs: collect
+    if: ${{ !cancelled() && needs.collect.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open an issue, or add to the one already open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.collect.result }}
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          ACTOR: ${{ github.triggering_actor }}
+          SUMMARY: ${{ needs.collect.outputs.summary }}
+        run: |
+          LABEL=nightly-failure
+          if [ "$EVENT" = "schedule" ]; then
+            TRIGGER="the schedule ($SCHEDULE)"
+          else
+            TRIGGER="$EVENT, started by $ACTOR"
+          fi
+
+          BODY="$RUNNER_TEMP/body.md"
+          {
+            echo "The nightly collection ended with result **$RESULT** (reported $(date -u '+%Y-%m-%d %H:%M') UTC)."
+            echo
+            echo "- Run: $RUN_URL"
+            echo "- Trigger: $TRIGGER"
+            echo
+            if [ -n "$SUMMARY" ]; then
+              echo '```'
+              printf '%s\n' "$SUMMARY"
+              echo '```'
+            else
+              echo "No summary was written: the run stopped before the collector finished"
+              echo "(install, migrations, preflight, the 330-minute limit, or the runner itself)."
+              echo "The run's log says which."
+            fi
+          } > "$BODY"
+
+          # The label has to exist before an issue can carry it. --force makes
+          # this a no-op on every night after the first.
+          gh label create "$LABEL" --force --color B60205 \
+            --description "Opened by collect.yml when a night fails" > /dev/null
+
+          OPEN="$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body-file "$BODY"
+            echo "Added to issue #$OPEN."
+          else
+            {
+              echo "@$OWNER — a night of collection failed."
+              echo "Later failures are added here as comments while this issue is open."
+              echo "Close it once the night is green again; the next failure opens a new one."
+              echo
+              cat "$BODY"
+            } > "$BODY.new"
+            gh issue create --title "Nightly collection is failing" --label "$LABEL" --body-file "$BODY.new"
+          fi
