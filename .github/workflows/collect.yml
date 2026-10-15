@@ -82,9 +82,9 @@ on:
         description: "Comma-separated source keys. Blank means every enabled one."
         required: false
       parallel:
-        description: "How many sources at once. 1 is safest; 2 halves the night."
+        description: "How many sources at once. 2 is the nightly default; 1 is the slowest and safest."
         required: false
-        default: "1"
+        default: "2"
       communes:
         description: "Comma-separated INSEE codes. Blank means every subscribed one. Use for a probe, not a night."
         required: false
@@ -155,7 +155,12 @@ jobs:
 
       - name: Collect
         run: |
-          ARGS="--parallel=${{ inputs.parallel || '1' }}"
+          # Two at once by default since 2026-10-15: the refresh queue now sees the
+          # listings it was blind to (REVIEW 1.2), each source spends up to 45 min
+          # re-reading them, and one at a time the first such run reached the
+          # 330-minute ceiling inside Green-Acres — Bien'ici, V2 and the resolve
+          # never ran. Two sources are two different sites; no portal sees more.
+          ARGS="--parallel=${{ inputs.parallel || '2' }}"
           if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
           if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
           # Sunday's schedule, or a hand-triggered run that asked for it.
