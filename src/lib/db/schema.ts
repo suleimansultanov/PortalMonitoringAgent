@@ -1,5 +1,6 @@
 import {
   pgTable,
+  primaryKey,
   uuid,
   text,
   boolean,
@@ -698,8 +699,35 @@ export const apiUsage = pgTable(
     items: integer("items").notNull().default(0),
     uncertain: boolean("uncertain").notNull().default(false),
     note: text("note"),
+    /**
+     * 'count' (free), 'reserve' (a page, written BEFORE the request, at its
+     * size), 'settle' (the difference, after the response). NULL on rows from
+     * before 2026-10-15: settled history. See drizzle/0008.
+     */
+    kind: text("kind"),
+    /** Pairs a reserve with its settle. */
+    requestId: text("request_id"),
   },
   (t) => ({
     sourceAtIdx: index("api_usage_source_at_idx").on(t.sourceKey, t.at),
+  }),
+);
+
+/**
+ * Where a changes-only source stands, per commune: the adapter's own JSON
+ * (`{ stockedAt, stockCursor, changesSince }` for Stream.Estate V1). Per
+ * commune, because a pass stopped at the cap must not leave the communes it
+ * never reached reading "changes" to a stock they do not have.
+ */
+export const sourceCommuneState = pgTable(
+  "source_commune_state",
+  {
+    sourceKey: text("source_key").notNull(),
+    communeInsee: text("commune_insee").notNull(),
+    state: jsonb("state").$type<Record<string, unknown>>().notNull().default({}),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.sourceKey, t.communeInsee] }),
   }),
 );

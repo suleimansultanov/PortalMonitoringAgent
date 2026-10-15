@@ -1,13 +1,14 @@
-import { and, desc, eq, gte, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { apiUsage, portalListings, portalRuns, portalSources } from "@/lib/db/schema";
+import { apiUsage, sourceCommuneState } from "@/lib/db/schema";
 import type { LedgerStore } from "./streamV1";
 
 /**
  * The meter's ledger in the database — for the nightly runner, whose disk is
- * gone by morning while the month's count must not be. One row per request;
- * the period's total is a sum. No response cache: pages are stored by ingest
- * as the listing's document, which is what a re-read is for.
+ * gone by morning while the month's count must not be, and for the Mac's
+ * tools, so that every process that can spend shares one cap. One row per
+ * entry; the period's total is a sum. No response cache: pages are stored by
+ * ingest as the listing's document, which is what a re-read is for.
  */
 export function dbLedgerStore(sourceKey: string): LedgerStore {
   return {
@@ -15,9 +16,14 @@ export function dbLedgerStore(sourceKey: string): LedgerStore {
       const [t] = await db
         .select({
           items: sql<number>`coalesce(sum(${apiUsage.items}), 0)::int`,
-          uncertain: sql<number>`coalesce(sum(${apiUsage.items}) filter (where ${apiUsage.uncertain}), 0)::int`,
-          paidRequests: sql<number>`count(*) filter (where ${apiUsage.paid})::int`,
-          freeRequests: sql<number>`count(*) filter (where not ${apiUsage.paid})::int`,
+          /** Reservations with no settle row: in flight, or never came back. */
+          uncertain: sql<number>`coalesce(sum(${apiUsage.items}) filter (
+            where ${apiUsage.kind} = 'reserve' and not exists (
+              select 1 from ${apiUsage} s where s.kind = 'settle' and s.request_id = ${apiUsage.requestId}
+            )), 0)::int`,
+          // Rows from before `kind` existed are settled paid pages.
+          paidRequests: sql<number>`count(*) filter (where ${apiUsage.kind} in ('reserve', 'legacy') or (${apiUsage.kind} is null and ${apiUsage.paid}))::int`,
+          freeRequests: sql<number>`count(*) filter (where ${apiUsage.kind} = 'count' or (${apiUsage.kind} is null and not ${apiUsage.paid}))::int`,
         })
         .from(apiUsage)
         .where(and(eq(apiUsage.sourceKey, sourceKey), gte(apiUsage.at, since)));
@@ -32,50 +38,36 @@ export function dbLedgerStore(sourceKey: string): LedgerStore {
       await db.insert(apiUsage).values({
         sourceKey,
         at: e.at,
-        paid: e.paid,
+        paid: e.kind === "reserve" || e.kind === "legacy",
+        kind: e.kind,
+        requestId: e.requestId ?? null,
         query: e.query,
         items: e.items,
-        uncertain: e.uncertain,
+        uncertain: e.kind === "reserve",
         note: e.note ?? null,
       });
     },
   };
 }
 
-/**
- * Whether this source already holds live listings in a commune. A commune
- * with none takes the stock; one with some asks for changes. Per commune,
- * not per source: a first pass that stopped at the cap after four communes
- * must not leave the other eight reading "changes" to a stock they never had.
- */
-export async function hasStock(sourceKey: string, communeInsee: string): Promise<boolean> {
+/** The adapter's own per-commune watermark. See `source_commune_state` in drizzle/0008. */
+export type CommuneState = Record<string, unknown>;
+
+export async function getCommuneState(sourceKey: string, communeInsee: string): Promise<CommuneState> {
   const [row] = await db
-    .select({ one: sql<number>`1` })
-    .from(portalListings)
-    .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(and(eq(portalSources.key, sourceKey), eq(portalListings.communeInsee, communeInsee), eq(portalListings.status, "active")))
+    .select({ state: sourceCommuneState.state })
+    .from(sourceCommuneState)
+    .where(and(eq(sourceCommuneState.sourceKey, sourceKey), eq(sourceCommuneState.communeInsee, communeInsee)))
     .limit(1);
-  return !!row;
+  return row?.state ?? {};
 }
 
-/**
- * When this source last finished a pass that can be built on: the newest
- * `done` or `partial` run with no error. A changes-only pass asks for what
- * moved since then; a source with no such pass takes the stock.
- */
-export async function lastCompletedPassAt(sourceKey: string): Promise<Date | null> {
-  const [row] = await db
-    .select({ at: portalRuns.completedAt })
-    .from(portalRuns)
-    .innerJoin(portalSources, eq(portalSources.id, portalRuns.sourceId))
-    .where(
-      and(
-        eq(portalSources.key, sourceKey),
-        or(eq(portalRuns.status, "done"), eq(portalRuns.status, "partial")),
-        isNull(portalRuns.error),
-      ),
-    )
-    .orderBy(desc(portalRuns.completedAt))
-    .limit(1);
-  return row?.at ?? null;
+export async function setCommuneState(sourceKey: string, communeInsee: string, state: CommuneState): Promise<void> {
+  await db
+    .insert(sourceCommuneState)
+    .values({ sourceKey, communeInsee, state })
+    .onConflictDoUpdate({
+      target: [sourceCommuneState.sourceKey, sourceCommuneState.communeInsee],
+      set: { state, updatedAt: new Date() },
+    });
 }

@@ -177,14 +177,40 @@ function base(insee: string): URLSearchParams {
   return q;
 }
 
-/** Their format: `2021-05-07 12:42:42`, read in their own time zone; an hour's slack covers the difference. */
-const stamp = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
+/**
+ * Their format: `2021-05-07 12:42:42`, read in THEIR zone. Written in
+ * Europe/Paris, then: a UTC stamp would open the window two hours early in
+ * summer, and every hour of overlap is re-billed each night.
+ */
+const PARIS = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Paris",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+});
+export function stamp(d: Date): string {
+  const part = Object.fromEntries(PARIS.formatToParts(d).map((x) => [x.type, x.value]));
+  return `${part.year}-${part.month}-${part.day} ${part.hour === "24" ? "00" : part.hour}:${part.minute}:${part.second}`;
+}
+
+/**
+ * Where a commune stands, kept by the adapter per commune, in the database.
+ *
+ * `stockedAt`: the stock walk reached its last page at this instant; from
+ * then on the commune asks for changes. `stockCursor`: `createdAt` of the
+ * last property received by a stock walk the cap cut short — the next
+ * night resumes there instead of paying for the pages again. `changesSince`:
+ * the start of the last change walk that completed; advanced only then, so
+ * a walk the cap cut short is asked again in full the next night, with
+ * nothing lost between.
+ */
+export type CommuneWatermark = { stockedAt?: string; stockCursor?: string; changesSince?: string };
 
 export type V1Deps = {
   client: (config: Record<string, unknown>) => V1Client | Promise<V1Client>;
-  lastPassAt: () => Promise<Date | null>;
-  /** Whether we already hold live listings from this source in a commune. */
-  hasStock: (communeInsee: string) => Promise<boolean>;
+  state: {
+    get(communeInsee: string): Promise<CommuneWatermark>;
+    set(communeInsee: string, state: CommuneWatermark): Promise<void>;
+  };
   now?: () => Date;
 };
 
@@ -202,11 +228,11 @@ export function makeStreamEstateV1Adapter(deps: V1Deps): PortalAdapter {
       const own = (ctx.config.ownSources as string[] | undefined) ?? OWN_SOURCES;
       const freshDays = Number(ctx.config.freshDays ?? 30);
       const client = await deps.client(ctx.config);
-      const since = await deps.lastPassAt();
+      const passStartedAt = now();
       const t = await client.totals();
       console.log(
         `[${SOURCE_KEY}] period from ${client.periodStart.toISOString().slice(0, 10)}: ${t.items} items counted, cap ${client.cap}, ` +
-          `${await client.remaining()} left — ${since ? `changes since ${since.toISOString().slice(0, 16)}` : `no completed pass yet: taking the stock (updated ≤${freshDays}d)`}`,
+          `${await client.remaining()} left`,
       );
 
       let stopped: string | null = null;
@@ -265,19 +291,28 @@ export function makeStreamEstateV1Adapter(deps: V1Deps): PortalAdapter {
           return { externalId: rec.id, url: primary(rec, own)!.url, communeHint: insee, document: JSON.stringify(rec) };
         };
 
-        // Per commune: a pass that stopped at the cap leaves the communes it never reached without stock.
-        const stock = !since || !(await deps.hasStock(insee));
-        if (stock) {
+        const mark = await deps.state.get(insee);
+        if (!mark.stockedAt) {
+          // The stock — once, and resumed where the cap cut it, never paid for twice.
           const q = base(insee);
           q.set("expired", "false");
-          q.set("fromUpdatedAt", new Date(now().getTime() - freshDays * 86_400_000).toISOString().slice(0, 10));
+          q.set("fromUpdatedAt", new Date(passStartedAt.getTime() - freshDays * 86_400_000).toISOString().slice(0, 10));
+          if (mark.stockCursor) q.set("fromDate", mark.stockCursor);
+          let lastCreated: string | null = null;
           for await (const p of walk(insee, q, "stock")) {
+            lastCreated = str(p.createdAt) ?? lastCreated;
             const d = take(p);
             if (d) yield d;
           }
+          if (!stopped) {
+            await deps.state.set(insee, { stockedAt: passStartedAt.toISOString(), changesSince: passStartedAt.toISOString() });
+          } else if (lastCreated) {
+            await deps.state.set(insee, { ...mark, stockCursor: lastCreated });
+          }
         } else {
-          // Changes since the last pass, with an hour's slack: their clock, their zone.
-          const from = stamp(new Date(since!.getTime() - 3_600_000));
+          // Changes since this commune's last complete walk, with an hour's slack on their clock.
+          const since = new Date(mark.changesSince ?? mark.stockedAt);
+          const from = stamp(new Date(since.getTime() - 3_600_000));
           const created = base(insee);
           created.set("fromDate", from);
           created.set("expired", "false");
@@ -301,8 +336,10 @@ export function makeStreamEstateV1Adapter(deps: V1Deps): PortalAdapter {
             gone += 1;
             ctx.gone?.(p.uuid);
           }
-          // A changes-only pass by definition did not see the rest: nothing is delisted for being absent.
-          ctx.incomplete(insee, `changes only, since ${since!.toISOString().slice(0, 16)}`);
+          // Advanced only when all three walks completed: a walk the cap cut short is asked again in full.
+          if (!stopped) await deps.state.set(insee, { ...mark, changesSince: passStartedAt.toISOString() });
+          // Not `ctx.incomplete`: the runner already treats a `changesOnly` source as never having seen
+          // the whole market, and a commune marked incomplete every night reads as a shut door.
         }
         if (stopped) ctx.incomplete(insee, stopped);
         console.log(
@@ -409,6 +446,8 @@ export const streamEstateV1Adapter: PortalAdapter = makeStreamEstateV1Adapter({
       anchorDay: Number(config.periodAnchorDay ?? V1_DEFAULT_ANCHOR_DAY),
     });
   },
-  lastPassAt: async () => (await import("../streamV1Db")).lastCompletedPassAt(SOURCE_KEY),
-  hasStock: async (insee) => (await import("../streamV1Db")).hasStock(SOURCE_KEY, insee),
+  state: {
+    get: async (insee) => (await import("../streamV1Db")).getCommuneState(SOURCE_KEY, insee) as Promise<CommuneWatermark>,
+    set: async (insee, state) => (await import("../streamV1Db")).setCommuneState(SOURCE_KEY, insee, state),
+  },
 });

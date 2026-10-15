@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 
 /**
  * Stream.Estate V1 (api.stream.estate), behind a meter.
@@ -14,25 +15,31 @@ import { createHash } from "node:crypto";
  * 10 000-per-query ceiling — so a loop that pages "until it ends" spends the
  * month in minutes and then keeps spending.
  *
- * Every request to V1 therefore goes through `call`, and `call` enforces five
- * things that no caller can switch off by forgetting:
+ * Every request to V1 therefore goes through `call`, and `call` enforces
+ * what no caller can switch off by forgetting:
  *
- *  1. A LEDGER, in a store. Items received are appended after every response
- *     and before the next request, so a crash cannot lose count. On the Mac
- *     the store is a file; on the nightly runner it is a table, because the
- *     runner's disk is gone by morning and the month's count must not be.
+ *  1. A LEDGER, in a store, RESERVED BEFORE SENDING. A `reserve` row of the
+ *     page's size goes in before the request and a `settle` row with the
+ *     difference after the response. A crash between the two leaves the
+ *     worst case counted; a second process sees the reservation and cannot
+ *     send past the cap in the gap. On the Mac the store is a file; on the
+ *     nightly runner it is a table, because the runner's disk is gone by
+ *     morning and the month's count must not be — and the two share one
+ *     cap through that table.
  *  2. A CAP. A paid request is refused BEFORE it is sent if the period's
  *     total plus the page it asks for would pass the cap. The default cap is
  *     below the plan's 15 000; passing the plan's size needs `allowOverage`.
+ *     A cap that is not a whole positive number is refused outright: a
+ *     `Number("14,000")` is NaN, and NaN passes every comparison.
  *  3. A CACHE, where the store has one. A paid response is kept under a name
- *     derived from the query; the same question again reads it and sends
- *     nothing. Re-running, resuming and analysing are free.
+ *     derived from the query — after it is counted, never before — and the
+ *     same question again reads it and sends nothing.
  *  4. NO RETRY of a paid request. A request that failed in transit may still
- *     have been served and billed; it is counted at the worst case and the
- *     run stops, for a person to look.
- *  5. A FREE REQUEST THAT RETURNS ITEMS IS A FAULT. If `itemsPerPage=0` ever
- *     comes back with members, they are counted and the run stops at once —
- *     at most one page lost, instead of 260 "free" counts that were not.
+ *     have been served and billed; its reservation stands and the run stops,
+ *     for a person to look.
+ *  5. A FREE REQUEST THAT RETURNS ITEMS IS A FAULT, and an answer without
+ *     `hydra:totalItems` is one too: a missing total read as 0 would end a
+ *     walk after its first page, silently, with the rest never asked for.
  *
  * The ledger is ours, not theirs. Reconciled 2026-10-14: one page of La Môle,
  * 27 items here, and their dashboard is the figure to check it against.
@@ -48,20 +55,33 @@ export const V1_DEFAULT_RESERVE = 1_000;
 /** The client's plan renews on the 14th (2026-10-14 → 2026-11-13). */
 export const V1_DEFAULT_ANCHOR_DAY = 14;
 
+/**
+ * 'count': a free request. 'reserve': a paid page, written before it is
+ * sent, at its size. 'settle': the difference, written after the response
+ * (negative when fewer came back, or none because the request was refused).
+ * 'legacy': a settled row from before reservations existed.
+ */
+export type LedgerKind = "count" | "reserve" | "settle" | "legacy";
+
 export type LedgerEntry = {
   at: Date;
-  /** Count request (free) or a page (paid). */
-  paid: boolean;
+  kind: LedgerKind;
   /** The query, canonical. Never the key. */
   query: string;
-  /** Items believed billed by this request, worst case included. */
+  /** Items this row adds to the period's count; a settle may be negative. */
   items: number;
-  /** Counted without proof: a paid request that failed in transit. */
-  uncertain: boolean;
+  /** Pairs a reserve with its settle. */
+  requestId?: string;
   note?: string;
 };
 
-export type Totals = { items: number; uncertain: number; paidRequests: number; freeRequests: number };
+export type Totals = {
+  items: number;
+  /** Items held by reservations that never settled: billed, perhaps, and nobody will know. */
+  uncertain: number;
+  paidRequests: number;
+  freeRequests: number;
+};
 
 /** Where the ledger lives. The meter does not care which. */
 export type LedgerStore = {
@@ -93,6 +113,14 @@ export type V1Client = {
   periodStart: Date;
 };
 
+/** Their envelope. `hydra:totalItems` is required: without it a walk cannot know where it ends. */
+const Envelope = z
+  .object({
+    "hydra:totalItems": z.number().int().nonnegative(),
+    "hydra:member": z.array(z.record(z.unknown())).default([]),
+  })
+  .passthrough();
+
 /** The query, canonical: the same question in any parameter order is one cache entry. */
 export function canonical(query: URLSearchParams): string {
   return [...query.entries()]
@@ -106,13 +134,31 @@ const cacheKey = (query: URLSearchParams) => createHash("sha1").update(canonical
 /**
  * The start of the billing period `now` falls in: the most recent `anchorDay`
  * of a month, at midnight UTC. On the 13th of November with the 14th as
- * anchor, that is the 14th of October.
+ * anchor, that is the 14th of October. Their renewal is an instant later
+ * in that day, so the hours between are counted against the OLD period —
+ * the safe side.
  */
 export function periodStart(now: Date, anchorDay = V1_DEFAULT_ANCHOR_DAY): Date {
+  if (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 28) {
+    throw new BudgetError(`anchorDay=${anchorDay} is not a day every month has (1–28)`);
+  }
   const y = now.getUTCFullYear();
   const m = now.getUTCMonth();
   const thisMonth = new Date(Date.UTC(y, m, anchorDay));
   return now >= thisMonth ? thisMonth : new Date(Date.UTC(y, m - 1, anchorDay));
+}
+
+/** Totals from a list of entries — the file store's arithmetic, shared with tests. */
+export function sumEntries(entries: LedgerEntry[]): Totals {
+  const settled = new Set(entries.filter((e) => e.kind === "settle" && e.requestId).map((e) => e.requestId));
+  const t: Totals = { items: 0, uncertain: 0, paidRequests: 0, freeRequests: 0 };
+  for (const e of entries) {
+    t.items += e.items;
+    if (e.kind === "count") t.freeRequests += 1;
+    if (e.kind === "reserve" || e.kind === "legacy") t.paidRequests += 1;
+    if (e.kind === "reserve" && !(e.requestId && settled.has(e.requestId))) t.uncertain += e.items;
+  }
+  return t;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,10 +179,9 @@ export function diskLedgerStore(dir: string): LedgerStore {
       const lines = (j.log ?? []).map((e) =>
         JSON.stringify({
           at: e.at,
-          paid: !/(^|&)itemsPerPage=0(&|$)/.test(e.query),
+          kind: /(^|&)itemsPerPage=0(&|$)/.test(e.query) ? "count" : "legacy",
           query: e.query,
           items: e.items,
-          uncertain: /worst case/i.test(e.note ?? ""),
           ...(e.note ? { note: e.note } : {}),
         }),
       );
@@ -155,21 +200,18 @@ export function diskLedgerStore(dir: string): LedgerStore {
       .readFileSync(file, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((l) => JSON.parse(l) as Omit<LedgerEntry, "at"> & { at: string })
-      .map((e) => ({ ...e, at: new Date(e.at) }));
+      .map((l) => JSON.parse(l) as Omit<LedgerEntry, "at"> & { at: string; paid?: boolean; uncertain?: boolean })
+      .map((e) => ({
+        ...e,
+        at: new Date(e.at),
+        // Lines from the day before `kind` existed.
+        kind: e.kind ?? (e.paid === false ? "count" : "legacy"),
+      }));
   };
 
   return {
     async totals(since) {
-      const t: Totals = { items: 0, uncertain: 0, paidRequests: 0, freeRequests: 0 };
-      for (const e of entries()) {
-        if (e.at < since) continue;
-        t.items += e.items;
-        if (e.uncertain) t.uncertain += e.items;
-        if (e.paid) t.paidRequests += 1;
-        else t.freeRequests += 1;
-      }
-      return t;
+      return sumEntries(entries().filter((e) => e.at >= since));
     },
     async append(entry) {
       convertLegacy();
@@ -214,6 +256,9 @@ export function createV1Client(opts: {
   const now = opts.now ?? (() => new Date());
   const doFetch = opts.fetchImpl ?? fetch;
   const cap = opts.cap ?? V1_PLAN_ITEMS - V1_DEFAULT_RESERVE;
+  if (!Number.isSafeInteger(cap) || cap <= 0) {
+    throw new BudgetError(`cap=${String(opts.cap)} is not a whole positive number of items — nothing is sent`);
+  }
   if (cap > V1_PLAN_ITEMS && !opts.allowOverage) {
     throw new BudgetError(
       `a cap of ${cap} is above the plan's ${V1_PLAN_ITEMS} items: everything past it is billed to the client's card. ` +
@@ -223,8 +268,7 @@ export function createV1Client(opts: {
   const since = periodStart(now(), opts.anchorDay);
   const store = opts.store;
 
-  const record = (paid: boolean, query: URLSearchParams, items: number, uncertain = false, note?: string) =>
-    store.append({ at: now(), paid, query: canonical(query), items, uncertain, ...(note ? { note } : {}) });
+  const append = (entry: Omit<LedgerEntry, "at">) => store.append({ at: now(), ...entry });
 
   return {
     cap,
@@ -244,22 +288,24 @@ export function createV1Client(opts: {
       }
       const paid = perPage > 0;
       const key = cacheKey(query);
+      const q = canonical(query);
 
       if (paid && store.getCached) {
         const cached = await store.getCached(key);
         if (cached) {
           try {
-            const j = JSON.parse(cached) as Record<string, unknown>;
-            if (Array.isArray(j["hydra:member"])) {
-              return { total: Number(j["hydra:totalItems"] ?? 0), items: j["hydra:member"] as Record<string, unknown>[], fromCache: true, spent: 0 };
-            }
+            const env = Envelope.parse(JSON.parse(cached));
+            return { total: env["hydra:totalItems"], items: env["hydra:member"], fromCache: true, spent: 0 };
           } catch {
             // An unreadable file is not an answer; fall through and ask — within the cap.
           }
         }
       }
 
-      // Read from the store, not from memory: another process may have spent since this one started.
+      // ── Reserve, then send ────────────────────────────────────────────────
+      // The total is read from the store, not from memory: another process may
+      // have spent since this one started — and its reservations count too.
+      let requestId: string | undefined;
       if (paid) {
         const t = await store.totals(since);
         if (t.items + perPage > cap) {
@@ -268,7 +314,10 @@ export function createV1Client(opts: {
               `this page asks for up to ${perPage}, and the cap is ${cap}`,
           );
         }
+        requestId = randomUUID();
+        await append({ kind: "reserve", query: q, items: perPage, requestId, note: "in flight" });
       }
+      const settle = (items: number, note: string) => append({ kind: "settle", query: q, items, requestId, note });
 
       let res: Response;
       let text: string;
@@ -279,9 +328,9 @@ export function createV1Client(opts: {
         text = await res.text();
       } catch (err) {
         if (paid) {
-          await record(true, query, perPage, true, `failed in transit — counted at the worst case: ${(err as Error).message}`);
+          // The reservation stands: the request may have been served and billed.
           throw new BillingFault(
-            `a paid request failed in transit and may have been billed; ${perPage} items counted at the worst case. ` +
+            `a paid request failed in transit and may have been billed; ${perPage} items stay counted. ` +
               `Not retried — check their dashboard before running again. (${(err as Error).message})`,
           );
         }
@@ -289,39 +338,42 @@ export function createV1Client(opts: {
       }
 
       if (!res.ok) {
-        // Refused requests return no items. Recorded, not counted, and not retried.
-        await record(paid, query, 0, false, `HTTP ${res.status}`);
+        // Refused requests return no items: the reservation is released, and nothing is retried.
+        if (paid) await settle(-perPage, `HTTP ${res.status}: refused, nothing billed`);
+        else await append({ kind: "count", query: q, items: 0, note: `HTTP ${res.status}` });
         throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
       }
 
-      let j: Record<string, unknown>;
+      let env: z.infer<typeof Envelope>;
       try {
-        j = JSON.parse(text) as Record<string, unknown>;
-      } catch {
+        env = Envelope.parse(JSON.parse(text));
+      } catch (err) {
         if (paid) {
-          await record(true, query, perPage, true, "200 with a body that is not JSON — counted at the worst case");
-          throw new BillingFault(`a paid request answered 200 with a body we cannot read; ${perPage} items counted at the worst case`);
+          throw new BillingFault(
+            `a paid request answered 200 with a body we cannot read (${(err as Error).message.slice(0, 120)}); ` +
+              `${perPage} items stay counted at the worst case`,
+          );
         }
-        throw new Error("a count request answered with a body that is not JSON");
+        throw new Error(`a count request answered with a body we cannot read: ${(err as Error).message.slice(0, 120)}`);
       }
-      const items = Array.isArray(j["hydra:member"]) ? (j["hydra:member"] as Record<string, unknown>[]) : [];
-      const total = Number(j["hydra:totalItems"] ?? 0);
+      const items = env["hydra:member"];
+      const total = env["hydra:totalItems"];
 
       if (!paid) {
         if (items.length > 0) {
-          await record(false, query, items.length, false, "A COUNT REQUEST RETURNED ITEMS");
+          await append({ kind: "count", query: q, items: items.length, note: "A COUNT REQUEST RETURNED ITEMS" });
           throw new BillingFault(
             `itemsPerPage=0 came back with ${items.length} items — count requests are not free the way we were told. ` +
               `Counted, and stopping before any more are sent.`,
           );
         }
-        await record(false, query, 0);
+        await append({ kind: "count", query: q, items: 0 });
         return { total, items, fromCache: false, spent: 0 };
       }
 
-      // Kept before it is interpreted, so what we paid for is on disk whatever happens next.
+      // Counted first, kept second: a crash between the two re-asks a page, never under-counts one.
+      await settle(items.length - perPage, "settled");
       if (store.putCached) await store.putCached(key, text);
-      await record(true, query, items.length);
       return { total, items, fromCache: false, spent: items.length };
     },
   };

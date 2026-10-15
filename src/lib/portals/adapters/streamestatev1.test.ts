@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { makeStreamEstateV1Adapter, toRecord } from "./streamestatev1";
+import { makeStreamEstateV1Adapter, stamp, toRecord, type CommuneWatermark } from "./streamestatev1";
 import { BudgetError, type V1Client } from "../streamV1";
 
 /**
@@ -17,7 +17,7 @@ const PAGE = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "__fixtures__
 };
 
 /** A client that answers every paid page with the fixture and records what was asked. */
-function fakeClient(opts: { cap?: number; refuseAfter?: number } = {}) {
+function fakeClient(opts: { cap?: number; refuseAfter?: number; fullPages?: boolean } = {}) {
   const asked: string[] = [];
   let paid = 0;
   const client: V1Client = {
@@ -31,28 +31,40 @@ function fakeClient(opts: { cap?: number; refuseAfter?: number } = {}) {
       if (opts.refuseAfter !== undefined && asked.length > opts.refuseAfter) throw new BudgetError("refused before sending: the cap");
       // The "expired" query answers with the last three of the fixture; every other query with the first seven.
       const all = PAGE["hydra:member"];
-      const items = canonical.includes("expired=true") ? all.slice(7) : all.slice(0, 7);
+      let items = canonical.includes("expired=true") ? all.slice(7) : all.slice(0, 7);
+      // A market bigger than one page: thirty distinct properties a page, ninety stated.
+      if (opts.fullPages) items = Array.from({ length: 30 }, (_, i) => ({ ...all[i % 7], uuid: `${all[i % 7].uuid}-${asked.length}-${i}` }));
       paid += items.length;
-      return { total: items.length, items, fromCache: false, spent: items.length };
+      return { total: opts.fullPages ? 90 : items.length, items, fromCache: false, spent: items.length };
     },
   };
   return { client, asked };
 }
 
 async function discoverWith(opts: {
+  /** The last complete walk; null means no commune has stock yet. */
   since: Date | null;
   cap?: number;
   refuseAfter?: number;
   communes?: string[];
   config?: Record<string, unknown>;
-  /** Communes we already hold stock for; by default every commune once a pass has completed. */
+  fullPages?: boolean;
+  /** Communes that have stock; by default every commune once `since` is set. */
   stocked?: string[];
+  /** Pre-set watermarks, by commune. */
+  marks?: Record<string, CommuneWatermark>;
 }) {
   const { client, asked } = fakeClient(opts);
+  const marks = new Map<string, CommuneWatermark>(Object.entries(opts.marks ?? {}));
+  const stocked = (insee: string) => (opts.stocked ? opts.stocked.includes(insee) : opts.since !== null);
   const adapter = makeStreamEstateV1Adapter({
     client: () => client,
-    lastPassAt: async () => opts.since,
-    hasStock: async (insee) => (opts.stocked ? opts.stocked.includes(insee) : opts.since !== null),
+    state: {
+      get: async (insee) => marks.get(insee) ?? (opts.since && stocked(insee) ? { stockedAt: opts.since.toISOString(), changesSince: opts.since.toISOString() } : {}),
+      set: async (insee, state) => {
+        marks.set(insee, state);
+      },
+    },
     now: () => new Date("2026-10-15T00:00:00Z"),
   });
   const out: { externalId: string; url: string; document?: string }[] = [];
@@ -68,7 +80,7 @@ async function discoverWith(opts: {
     gone: (id: string) => gone.push(id),
   };
   for await (const d of adapter.discover(ctx as never)) out.push(d);
-  return { out, asked, incomplete, gone, adapter };
+  return { out, asked, incomplete, gone, adapter, marks };
 }
 
 test("with no completed pass, the stock is read once: not expired, updated in the last 30 days", async () => {
@@ -86,16 +98,16 @@ test("after a pass, only what changed since it is asked for: created, re-priced,
   const since = new Date("2026-10-14T03:00:00Z");
   const { asked, incomplete, gone, out } = await discoverWith({ since });
   assert.equal(asked.length, 3);
-  // An hour's slack: their clock, their zone.
-  assert.match(asked[0], /fromDate=2026-10-14 02:00:00/);
+  // An hour's slack, on THEIR clock: 03:00Z − 1h = 02:00Z = 04:00 in Paris that day (CEST).
+  assert.match(asked[0], /fromDate=2026-10-14 04:00:00/);
   assert.match(asked[0], /expired=false/);
-  assert.match(asked[1], /eventPriceVariationFromCreatedAt=2026-10-14 02:00:00/);
+  assert.match(asked[1], /eventPriceVariationFromCreatedAt=2026-10-14 04:00:00/);
   assert.match(asked[2], /expired=true/);
-  assert.match(asked[2], /fromExpiredAt=2026-10-14 02:00:00/);
+  assert.match(asked[2], /fromExpiredAt=2026-10-14 04:00:00/);
   for (const a of asked) assert.doesNotMatch(a, /fromUpdatedAt/);
-  // The pass did not see the market: said so, so nothing is delisted for being unseen.
-  assert.equal(incomplete.length, 1);
-  assert.match(incomplete[0][1], /changes only/);
+  // Not `incomplete`: the runner treats a changes-only source as never seeing the whole market;
+  // a commune marked incomplete every night would read as a shut door.
+  assert.deepEqual(incomplete, []);
   // What the "expired" query returns is reported gone, by name, and never yielded.
   assert.equal(gone.length, 3);
   assert.equal(new Set([...out.map((o) => o.externalId), ...gone]).size, out.length + gone.length, "a property is yielded or reported gone, never both");
@@ -109,7 +121,34 @@ test("a commune with no stock takes the stock, even after a pass that reached th
   assert.match(asked[3], /includedInseeCodes\[\]=83065/);
   assert.match(asked[3], /fromUpdatedAt=/);
   assert.doesNotMatch(asked[3], /fromDate|fromExpiredAt/);
-  assert.deepEqual(incomplete.map(([i]) => i), ["83079"], "only the changes-only commune is incomplete");
+  assert.deepEqual(incomplete, []);
+});
+
+test("the watermark moves only when a walk completes, and a stock walk the cap cut short resumes where it stopped", async () => {
+  // Stock walk, cut at the cap on its second page: the cursor is kept, `stockedAt` is not set.
+  const cut = await discoverWith({ since: null, refuseAfter: 1, fullPages: true, communes: ["83079", "83065"] });
+  assert.equal(cut.asked.length, 2);
+  assert.match(cut.asked[1], /page=2/);
+  assert.equal(cut.marks.get("83079")?.stockedAt, undefined);
+  assert.ok(cut.marks.get("83079")?.stockCursor, "the createdAt of the last property received");
+  assert.equal(cut.marks.has("83065"), false, "a commune never asked keeps no mark");
+  // The next night resumes from the cursor instead of paying for the first pages again.
+  const resumed = await discoverWith({ since: null, communes: ["83079"], marks: { "83079": { stockCursor: "2026-01-02T03:04:05+01:00" } } });
+  assert.match(resumed.asked[0], /fromDate=2026-01-02T03:04:05\+01:00/);
+  assert.equal(resumed.marks.get("83079")?.stockedAt, "2026-10-15T00:00:00.000Z");
+  assert.equal(resumed.marks.get("83079")?.changesSince, "2026-10-15T00:00:00.000Z");
+  // A change walk cut at the cap does not advance `changesSince`: tomorrow asks the same window again.
+  const since = new Date("2026-10-14T03:00:00Z");
+  const held: CommuneWatermark = { stockedAt: since.toISOString(), changesSince: since.toISOString() };
+  const changesCut = await discoverWith({ since, refuseAfter: 2, communes: ["83079"], marks: { "83079": { ...held } } });
+  assert.equal(changesCut.marks.get("83079")?.changesSince, since.toISOString());
+  const changesDone = await discoverWith({ since, communes: ["83079"], marks: { "83079": { ...held } } });
+  assert.equal(changesDone.marks.get("83079")?.changesSince, "2026-10-15T00:00:00.000Z");
+});
+
+test("stamps are written on their clock", () => {
+  assert.equal(stamp(new Date("2026-10-14T02:00:00Z")), "2026-10-14 04:00:00"); // CEST
+  assert.equal(stamp(new Date("2026-12-01T23:30:00Z")), "2026-12-02 00:30:00"); // CET, across midnight
 });
 
 test("Les Issambres is asked for by its postcode, which replaces the INSEE code", async () => {
@@ -174,7 +213,7 @@ test("a record parses: euro price, surfaces, type, the commune under the client'
 test("a land plot keeps its surface as land", () => {
   const { adapter } = (() => {
     const { client } = fakeClient();
-    return { adapter: makeStreamEstateV1Adapter({ client: () => client, lastPassAt: async () => null, hasStock: async () => false }) };
+    return { adapter: makeStreamEstateV1Adapter({ client: () => client, state: { get: async () => ({}), set: async () => {} } }) };
   })();
   const doc = JSON.stringify({
     id: "x",

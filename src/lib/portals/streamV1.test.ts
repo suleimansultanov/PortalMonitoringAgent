@@ -10,6 +10,7 @@ import {
   createV1Client,
   diskLedgerStore,
   periodStart,
+  sumEntries,
   V1_PLAN_ITEMS,
   withDiskCache,
   type LedgerEntry,
@@ -112,7 +113,7 @@ test("the cap holds across processes: a second one starts from what the first sp
 test("spending in a previous period does not count against this one", async () => {
   const dir = tmp();
   const store = diskLedgerStore(dir);
-  const old: LedgerEntry = { at: new Date("2026-09-20T00:00:00Z"), paid: true, query: "x", items: 14_000, uncertain: false };
+  const old: LedgerEntry = { at: new Date("2026-09-20T00:00:00Z"), kind: "legacy", query: "x", items: 14_000 };
   await store.append(old);
   const { fetchImpl } = fake(() => ({ body: page(30) }));
   const c = createV1Client({ store, apiKey: () => "k", fetchImpl, now: () => new Date("2026-10-20T00:00:00Z") });
@@ -176,8 +177,7 @@ test("a store without a cache asks again, and a cache wrapped around it answers 
   const entries: LedgerEntry[] = [];
   const bare: LedgerStore = {
     async totals(since) {
-      const mine = entries.filter((e) => e.at >= since);
-      return { items: mine.reduce((a, e) => a + e.items, 0), uncertain: 0, paidRequests: mine.filter((e) => e.paid).length, freeRequests: 0 };
+      return sumEntries(entries.filter((e) => e.at >= since));
     },
     async append(e) {
       entries.push(e);
@@ -220,4 +220,58 @@ test("an older ledger.json is converted once, and its paid items keep counting",
   assert.ok(fs.existsSync(path.join(dir, "ledger.jsonl")));
   assert.ok(fs.existsSync(path.join(dir, "ledger-legacy.json")));
   assert.ok(!fs.existsSync(path.join(dir, "ledger.json")));
+});
+
+test("a cap that is not a whole positive number is refused outright — NaN passes every comparison", () => {
+  const s = diskLedgerStore(tmp());
+  for (const cap of [Number("14,000"), Number("15 000"), 0, -1, 1.5, Infinity]) {
+    assert.throws(() => createV1Client({ store: s, apiKey: () => "k", cap }), BudgetError, String(cap));
+  }
+  assert.throws(() => createV1Client({ store: s, apiKey: () => "k", anchorDay: 31 }), BudgetError);
+});
+
+test("a page is reserved before it is sent: a second process cannot slip past the cap while the first is in flight", async () => {
+  const dir = tmp();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow = (async () => {
+    await gate;
+    return new Response(page(30));
+  }) as unknown as typeof fetch;
+  const a = createV1Client({ store: diskLedgerStore(dir), apiKey: () => "k", fetchImpl: slow, cap: 40 });
+  const inFlight = a.call(q({ itemsPerPage: "30", page: "1" }));
+  await new Promise((r) => setTimeout(r, 20));
+  // A's page is reserved though no answer has come back yet.
+  assert.equal((await diskLedgerStore(dir).totals(new Date(0))).uncertain, 30);
+  const { fetchImpl, asked } = fake(() => ({ body: page(30) }));
+  const b = createV1Client({ store: diskLedgerStore(dir), apiKey: () => "k", fetchImpl, cap: 40 });
+  await assert.rejects(b.call(q({ itemsPerPage: "30", page: "2" })), BudgetError);
+  assert.equal(asked.length, 0);
+  release();
+  const r = await inFlight;
+  assert.equal(r.spent, 30);
+  const t = await a.totals();
+  assert.equal(t.items, 30);
+  assert.equal(t.uncertain, 0, "settled");
+});
+
+test("a refused page releases its reservation; a page that came back short settles to what came back", async () => {
+  const dir = tmp();
+  const refused = fake(() => ({ status: 402, body: "{}" }));
+  await assert.rejects(client(dir, refused.fetchImpl).call(q({ itemsPerPage: "30", page: "1" })), /HTTP 402/);
+  const short = fake(() => ({ body: page(7) }));
+  const r = await client(dir, short.fetchImpl).call(q({ itemsPerPage: "30", page: "2" }));
+  assert.equal(r.spent, 7);
+  const t = await client(dir, short.fetchImpl).totals();
+  assert.equal(t.items, 7);
+  assert.equal(t.uncertain, 0);
+  assert.equal(t.paidRequests, 2);
+});
+
+test("an answer without hydra:totalItems is a fault, not an empty market", async () => {
+  const { fetchImpl } = fake(() => ({ body: JSON.stringify({ "hydra:member": [{ uuid: "p0" }] }) }));
+  const c = client(tmp(), fetchImpl);
+  await assert.rejects(c.call(q({ itemsPerPage: "30", page: "1" })), BillingFault);
+  // The reservation stands: the page may have been billed.
+  assert.equal((await c.totals()).uncertain, 30);
 });
