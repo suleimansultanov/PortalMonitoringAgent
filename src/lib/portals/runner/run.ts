@@ -740,7 +740,14 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     const staleWhere = and(
       eq(portalListings.sourceId, source.id),
       eq(portalListings.status, "active"),
-      lt(portalListings.updatedAt, staleCutoff),
+      /**
+       * `last_seen_at`, not `updated_at`: the resolver, reparse and sanity all
+       * write `updated_at`, and the resolver touched most rows nightly — so
+       * on 2026-10-15, 13 831 of the 15 868 listings not fetched for a week
+       * (87%) were invisible to this queue. Only ingest writes `last_seen_at`,
+       * and it writes it on every fetch, byte-identical or not.
+       */
+      lt(portalListings.lastSeenAt, staleCutoff),
       inThisPass,
     );
 
@@ -793,11 +800,11 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       .select({
         externalId: portalListings.externalId,
         sourceUpdatedAt: portalListings.sourceUpdatedAt,
-        updatedAt: portalListings.updatedAt,
+        lastSeenAt: portalListings.lastSeenAt,
       })
       .from(portalListings)
       .where(staleWhere)
-      .orderBy(asc(portalListings.updatedAt));
+      .orderBy(asc(portalListings.lastSeenAt));
 
     /**
      * THE PORTAL'S OWN ANSWER, USED BEFORE SPENDING A REQUEST ON IT.
@@ -827,7 +834,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       const keep = needsRefresh(
         {
           externalId: row.externalId,
-          fetchedAt: row.updatedAt,
+          fetchedAt: row.lastSeenAt,
           storedSourceUpdatedAt: row.sourceUpdatedAt,
         },
         discovered.get(row.externalId)?.sourceUpdatedAt,

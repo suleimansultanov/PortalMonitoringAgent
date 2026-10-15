@@ -76,6 +76,21 @@ export function chooseExistingId(
   return null;
 }
 
+/** JSON with keys sorted at every level: equal objects compare equal whatever order they arrived in. */
+export function canonicalJson(v: unknown): string {
+  const sort = (x: unknown): unknown =>
+    Array.isArray(x)
+      ? x.map(sort)
+      : x && typeof x === "object"
+        ? Object.fromEntries(
+            Object.keys(x as Record<string, unknown>)
+              .sort()
+              .map((k) => [k, sort((x as Record<string, unknown>)[k])]),
+          )
+        : x;
+  return JSON.stringify(sort(v));
+}
+
 export async function resolveCommuneIdentities(communeInsee: string): Promise<ResolveSummary> {
   const threshold = await getNumberSetting(
     SETTING_KEYS.MATCH_THRESHOLD,
@@ -306,8 +321,16 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
       return a.every((v, i) => sameValue(v, b[i]));
     }
     if (typeof a === "object" || typeof b === "object") {
+      /**
+       * Canonical, not as-serialised. Postgres hands jsonb back with its keys
+       * in its own order; the object built by `score.ts` is in insertion
+       * order. `JSON.stringify` of the two never matched, so every member of
+       * every merged group was UPDATEd every night — 18 066 rows on
+       * 2026-10-14, 30–75 minutes of the resolve, and every one of them
+       * bumped `updated_at` and so hid itself from the refresh queue.
+       */
       try {
-        return JSON.stringify(a) === JSON.stringify(b);
+        return canonicalJson(a) === canonicalJson(b);
       } catch {
         return false;
       }

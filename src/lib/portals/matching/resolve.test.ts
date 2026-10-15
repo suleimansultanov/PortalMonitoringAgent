@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chooseExistingId } from "./resolve";
+import { canonicalJson, chooseExistingId } from "./resolve";
 
 /**
  * The rule that decides whether a split actually lands.
@@ -57,4 +57,15 @@ test("without an ownership set the rule is unchanged", () => {
   // Callers that do not pass one — tests, future callers — keep the old
   // behaviour rather than silently refusing every reuse.
   assert.equal(chooseExistingId(["prop-a"], new Set()), "prop-a");
+});
+
+test("match signals compare equal whatever order Postgres hands the keys back in", () => {
+  // As stored (jsonb orders keys by length, then bytes) …
+  const stored = { areaClose: true, priceDelta: 0, priceEqual: true, roomsEqual: true, textJaccard: 1, textShingles: 95, textContainment: 1 };
+  // … and as score.ts builds it (insertion order). Plain JSON.stringify never matched these.
+  const built = { textShingles: 95, textJaccard: 1, textContainment: 1, priceEqual: true, priceDelta: 0, areaClose: true, roomsEqual: true };
+  assert.notEqual(JSON.stringify(stored), JSON.stringify(built));
+  assert.equal(canonicalJson(stored), canonicalJson(built));
+  assert.notEqual(canonicalJson(stored), canonicalJson({ ...built, priceDelta: 1 }));
+  assert.equal(canonicalJson([{ b: 1, a: [{ d: 1, c: 2 }] }]), canonicalJson([{ a: [{ c: 2, d: 1 }], b: 1 }]));
 });

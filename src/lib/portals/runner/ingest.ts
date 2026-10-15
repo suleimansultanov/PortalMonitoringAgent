@@ -70,9 +70,12 @@ export async function ingestListing(
 
   const existing = await loadListing(deps.sourceId, externalId);
 
-  if (lastSnapshot?.contentHash === hash && existing) {
+  if (lastSnapshot?.contentHash === hash && existing && existing.status === "active") {
     // Byte-identical to what we already parsed. Parsing again cannot produce a
-    // different answer, so only the "still here" timestamp moves.
+    // different answer, so only the "still here" timestamp moves. Not for a
+    // delisted row: an identical page coming back IS a change — a relisting —
+    // and the parse path below is what writes the `relisted` event and clears
+    // `delisted_at`; this shortcut used to resurrect it silently.
     await db
       .update(portalListings)
       .set({ lastSeenAt: new Date(), status: "active", updatedAt: new Date() })
@@ -204,10 +207,16 @@ export async function ingestListing(
       }
     : null;
 
+  /**
+   * From what is STORED, not from the raw parse. `sane()` drops an impossible
+   * price from the row; built from `parsed`, the event log recorded the
+   * change the row refused — "De 5000000 à 10000000" became a `price_changed`
+   * to 5e14 while the row kept its old price.
+   */
   const after: ListingState = {
-    priceEur: parsed.priceEur,
+    priceEur: incoming.priceEur,
     areaM2: parsed.areaM2,
-    rooms: parsed.rooms,
+    rooms: incoming.rooms,
     availability: parsed.availability,
     status: "active",
   };
