@@ -836,10 +836,20 @@ function toRecord(node: unknown): FigaroRecord | null {
     title: str(n.titleFr),
     description: str(property.descriptionFr),
     /**
-     * `valueEUR`, explicitly. `value` is whatever currency the visitor last
-     * chose, and `valueUSD` and `valueGBP` sit beside it in the same object.
+     * `valueEUR`, explicitly, and nothing else. `value` is whatever currency
+     * the visitor last chose, and `valueUSD` and `valueGBP` sit beside it in
+     * the same object.
+     *
+     * There was a fallback to `value` when `valueEUR` was absent, removed
+     * 2026-10-15 (review §2). In every payload we hold the two are either
+     * equal or both absent — absent is "prix nous consulter" — so the
+     * fallback never supplied a euro figure; all it could ever supply is a
+     * dollar one, on the day a session's currency switch and a missing
+     * `valueEUR` met. `currencyCodeFr` cannot vouch for it either: it reads
+     * "EUR" on every payload we hold, all captured in euro sessions, so
+     * nothing shows that it follows the switch.
      */
-    priceEur: num(price.valueEUR) ?? num(price.value),
+    priceEur: num(price.valueEUR),
     areaM2: num(area.value),
     landM2: num(area.ground),
     rooms: rooms !== null && rooms > 0 ? rooms : null,
