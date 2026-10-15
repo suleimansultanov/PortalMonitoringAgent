@@ -5,10 +5,11 @@ import { keyFromRequest, resolveKey, type KeyScope } from "./keys";
 /**
  * The guard on every /api/v1 route.
  *
- * `middleware.ts` deliberately skips this prefix: its NextAuth check is a
- * browser mechanism, and it runs on the edge where a database lookup is not
- * available. So the key check lives here, in the Node runtime, and every v1
- * route calls it as its first statement.
+ * `middleware.ts` deliberately lets this prefix through without a session
+ * (`PUBLIC_ROOTS` in lib/auth/config.ts): its NextAuth check is a browser
+ * mechanism, and it runs on the edge where a database lookup is not available.
+ * So the key check lives here, in the Node runtime, and every v1 route calls
+ * it as its first statement.
  *
  * That makes it a rule to remember on each new file — the exact shape the
  * middleware comment warns about. It is accepted here because the alternative
