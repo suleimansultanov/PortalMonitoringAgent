@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { listReports } from "@/lib/reports/queries";
-import { agencyStats, communeStats, overview } from "@/lib/api/queries";
+import { agencyStats, clientReports, communeStats, overview } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { PageTitle, Card, Empty, Warnings, money } from "@/components/ui";
 
 /**
@@ -16,13 +16,16 @@ import { PageTitle, Card, Empty, Warnings, money } from "@/components/ui";
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const reports = await listReports();
-  const [communes, agencies, head] = await Promise.all([
-    communeStats(),
-    agencyStats(),
-    overview(),
+  const scope = await requireClient();
+  // This client's reports — the old reader took Med-Estates' by a hardcoded slug.
+  const [reports, communes, agencies, head] = await Promise.all([
+    clientReports(scope),
+    communeStats(scope),
+    agencyStats(scope),
+    overview(scope),
   ]);
 
+  const watched = scope.communeInsee.length;
   const covered = communes.filter((c) => c.active > 0).length;
   const idle = head.sources.filter((s) => !s.enabled);
 
@@ -39,9 +42,9 @@ export default async function ReportsPage() {
         `as this month's arrivals.`,
     );
   }
-  if (covered < 12) {
+  if (covered < watched) {
     liveWarnings.push(
-      `Only ${covered} of 12 communes have any stock collected. Comparing communes ` +
+      `Only ${covered} of ${watched} communes have any stock collected. Comparing communes ` +
         `to each other is not meaningful yet.`,
     );
   }

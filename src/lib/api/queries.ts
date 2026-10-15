@@ -1,9 +1,10 @@
 import "server-only";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   buyerMatches,
   buyers,
+  marketReports,
   portalAgencies,
   portalListingEvents,
   portalListings,
@@ -14,6 +15,8 @@ import {
 import { GULF_OF_SAINT_TROPEZ } from "@/lib/portals/communes";
 import { AGGREGATORS, carriedPortals, portalLinks, portalOf } from "@/lib/portals/portalOf";
 import { hasFeature } from "@/lib/matching/buyers";
+import { getReport, type ReportRow } from "@/lib/reports/queries";
+import { communesWithin, type MarketScope } from "@/lib/auth/scope";
 
 /**
  * Every read the product screens make, in one place.
@@ -21,6 +24,17 @@ import { hasFeature } from "@/lib/matching/buyers";
  * Kept out of the route handlers and out of the components so that the shape of
  * a screen and the shape of a query can change independently, and so there is
  * one place to look when a number on a page is wrong.
+ *
+ * EVERY READ TAKES A SCOPE, AND IT IS THE FIRST ARGUMENT.
+ *
+ * The session's client, from `requireClient()` / `clientForRequest()`
+ * (lib/auth/tenant.ts). A client's buyers, matches and reports are filtered
+ * by its id; the market is narrowed to its communes and to the sources it
+ * subscribes to — the reach its API key has. Until 2026-10-15 nothing here
+ * took a client: the Matches screen listed every client's buyers and the
+ * Reports screen read Med-Estates' by a hardcoded slug. A function that reads
+ * per-client data without a scope is the bug this rule exists to prevent; the
+ * parameter is not optional so that forgetting it is a type error.
  *
  * A NOTE ON TEST DATA
  *
@@ -59,6 +73,31 @@ export const COMMUNE_LABELS: Record<string, string> = (() => {
 
   return out;
 })();
+
+/**
+ * The property is in one of these communes. An empty list is `false`, never
+ * "no filter": a client watching no commune is shown no market.
+ */
+export function inCommunes(communes: string[]): SQL {
+  return communes.length > 0 ? inArray(properties.communeInsee, communes) : sql`false`;
+}
+
+/** The listing comes from one of these sources. Empty is `false`, as above. */
+export function fromSources(sourceIds: string[]): SQL {
+  return sourceIds.length > 0 ? inArray(portalListings.sourceId, sourceIds) : sql`false`;
+}
+
+/** `column in (ids)` for a hand-written subquery with its own aliases; empty is `false`. */
+function uuidIn(column: SQL, ids: string[]): SQL {
+  return ids.length > 0
+    ? sql`${column} in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`
+    : sql`false`;
+}
+
+/** The match belongs to one of this client's buyers. */
+export function ownMatches(scope: MarketScope): SQL {
+  return eq(buyers.clientId, scope.clientId);
+}
 
 export type ListingRow = {
   id: string;
@@ -122,7 +161,10 @@ export type ListingFilters = {
  * fastest way to make the whole product look broken to someone who knows the
  * market.
  */
-export async function listProperties(f: ListingFilters = {}): Promise<{
+export async function listProperties(
+  scope: MarketScope,
+  f: ListingFilters = {},
+): Promise<{
   rows: ListingRow[];
   /** Properties matching the filter, across every page. */
   total: number;
@@ -132,10 +174,11 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
   const limit = Math.min(f.limit ?? 50, 200);
   const offset = f.offset ?? 0;
 
-  const conditions = [eq(properties.status, "active")];
-  if (f.communeInsee?.length) {
-    conditions.push(inArray(properties.communeInsee, f.communeInsee));
-  }
+  const conditions = [
+    eq(properties.status, "active"),
+    // A commune outside the scope narrows to nothing rather than widening.
+    inCommunes(communesWithin(scope.communeInsee, f.communeInsee)),
+  ];
   if (f.newWithinDays !== undefined) {
     conditions.push(
       gte(properties.firstListedAt, sql`now() - ${`${f.newWithinDays} days`}::interval`),
@@ -151,6 +194,7 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
         select 1 from ${portalListings} pl
         join ${portalSources} ps on ps.id = pl.source_id
         where pl.property_id = ${properties.id} and ps.key = ${f.source}
+          and ${uuidIn(sql`pl.source_id`, scope.sourceIds)}
       )`,
     );
   }
@@ -204,7 +248,11 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
     .select({ listings: sql<number>`count(*)::int` })
     .from(portalListings)
     .where(
-      and(eq(portalListings.status, "active"), inArray(portalListings.propertyId, matching)),
+      and(
+        eq(portalListings.status, "active"),
+        fromSources(scope.sourceIds),
+        inArray(portalListings.propertyId, matching),
+      ),
     );
 
   const rows = await db
@@ -249,7 +297,7 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
     .offset(offset);
 
   const ids = rows.map((r) => r.id);
-  const portals = ids.length > 0 ? await portalsFor(ids) : new Map<string, ListingRow["portals"]>();
+  const portals = await portalsFor(scope, ids);
 
   return {
     total: Number(count),
@@ -274,7 +322,11 @@ export async function listProperties(f: ListingFilters = {}): Promise<{
   };
 }
 
-async function portalsFor(propertyIds: string[]): Promise<Map<string, ListingRow["portals"]>> {
+async function portalsFor(
+  scope: MarketScope,
+  propertyIds: string[],
+): Promise<Map<string, ListingRow["portals"]>> {
+  if (propertyIds.length === 0) return new Map();
   const rows = await db
     .select({
       propertyId: portalListings.propertyId,
@@ -289,6 +341,7 @@ async function portalsFor(propertyIds: string[]): Promise<Map<string, ListingRow
       and(
         inArray(portalListings.propertyId, propertyIds),
         eq(portalListings.status, "active"),
+        fromSources(scope.sourceIds),
       ),
     );
 
@@ -413,6 +466,7 @@ export type MatchRow = {
  * in front of them teaches them the screen does not listen.
  */
 export async function listMatches(
+  scope: MarketScope,
   opts: {
     includeTestData?: boolean;
     includeDismissed?: boolean;
@@ -422,7 +476,8 @@ export async function listMatches(
 ): Promise<MatchRow[]> {
   const limit = Math.min(opts.limit ?? 100, 300);
 
-  const conditions = [];
+  // This client's buyers. A `buyerId` of another client's buyer finds nothing.
+  const conditions: SQL[] = [ownMatches(scope)];
   if (!opts.includeTestData) conditions.push(eq(buyers.isTestData, false));
   if (!opts.includeDismissed) conditions.push(sql`${buyerMatches.status} <> 'dismissed'`);
   if (opts.buyerId) conditions.push(eq(buyerMatches.buyerId, opts.buyerId));
@@ -467,11 +522,11 @@ export async function listMatches(
     .innerJoin(buyers, eq(buyers.id, buyerMatches.buyerId))
     .innerJoin(properties, eq(properties.id, buyerMatches.propertyId))
     .leftJoin(portalAgencies, eq(portalAgencies.id, properties.agencyId))
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .where(and(...conditions))
     .orderBy(desc(buyerMatches.score), desc(buyerMatches.createdAt))
     .limit(limit);
 
-  const portals = await portalsFor(rows.map((r) => r.propertyId));
+  const portals = await portalsFor(scope, rows.map((r) => r.propertyId));
 
   return rows.map((r) => ({
     id: r.id,
@@ -515,6 +570,39 @@ export async function listMatches(
       portals: portals.get(r.propertyId) ?? [],
     },
   }));
+}
+
+/**
+ * An agent acting on a match: seen, sent, dismissed.
+ *
+ * Only a match of THIS client's buyers. Until 2026-10-15 `PATCH /api/matches`
+ * updated any match by id, so anyone signed in could dismiss another client's
+ * proposals — and a dismissal, with its reason, is the one piece of feedback
+ * the scoring ever gets. Another client's match id answers as missing, not
+ * forbidden: whether it exists is not this client's business.
+ */
+export async function setMatchStatus(
+  scope: MarketScope,
+  change: { id: string; status: "new" | "seen" | "sent" | "dismissed"; dismissedReason?: string },
+): Promise<{ id: string; status: string } | null> {
+  const [updated] = await db
+    .update(buyerMatches)
+    .set({
+      status: change.status,
+      dismissedReason: change.status === "dismissed" ? (change.dismissedReason ?? null) : null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(buyerMatches.id, change.id),
+        inArray(
+          buyerMatches.buyerId,
+          db.select({ id: buyers.id }).from(buyers).where(eq(buyers.clientId, scope.clientId)),
+        ),
+      ),
+    )
+    .returning({ id: buyerMatches.id, status: buyerMatches.status });
+  return updated ?? null;
 }
 
 export type PropertyDetail = {
@@ -571,7 +659,10 @@ export type PropertyDetail = {
  * time. A portal shows a price; we can show that two portals disagree about it,
  * which is either a stale listing or an agency quietly testing a number.
  */
-export async function propertyDetail(id: string): Promise<PropertyDetail | null> {
+export async function propertyDetail(
+  scope: MarketScope,
+  id: string,
+): Promise<PropertyDetail | null> {
   const [row] = await db
     .select({
       id: properties.id,
@@ -601,7 +692,8 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     })
     .from(properties)
     .leftJoin(portalAgencies, eq(portalAgencies.id, properties.agencyId))
-    .where(eq(properties.id, id))
+    // Outside the client's communes it is not in its market: not found.
+    .where(and(eq(properties.id, id), inCommunes(scope.communeInsee)))
     .limit(1);
 
   if (!row) return null;
@@ -627,8 +719,11 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(eq(portalListings.propertyId, id))
+    .where(and(eq(portalListings.propertyId, id), fromSources(scope.sourceIds)))
     .orderBy(portalSources.key);
+
+  // Nothing of it reaches this client through a source it subscribes to.
+  if (listingRows.length === 0) return null;
 
   const eventRows = await db
     .select({
@@ -642,7 +737,14 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     })
     .from(portalListingEvents)
     .innerJoin(portalSources, eq(portalSources.id, portalListingEvents.sourceId))
-    .where(eq(portalListingEvents.propertyId, id))
+    .where(
+      and(
+        eq(portalListingEvents.propertyId, id),
+        scope.sourceIds.length > 0
+          ? inArray(portalListingEvents.sourceId, scope.sourceIds)
+          : sql`false`,
+      ),
+    )
     .orderBy(desc(portalListingEvents.occurredAt))
     .limit(100);
 
@@ -651,7 +753,13 @@ export async function propertyDetail(id: string): Promise<PropertyDetail | null>
     const [c] = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(properties)
-      .where(and(eq(properties.agencyId, row.agencyId), eq(properties.status, "active")));
+      .where(
+        and(
+          eq(properties.agencyId, row.agencyId),
+          eq(properties.status, "active"),
+          inCommunes(scope.communeInsee),
+        ),
+      );
     agencyActive = Number(c?.n ?? 0);
   }
 
@@ -752,7 +860,12 @@ export type CommuneStat = {
  * report whose numbers do not match what agents see on the ground is a report
  * they stop opening.
  */
-export async function communeStats(): Promise<CommuneStat[]> {
+export async function communeStats(scope: MarketScope): Promise<CommuneStat[]> {
+  /**
+   * `properties` is not aliased here, on purpose: the shared predicates
+   * (`inCommunes`, `servedProperty`) name it as "properties", and an alias
+   * would hide it from them.
+   */
   const rows = await db.execute<{
     commune_insee: string;
     active: number;
@@ -763,30 +876,31 @@ export async function communeStats(): Promise<CommuneStat[]> {
     new_30d: number;
   }>(sql`
     select
-      p.commune_insee,
-      count(*) filter (where p.status = 'active')::int as active,
-      percentile_cont(0.5) within group (order by p.price_eur)
-        filter (where p.price_eur is not null) as median_price,
+      ${properties.communeInsee} as commune_insee,
+      count(*) filter (where ${properties.status} = 'active')::int as active,
+      percentile_cont(0.5) within group (order by ${properties.priceEur})
+        filter (where ${properties.priceEur} is not null) as median_price,
       percentile_cont(0.5) within group (
-        order by p.price_eur / nullif(p.area_m2::numeric, 0)
-      ) filter (where p.price_eur is not null and p.area_m2 is not null) as median_ppm2,
+        order by ${properties.priceEur} / nullif(${properties.areaM2}::numeric, 0)
+      ) filter (where ${properties.priceEur} is not null and ${properties.areaM2} is not null) as median_ppm2,
       percentile_cont(0.5) within group (
-        order by extract(epoch from (coalesce(p.delisted_at, now()) - p.first_listed_at)) / 86400
-      ) filter (where p.first_listed_at is not null) as median_dom,
+        order by extract(epoch from (coalesce(${properties.delistedAt}, now()) - ${properties.firstListedAt})) / 86400
+      ) filter (where ${properties.firstListedAt} is not null) as median_dom,
       (
         select count(*)::int from ${portalListingEvents} e
         join ${portalListings} l on l.id = e.listing_id
         where l.property_id in (
-          select id from ${properties} p2 where p2.commune_insee = p.commune_insee
+          select p2.id from ${properties} p2 where p2.commune_insee = ${properties.communeInsee}
         )
+        and ${uuidIn(sql`e.source_id`, scope.sourceIds)}
         and e.type = 'price_changed'
         and (e.payload->>'direction') = 'down'
         and e.occurred_at > now() - interval '30 days'
       ) as price_cuts_30d,
-      count(*) filter (where p.first_listed_at > now() - interval '30 days')::int as new_30d
-    from ${properties} p
-    where p.commune_insee is not null
-    group by p.commune_insee
+      count(*) filter (where ${properties.firstListedAt} > now() - interval '30 days')::int as new_30d
+    from ${properties}
+    where ${inCommunes(scope.communeInsee)}
+    group by ${properties.communeInsee}
     order by active desc
   `);
 
@@ -797,7 +911,8 @@ export async function communeStats(): Promise<CommuneStat[]> {
    */
   const [{ oldest }] = await db
     .select({ oldest: sql<Date | null>`min(first_seen_at)` })
-    .from(portalListings);
+    .from(portalListings)
+    .where(fromSources(scope.sourceIds));
   const watchedLongEnough =
     oldest !== null && Date.now() - new Date(oldest).getTime() >= 30 * 86_400_000;
 
@@ -821,7 +936,7 @@ export async function communeStats(): Promise<CommuneStat[]> {
  * screen — and an empty screen in this product reads as "no market here",
  * which is the one impression it must never give by accident.
  */
-export async function listSourceOptions(): Promise<
+export async function listSourceOptions(scope: MarketScope): Promise<
   { key: string; name: string; properties: number }[]
 > {
   const rows = await db
@@ -832,7 +947,15 @@ export async function listSourceOptions(): Promise<
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(eq(portalListings.status, "active"))
+    .innerJoin(properties, eq(properties.id, portalListings.propertyId))
+    .where(
+      and(
+        eq(portalListings.status, "active"),
+        fromSources(scope.sourceIds),
+        eq(properties.status, "active"),
+        inCommunes(scope.communeInsee),
+      ),
+    )
     .groupBy(portalSources.key, portalSources.name)
     .orderBy(desc(sql`count(distinct ${portalListings.propertyId})`));
 
@@ -848,7 +971,7 @@ export type AgencyStat = {
 };
 
 /** Who is actually carrying the stock, which is the competitor view. */
-export async function agencyStats(limit = 25): Promise<AgencyStat[]> {
+export async function agencyStats(scope: MarketScope, limit = 25): Promise<AgencyStat[]> {
   const rows = await db
     .select({
       id: portalAgencies.id,
@@ -859,7 +982,7 @@ export async function agencyStats(limit = 25): Promise<AgencyStat[]> {
     })
     .from(properties)
     .innerJoin(portalAgencies, eq(portalAgencies.id, properties.agencyId))
-    .where(eq(properties.status, "active"))
+    .where(and(eq(properties.status, "active"), inCommunes(scope.communeInsee)))
     .groupBy(portalAgencies.id, portalAgencies.name)
     .orderBy(desc(sql`count(*)`))
     .limit(limit);
@@ -874,18 +997,20 @@ export async function agencyStats(limit = 25): Promise<AgencyStat[]> {
 }
 
 /** Headline counts for the dashboard, including an honest test-data warning. */
-export async function overview(): Promise<{
+export async function overview(scope: MarketScope): Promise<{
   activeProperties: number;
   /** Null until we hold more than seven days of history — see the query. */
   newThisWeek: number | null;
   buyersReal: number;
   buyersTest: number;
   matchesOpen: number;
+  /** The sources this client subscribes to, switched on or not. */
   sources: { key: string; name: string; enabled: boolean; lastRunAt: Date | null }[];
 }> {
   const [{ active }] = await db
     .select({ active: sql<number>`count(*) filter (where status = 'active')::int` })
-    .from(properties);
+    .from(properties)
+    .where(inCommunes(scope.communeInsee));
 
   /**
    * "New this week" needs a week of history behind it.
@@ -905,7 +1030,8 @@ export async function overview(): Promise<{
       fresh: sql<number>`count(*) filter (where first_listed_at > now() - interval '7 days')::int`,
       earliest: sql<Date | null>`min(first_listed_at)`,
     })
-    .from(properties);
+    .from(properties)
+    .where(inCommunes(scope.communeInsee));
 
   const windowStart = new Date(Date.now() - 7 * 86_400_000);
   const haveAWeek = earliest !== null && new Date(earliest) < windowStart;
@@ -916,7 +1042,7 @@ export async function overview(): Promise<{
       n: sql<number>`count(*)::int`,
     })
     .from(buyers)
-    .where(eq(buyers.active, true))
+    .where(and(eq(buyers.active, true), eq(buyers.clientId, scope.clientId)))
     .groupBy(buyers.isTestData);
 
   /**
@@ -937,20 +1063,25 @@ export async function overview(): Promise<{
     .innerJoin(buyers, eq(buyers.id, buyerMatches.buyerId))
     .where(
       and(
+        ownMatches(scope),
         inArray(buyerMatches.status, ["new", "seen"]),
         eq(buyers.isTestData, false),
       ),
     );
 
-  const sources = await db
-    .select({
-      key: portalSources.key,
-      name: portalSources.name,
-      enabled: portalSources.enabled,
-      lastRunAt: portalSources.lastRunAt,
-    })
-    .from(portalSources)
-    .orderBy(portalSources.key);
+  const sources =
+    scope.sourceIds.length === 0
+      ? []
+      : await db
+          .select({
+            key: portalSources.key,
+            name: portalSources.name,
+            enabled: portalSources.enabled,
+            lastRunAt: portalSources.lastRunAt,
+          })
+          .from(portalSources)
+          .where(inArray(portalSources.id, scope.sourceIds))
+          .orderBy(portalSources.key);
 
   return {
     activeProperties: Number(active),
@@ -1019,8 +1150,16 @@ export type SourceStat = {
  * What the screen gives instead is every signal that moves when collection
  * breaks — the last run's counts, how much is stale, whether a pass aborted —
  * so a wrong total shows up as a wrong shape.
+ *
+ * Scoped to the sources the client subscribes to, but each source's counts are
+ * the collector's own, across every commune. This screen is about whether a
+ * collector is healthy, and a listing whose commune the parser could not read
+ * (635 active on 2026-10-15) is still a page that collector holds; narrowing
+ * by commune would hide exactly the ones worth looking at. They are counts,
+ * never rows, of market data that is shared by design.
  */
-export async function sourceStats(): Promise<SourceStat[]> {
+export async function sourceStats(scope: MarketScope): Promise<SourceStat[]> {
+  if (scope.sourceIds.length === 0) return [];
   const sources = await db
     .select({
       id: portalSources.id,
@@ -1030,6 +1169,7 @@ export async function sourceStats(): Promise<SourceStat[]> {
       enabled: portalSources.enabled,
     })
     .from(portalSources)
+    .where(inArray(portalSources.id, scope.sourceIds))
     .orderBy(portalSources.key);
 
   const counts = await db.execute(sql`
@@ -1130,4 +1270,31 @@ export async function lastSyncAt(): Promise<Date | null> {
     .limit(1);
   const v = row[0]?.value;
   return v ? new Date(v) : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reports
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * This client's frozen reports, newest period first.
+ *
+ * `listReports()` in lib/reports/queries.ts reads Med-Estates' by a hardcoded
+ * slug, and `getReport(id)` opens any report by its uuid whoever owns it. So
+ * the ids are chosen here, by the client's own id, and each is shaped by
+ * `getReport` so there is still one reading of a report row. One query per
+ * report: there is one report per period, a dozen a year.
+ *
+ * The detail screen picks its report out of this list rather than loading the
+ * id from the URL: an id that is not this client's — or not a uuid at all —
+ * is simply not in it.
+ */
+export async function clientReports(scope: MarketScope): Promise<ReportRow[]> {
+  const owned = await db
+    .select({ id: marketReports.id })
+    .from(marketReports)
+    .where(eq(marketReports.clientId, scope.clientId))
+    .orderBy(desc(marketReports.periodStart));
+  const rows = await Promise.all(owned.map((r) => getReport(r.id)));
+  return rows.filter((r): r is ReportRow => r !== null);
 }

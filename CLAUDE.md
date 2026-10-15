@@ -146,12 +146,24 @@ skips `_next/static`, `_next/image` and `favicon.ico`, for cost;
 public. Until 2026-10-15 the matcher was the list, and its `.*\.png$` tail let
 `/portal/x.png` past the login.
 
-Sessions are JWTs, so `users.active = false` stops the *next* sign-in, not the
-session already in a browser. Rotating `AUTH_SECRET` is what ends every session
-now. Accounts are created from the terminal — there is no sign-up page:
+**Signed in is not the question; which client is.** Every screen calls
+`requireClient()` and every internal route `clientForRequest()`
+(`src/lib/auth/tenant.ts`, Node only), and every read in `lib/api/queries.ts`
+takes that scope as its first argument: the client's buyers, matches and
+reports by id; the market narrowed to its communes and subscribed sources, as
+its API key is. An account with no client is sent to `/no-access` (403 from an
+API route) — never shown everything. Meta-tests in `lib/auth/scope.test.ts`
+and `lib/api/queries.test.ts` fail if a page, a route or a read forgets.
+
+The client is read from `users` on every request, not from the JWT, so linking,
+moving or deactivating an account takes effect on its next page load. The
+session cookie itself stays valid until it expires (12 h); rotating
+`AUTH_SECRET` is what ends every session now. Accounts are created from the
+terminal — there is no sign-up page:
 
 ```
-npm run user:create -- --email=… --role=admin   # prints a generated password once
+npm run user:create -- --email=… --role=admin --client=med-estates   # prints a generated password once
+npm run user:create -- --email=… --client=med-estates --link          # link, password unchanged
 npm run user:create -- --list
 npm run user:create -- --email=… --deactivate
 ```

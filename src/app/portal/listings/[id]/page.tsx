@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { propertyDetail, featureLabel } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { Card, Warnings, money, m2, ago } from "@/components/ui";
 import { Gallery } from "@/components/Gallery";
 
@@ -54,9 +55,11 @@ export default async function PropertyPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ from?: string }>;
 }) {
+  const scope = await requireClient();
   const { id } = await params;
   const { from } = await searchParams;
-  const detail = await propertyDetail(id);
+  // Outside the client's communes or sources, it is not found — not forbidden.
+  const detail = await propertyDetail(scope, id);
   if (!detail) notFound();
 
   const back = backHref(from);

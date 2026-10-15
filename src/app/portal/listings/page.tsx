@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listProperties, listSourceOptions, featureLabel, COMMUNE_LABELS } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { PageTitle, Empty, Warnings, money, m2, ago } from "@/components/ui";
 
 /**
@@ -36,13 +37,14 @@ export default async function ListingsPage({
 }: {
   searchParams: Promise<Search>;
 }) {
+  const scope = await requireClient();
   const sp = await searchParams;
   const newWithinDays = sp.new ? Number(sp.new) : undefined;
   const q = sp.q?.trim() || undefined;
   const page = Math.max(1, Number(sp.page) || 1);
 
   const [{ rows, total, totalListings }, sources] = await Promise.all([
-    listProperties({
+    listProperties(scope, {
       communeInsee: sp.commune ? [sp.commune] : undefined,
       source: sp.source,
       q,
@@ -50,7 +52,7 @@ export default async function ListingsPage({
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     }),
-    listSourceOptions(),
+    listSourceOptions(scope),
   ]);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -198,12 +200,13 @@ export default async function ListingsPage({
           Commune
         </span>
         <Filter href={href({ commune: undefined })} active={!sp.commune} label="All" />
-        {Object.entries(COMMUNE_LABELS).map(([insee, label]) => (
+        {/* The client's communes, not every commune we have a label for. */}
+        {scope.communeInsee.map((insee) => (
           <Filter
             key={insee}
             href={href({ commune: insee })}
             active={sp.commune === insee}
-            label={label}
+            label={COMMUNE_LABELS[insee] ?? insee}
           />
         ))}
       </div>

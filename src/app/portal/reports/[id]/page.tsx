@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { compare, getReport, listReports } from "@/lib/reports/queries";
+import { compare } from "@/lib/reports/queries";
+import { clientReports } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { Card, Stat, Warnings, Empty, money } from "@/components/ui";
 
 /**
@@ -20,11 +22,19 @@ import { Card, Stat, Warnings, Empty, money } from "@/components/ui";
 export const dynamic = "force-dynamic";
 
 export default async function ReportPage({ params }: { params: Promise<{ id: string }> }) {
+  const scope = await requireClient();
   const { id } = await params;
-  const report = await getReport(id);
+
+  /**
+   * Picked out of the client's own list rather than loaded by the id in the
+   * URL. Until 2026-10-15 any report opened by its uuid, whoever owned it; now
+   * another client's id — or a string that is not a uuid, which used to be a
+   * 500 from Postgres — is simply not in the list, and is not found.
+   */
+  const all = await clientReports(scope);
+  const report = all.find((r) => r.id === id);
   if (!report) notFound();
 
-  const all = await listReports();
   const index = all.findIndex((r) => r.id === report.id);
   const previous = index >= 0 && index < all.length - 1 ? all[index + 1] : null;
   const delta = compare(report, previous);

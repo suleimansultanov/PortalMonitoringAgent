@@ -1,4 +1,5 @@
 import { sourceStats, lastSyncAt, overview, type SourceStat } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { Card, Stat, Warnings } from "@/components/ui";
 import { SourceGraph } from "@/components/SourceGraph";
 
@@ -29,10 +30,11 @@ import { SourceGraph } from "@/components/SourceGraph";
 export const dynamic = "force-dynamic";
 
 export default async function SourcesPage() {
+  const scope = await requireClient();
   const [sources, synced, head] = await Promise.all([
-    sourceStats(),
+    sourceStats(scope),
     lastSyncAt(),
-    overview(),
+    overview(scope),
   ]);
 
   const live = sources.filter((s) => s.active > 0);

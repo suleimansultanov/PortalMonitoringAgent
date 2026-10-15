@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { dbErrorMessage } from "@/lib/db/errors";
 import { z } from "zod";
 import { listProperties } from "@/lib/api/queries";
+import { clientForRequest } from "@/lib/auth/tenant";
 
 /**
  * GET /api/properties
@@ -27,6 +28,10 @@ const Query = z.object({
 });
 
 export async function GET(req: NextRequest) {
+  // The signed-in account's client: its communes, its sources (lib/auth/tenant.ts).
+  const client = await clientForRequest();
+  if ("response" in client) return client.response;
+
   const parsed = Query.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (!parsed.success) {
     return NextResponse.json(
@@ -37,7 +42,7 @@ export async function GET(req: NextRequest) {
 
   const q = parsed.data;
   try {
-    const { rows, total } = await listProperties({
+    const { rows, total } = await listProperties(client.scope, {
       communeInsee: q.commune,
       source: q.source,
       newWithinDays: q.newWithinDays,

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { communeStats, listMatches } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { MatchList, type Match } from "@/components/MatchList";
 import { Warnings } from "@/components/ui";
 
@@ -18,12 +19,13 @@ export default async function MatchesPage({
 }: {
   searchParams: Promise<{ test?: string }>;
 }) {
+  const scope = await requireClient();
   const sp = await searchParams;
   const includeTestData = sp.test === "1";
 
   const [rows, communes] = await Promise.all([
-    listMatches({ includeTestData, limit: 100 }) as unknown as Promise<Match[]>,
-    communeStats(),
+    listMatches(scope, { includeTestData, limit: 100 }) as unknown as Promise<Match[]>,
+    communeStats(scope),
   ]);
   const covered = communes.filter((c) => c.active > 0).length;
 

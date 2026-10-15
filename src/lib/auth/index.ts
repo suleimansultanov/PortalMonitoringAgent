@@ -78,9 +78,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
 });
 
-/** True when there is a signed-in user. For server components and route handlers. */
-export async function requireSession() {
-  const session = await auth();
-  if (!session?.user) throw new Error("Not authenticated");
-  return session;
-}
+// Screens and routes do not read the session directly: `requireClient()` and
+// `clientForRequest()` in ./tenant.ts give them the client they may read.
+// (`requireSession()`, which only proved somebody was signed in, was removed
+// on 2026-10-15 — it was never called, and "signed in" was never the question.)
