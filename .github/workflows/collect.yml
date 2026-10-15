@@ -234,3 +234,41 @@ jobs:
           echo "::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against tonight's collection."
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+  # The deduplication, on its own, whenever the collection did not finish.
+  #
+  # `nightly` clusters at the end of a pass that completes. On 2026-10-15 the
+  # first run after the refresh queue's fix (REVIEW 1.2) reached this job's
+  # 330-minute ceiling inside Green-Acres: the 5 221 listings Stream.Estate V1
+  # had just bought were stored and never joined to a property, so the client
+  # saw none of them. A ceiling, a crash or a red grade now leaves the
+  # collection to the next night and still clusters what was stored.
+  #
+  # A job of its own because a step inside `collect` dies with it. After it,
+  # never beside it: two passes re-clustering one commune at once is the race
+  # resolveCli.ts exists to avoid. Clustering is recomputed from the listings
+  # every time, so running it again after a night that did cluster is waste,
+  # not harm — which is why a red grade (exit 1 with the resolve done) may
+  # trigger it too.
+  resolve:
+    needs: collect
+    # Not excluding `cancelled`: a job killed by its timeout-minutes may report as cancelled,
+    # and that is the night this job exists for. A run cancelled by hand clusters too — harmless.
+    if: ${{ always() && needs.collect.result != 'success' }}
+    runs-on: ${{ vars.PMA_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve identities
+        run: npm run resolve
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
