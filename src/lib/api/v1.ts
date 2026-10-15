@@ -12,7 +12,7 @@ import {
 } from "@/lib/db/schema";
 import { AGGREGATORS, carriedPortals, shownAs } from "@/lib/portals/portalOf";
 import type { KeyScope } from "./keys";
-import { SERVED_PROPERTY } from "./served";
+import { servedProperty } from "./served";
 
 /**
  * The queries behind /api/v1 — what a client instance is allowed to read.
@@ -159,13 +159,22 @@ export function decodeCursor(raw: string): { occurredAt: Date; id: string } | nu
 }
 
 /**
+ * The sources a key may read. Empty means none: a client subscribed to
+ * nothing has bought no market, and falling back to "everything" would be the
+ * quiet way to give it one.
+ */
+function subscribed(column: typeof portalListings.sourceId | typeof portalListingEvents.sourceId, scope: KeyScope) {
+  return scope.sourceIds.length > 0 ? inArray(column, scope.sourceIds) : sql`false`;
+}
+
+/**
  * Attach what each portal says, and the agency, in two extra queries.
  *
  * Two queries for a page of properties rather than two per property: this is
  * walked forty pages deep by every client that seeds, and a per-row query there
  * is the difference between half a minute and a coffee break.
  */
-async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]> {
+async function withListings(rows: PropertyPayload[], scope: KeyScope): Promise<PropertyPayload[]> {
   if (rows.length === 0) return rows;
   const ids = rows.map((r) => r.id);
 
@@ -191,7 +200,14 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(and(inArray(portalListings.propertyId, ids), eq(portalListings.status, "active"), eq(portalSources.enabled, true)));
+    .where(
+      and(
+        inArray(portalListings.propertyId, ids),
+        eq(portalListings.status, "active"),
+        eq(portalSources.enabled, true),
+        subscribed(portalListings.sourceId, scope),
+      ),
+    );
 
   const byProperty = new Map<string, ListingPayload[]>();
   for (const l of links) {
@@ -261,7 +277,17 @@ async function withListings(rows: PropertyPayload[]): Promise<PropertyPayload[]>
     });
   }
 
-  await withLastPriceChange(rows);
+  /**
+   * Counted from what is sent, after the split. `properties.source_count` is
+   * the number of SOURCES: an aggregator carrying SeLoger, Leboncoin and
+   * Belles Demeures counted once, and a switched-off collector counted at
+   * all. The contract says "how many portals carry this property" (REVIEW §2).
+   * A property with nothing served — the subject of a `delisted` event — is
+   * carried by none, and says so.
+   */
+  for (const r of rows) r.sourceCount = new Set(r.listings.map((l) => l.source)).size;
+
+  await withLastPriceChange(rows, scope);
   await withAgency(rows);
   // Stripped rather than merely undocumented: an internal id in a payload is an
   // id somebody eventually depends on.
@@ -319,7 +345,7 @@ function characteristicsOf(raw: Record<string, unknown> | null): {
  * the first per property kept, rather than a DISTINCT ON the builder cannot
  * type.
  */
-async function withLastPriceChange(rows: PropertyPayload[]): Promise<void> {
+async function withLastPriceChange(rows: PropertyPayload[], scope: KeyScope): Promise<void> {
   const ids = rows.map((r) => r.id);
   if (ids.length === 0) return;
 
@@ -335,7 +361,12 @@ async function withLastPriceChange(rows: PropertyPayload[]): Promise<void> {
     .innerJoin(portalListings, eq(portalListings.id, portalListingEvents.listingId))
     .innerJoin(portalSources, eq(portalSources.id, portalListingEvents.sourceId))
     .where(
-      and(eq(portalListingEvents.type, "price_changed"), inArray(portalListings.propertyId, ids), eq(portalSources.enabled, true)),
+      and(
+        eq(portalListingEvents.type, "price_changed"),
+        inArray(portalListings.propertyId, ids),
+        eq(portalSources.enabled, true),
+        subscribed(portalListingEvents.sourceId, scope),
+      ),
     )
     .orderBy(desc(portalListingEvents.occurredAt));
 
@@ -461,7 +492,7 @@ export async function snapshot(
   const conditions = [
     eq(properties.status, "active"),
     inArray(properties.communeInsee, opts.communeInsee),
-    SERVED_PROPERTY,
+    servedProperty(scope.sourceIds),
   ];
   if (opts.after) conditions.push(gt(properties.id, opts.after));
 
@@ -473,7 +504,7 @@ export async function snapshot(
     .limit(opts.limit + 1);
 
   const page = rows.slice(0, opts.limit).map((r) => toPayload(r as Record<string, unknown>));
-  await withListings(page);
+  await withListings(page, scope);
 
   return {
     rows: page,
@@ -523,6 +554,8 @@ export async function events(
      * listing of an enabled source, so its property is served by construction.
      */
     eq(portalSources.enabled, true),
+    // Only what this client subscribes to (`client_sources`), as the key's documentation promises (REVIEW 1.5).
+    subscribed(portalListings.sourceId, scope),
   ];
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
@@ -567,7 +600,7 @@ export async function events(
 
   const page = rows.slice(0, opts.limit);
   const payloads = page.map((r) => toPayload(r as unknown as Record<string, unknown>));
-  await withListings(payloads);
+  await withListings(payloads, scope);
 
   const out: EventPayload[] = page.map((r, i) => ({
     id: r.eventId,
@@ -639,7 +672,7 @@ export async function status(scope: KeyScope): Promise<{
     .where(
       and(
         eq(properties.status, "active"),
-        SERVED_PROPERTY,
+        servedProperty(scope.sourceIds),
         scope.communeInsee.length > 0
           ? inArray(properties.communeInsee, scope.communeInsee)
           : sql`false`,
