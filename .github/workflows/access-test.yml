@@ -62,12 +62,22 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Ask each portal
+        # Inputs through `env:`, read as "$VARIABLES" — never `${{ inputs.* }}`
+        # inside the script, where a value is pasted into the shell source and
+        # a `$(…)` in it would run next to the proxy credentials. See collect.yml.
         run: |
-          ARGS="--group=${{ inputs.group }} --browser=${{ inputs.browser }} --listings=${{ inputs.listings }} --budget-mb=${{ inputs.budget_mb }} --out=access-test-pages"
-          if [ -n "${{ inputs.portals }}" ]; then ARGS="$ARGS --portals=${{ inputs.portals }}"; fi
-          if [ "${{ inputs.mode }}" = "direct" ]; then ARGS="$ARGS --direct"; fi
+          ARGS="--group=$IN_GROUP --browser=$IN_BROWSER --listings=$IN_LISTINGS --budget-mb=$IN_BUDGET_MB --out=access-test-pages"
+          if [ -n "$IN_PORTALS" ]; then ARGS="$ARGS --portals=$IN_PORTALS"; fi
+          if [ "$IN_MODE" = "direct" ]; then ARGS="$ARGS --direct"; fi
+          # Unquoted on purpose: ARGS is several flags and has to split into them.
           node scripts/access-test.mjs $ARGS
         env:
+          IN_GROUP: ${{ inputs.group }}
+          IN_BROWSER: ${{ inputs.browser }}
+          IN_LISTINGS: ${{ inputs.listings }}
+          IN_BUDGET_MB: ${{ inputs.budget_mb }}
+          IN_PORTALS: ${{ inputs.portals }}
+          IN_MODE: ${{ inputs.mode }}
           PMA_RESIDENTIAL_PROXY: ${{ inputs.mode == 'proxy' && secrets.PMA_RESIDENTIAL_PROXY || '' }}
           CRAWLER_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
 

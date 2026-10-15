@@ -154,12 +154,16 @@ jobs:
           COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
 
       - name: Collect
+        # The inputs arrive through `env:` and are read as "$VARIABLES", never
+        # written into this script as `${{ inputs.* }}`. Interpolated, a value is
+        # pasted into the shell source before bash reads it: a `$(…)` typed into
+        # the `communes` box would run, in a step that holds every secret below.
         run: |
-          ARGS="--parallel=${{ inputs.parallel || '1' }}"
-          if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
-          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
+          ARGS="--parallel=$IN_PARALLEL"
+          if [ -n "$IN_SOURCES" ]; then ARGS="$ARGS --sources=$IN_SOURCES"; fi
+          if [ -n "$IN_COMMUNES" ]; then ARGS="$ARGS --communes=$IN_COMMUNES"; fi
           # Sunday's schedule, or a hand-triggered run that asked for it.
-          if [ "${{ github.event.schedule }}" = "0 21 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
+          if [ "$SCHEDULE" = "0 21 * * 0" ] || [ "$IN_FULL" = "true" ]; then
             ARGS="$ARGS --full"
             echo "FULL SWEEP — every list walked to the end, so delistings get written."
           fi
@@ -174,8 +178,16 @@ jobs:
           # A subtraction rather than a hand-written list of the other five, so
           # that a seventh portal is included by default rather than forgotten.
           ARGS="$ARGS --exclude=superimmo"
+          # Unquoted on purpose: ARGS is several flags and has to split into
+          # them, exactly as it did when the inputs were pasted in.
           npm run nightly -- $ARGS
         env:
+          # Blank on a scheduled night, which is what the defaults are for.
+          IN_PARALLEL: ${{ inputs.parallel || '1' }}
+          IN_SOURCES: ${{ inputs.sources }}
+          IN_COMMUNES: ${{ inputs.communes }}
+          IN_FULL: ${{ inputs.full }}
+          SCHEDULE: ${{ github.event.schedule }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}

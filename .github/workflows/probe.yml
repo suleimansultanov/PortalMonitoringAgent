@@ -56,11 +56,17 @@ jobs:
           echo
 
       - name: Fetch
+        # The URL comes in through `env:`, read as "$IN_URL". Pasted into the
+        # script as `${{ inputs.url }}`, a `$`, a quote or a backtick in it would
+        # be shell rather than text, in a step that holds secrets.
         run: |
-          ARGS="--url=${{ inputs.url }} --name=probe"
-          if [ "${{ inputs.browser }}" = "true" ]; then ARGS="$ARGS --browser"; fi
+          ARGS="--url=$IN_URL --name=probe"
+          if [ "$IN_BROWSER" = "true" ]; then ARGS="$ARGS --browser"; fi
+          # Unquoted on purpose: ARGS is several flags and has to split into them.
           npm run fixture -- $ARGS
         env:
+          IN_URL: ${{ inputs.url }}
+          IN_BROWSER: ${{ inputs.browser }}
           COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
           COLLECTOR_HEADER: ${{ secrets.COLLECTOR_HEADER }}
 
