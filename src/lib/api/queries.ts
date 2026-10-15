@@ -18,6 +18,7 @@ import { hasFeature } from "@/lib/matching/buyers";
 import { getReport, type ReportRow } from "@/lib/reports/queries";
 import { communesWithin, type MarketScope } from "@/lib/auth/scope";
 import { servedProperty } from "./served";
+import { isUuid } from "./params";
 
 /**
  * Every read the product screens make, in one place.
@@ -724,6 +725,9 @@ export async function propertyDetail(
   scope: MarketScope,
   id: string,
 ): Promise<PropertyDetail | null> {
+  // `/portal/listings/x.png` was a 500 from Postgres; not a uuid, not found.
+  if (!isUuid(id)) return null;
+
   const [row] = await db
     .select({
       id: properties.id,

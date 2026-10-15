@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { keyedRoute } from "@/lib/api/guard";
+import { isUuid } from "@/lib/api/params";
 import { reportById } from "@/lib/api/v1";
 import { dbErrorMessage } from "@/lib/db/errors";
 
@@ -23,6 +24,9 @@ export const GET = keyedRoute(async (_req, scope, context) => {
    */
   const { id } = (await context.params) as { id?: string };
   if (!id) return NextResponse.json({ error: "no id" }, { status: 400 });
+  // Not a uuid, so no report: the same 404 as any other missing one, where
+  // Postgres would have made it a 500 (before 2026-10-15).
+  if (!isUuid(id)) return NextResponse.json({ error: "no such report" }, { status: 404 });
 
   try {
     const report = await reportById(scope, id);
