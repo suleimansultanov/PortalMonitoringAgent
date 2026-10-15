@@ -18,7 +18,9 @@ Built as a product, not a one-off — see "Tenancy" below.
 - **Migrations:** hand-written idempotent SQL in `drizzle/`, applied by
   `src/lib/db/migrate.ts`. **`drizzle-kit generate` is not used** — see the
   comment at the top of the migrate script.
-- **Jobs:** Inngest. **Storage:** S3 for raw pages. **Auth:** next-auth v5, see below.
+- **Jobs:** GitHub Actions — `.github/workflows/collect.yml` runs
+  `src/lib/portals/nightly.ts`. (Inngest was removed on 2026-10-15: nothing
+  sent it an event.) **Storage:** S3 for raw pages. **Auth:** next-auth v5, see below.
 - **Parsing:** cheerio. Structured markup first, selectors last.
 
 ## Tenancy — the load-bearing decision
@@ -134,10 +136,15 @@ The config is **split in two on purpose**:
 - `src/lib/auth/index.ts` — Node only. The Credentials provider, bcrypt, and
   the query against `users`.
 
-Exempt paths are listed in `PUBLIC_PREFIXES` and in the middleware matcher.
-**`/api/inngest` must stay exempt** — it authenticates with its own signing key
-and has no cookie; putting a login in front of it does not harden anything, it
-silently stops the job runner.
+Exempt paths are listed **once**, in `PUBLIC_PATHS` / `PUBLIC_ROOTS`
+(`config.ts`, read by `isPublicPath` in the `authorized` callback): `/login`,
+`/api/auth/*`, `/api/v1/*` (it has its own key check, `lib/api/guard.ts`),
+`/docs` and `/docs/openapi` (deliberately public, 2026-09-04), and the build's
+assets. Exact paths and roots, never patterns. The middleware matcher only
+skips `_next/static`, `_next/image` and `favicon.ico`, for cost;
+`src/middleware.test.ts` fails if it ever skips anything the list does not make
+public. Until 2026-10-15 the matcher was the list, and its `.*\.png$` tail let
+`/portal/x.png` past the login.
 
 Sessions are JWTs, so `users.active = false` stops the *next* sign-in, not the
 session already in a browser. Rotating `AUTH_SECRET` is what ends every session
@@ -174,5 +181,5 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 ## Related
 - **LeadEstateVault** (`../LeadEstateVault/vault`) — sibling project. The db
   client, S3 helpers, settings store, crypto and auth guards were ported from
-  there, along with the Inngest patterns (`syncFathomCalls`, `extractCallCard`)
-  that this pipeline mirrors.
+  there. (So were its Inngest patterns, removed here on 2026-10-15 when the
+  nightly moved to GitHub Actions.)
