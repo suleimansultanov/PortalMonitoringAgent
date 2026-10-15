@@ -1,7 +1,8 @@
 import "server-only";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
+  clients,
   marketReports,
   portalAgencies,
   portalListingEvents,
@@ -159,6 +160,38 @@ export function decodeCursor(raw: string): { occurredAt: Date; id: string } | nu
 }
 
 /**
+ * THE CLIENT'S OWN AGENCY IS NOT SERVED BACK TO IT.
+ *
+ * Med-Estates has its listings from its own CRM (Animo) and asked on
+ * 2026-10-15 not to find them again in the feed. Its listings are left out
+ * wherever a listing is served — on a property, in an event, in the last price
+ * change — and a property only the client is selling is not served at all. A
+ * villa the client AND a competitor are selling stays, with the competitor's
+ * listings only: that is the one the client wants to see.
+ *
+ * Read per request from `clients.own_agency_names`, matched on the agency's
+ * normalised name, because one agency is a row per portal spelling.
+ */
+const ownCache = new WeakMap<KeyScope, Promise<string[]>>();
+function ownAgencies(scope: KeyScope): Promise<string[]> {
+  let p = ownCache.get(scope);
+  if (!p) {
+    p = db
+      .select({ id: portalAgencies.id })
+      .from(portalAgencies)
+      .innerJoin(clients, eq(clients.id, scope.clientId))
+      .where(sql`${portalAgencies.nameNormalized} = any(${clients.ownAgencyNames})`)
+      .then((rows) => rows.map((r) => r.id));
+    ownCache.set(scope, p);
+  }
+  return p;
+}
+
+function notOwn(own: string[]) {
+  return own.length === 0 ? sql`true` : or(isNull(portalListings.agencyId), notInArray(portalListings.agencyId, own))!;
+}
+
+/**
  * The sources a key may read. Empty means none: a client subscribed to
  * nothing has bought no market, and falling back to "everything" would be the
  * quiet way to give it one.
@@ -206,6 +239,7 @@ async function withListings(rows: PropertyPayload[], scope: KeyScope): Promise<P
         eq(portalListings.status, "active"),
         eq(portalSources.enabled, true),
         subscribed(portalListings.sourceId, scope),
+        notOwn(await ownAgencies(scope)),
       ),
     );
 
@@ -366,6 +400,7 @@ async function withLastPriceChange(rows: PropertyPayload[], scope: KeyScope): Pr
         inArray(portalListings.propertyId, ids),
         eq(portalSources.enabled, true),
         subscribed(portalListingEvents.sourceId, scope),
+        notOwn(await ownAgencies(scope)),
       ),
     )
     .orderBy(desc(portalListingEvents.occurredAt));
@@ -492,7 +527,7 @@ export async function snapshot(
   const conditions = [
     eq(properties.status, "active"),
     inArray(properties.communeInsee, opts.communeInsee),
-    servedProperty(scope.sourceIds),
+    servedProperty(scope.sourceIds, await ownAgencies(scope)),
   ];
   if (opts.after) conditions.push(gt(properties.id, opts.after));
 
@@ -556,6 +591,7 @@ export async function events(
     eq(portalSources.enabled, true),
     // Only what this client subscribes to (`client_sources`), as the key's documentation promises (REVIEW 1.5).
     subscribed(portalListings.sourceId, scope),
+    notOwn(await ownAgencies(scope)),
   ];
   if (opts.types?.length) conditions.push(inArray(portalListingEvents.type, opts.types));
   if (cursor) {
@@ -679,7 +715,7 @@ export async function status(scope: KeyScope): Promise<{
     .where(
       and(
         eq(properties.status, "active"),
-        servedProperty(scope.sourceIds),
+        servedProperty(scope.sourceIds, await ownAgencies(scope)),
         scope.communeInsee.length > 0
           ? inArray(properties.communeInsee, scope.communeInsee)
           : sql`false`,

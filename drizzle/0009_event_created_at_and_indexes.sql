@@ -24,3 +24,13 @@ CREATE INDEX IF NOT EXISTS "portal_listings_source_status_seen_idx"
 -- The snapshot walk: active properties of a commune, by id (REVIEW §3).
 CREATE INDEX IF NOT EXISTS "properties_active_commune_id_idx"
   ON "properties" ("commune_insee", "id") WHERE "status" = 'active';
+
+-- The client's own agency, under every name the portals print it with.
+--
+-- A client has its own listings from its own CRM (Med-Estates from Animo) and
+-- asked on 2026-10-15 not to be served them again: /api/v1 leaves out every
+-- listing whose agency's normalised name is in this list, and a property only
+-- the client itself is selling with it. Names, normalised as portal_agencies
+-- normalises them, because the same agency is a different row per portal
+-- spelling — "Med-Estates", and on Green-Acres the agent, "Mark Voncken".
+ALTER TABLE "clients" ADD COLUMN IF NOT EXISTS "own_agency_names" text[] NOT NULL DEFAULT '{}';

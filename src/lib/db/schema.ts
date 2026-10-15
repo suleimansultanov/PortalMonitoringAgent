@@ -48,6 +48,12 @@ export const clients = pgTable(
      * labelled Saint-Tropez by the agency writing it.
      */
     communeInsee: text("commune_insee").array().notNull().default([]),
+    /**
+     * The client's own agency, as `portal_agencies.name_normalized` spells it on
+     * each portal. /api/v1 does not serve these listings back to the client,
+     * which has them from its own CRM (0009).
+     */
+    ownAgencyNames: text("own_agency_names").array().notNull().default([]),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
