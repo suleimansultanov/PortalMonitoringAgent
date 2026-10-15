@@ -49,7 +49,7 @@ function tablesInScript(): string[] {
     .filter(Boolean);
 }
 
-const tables = Object.values(schema).filter((v): v is PgTable => is(v, PgTable));
+const tables = Object.values<unknown>(schema).filter((v): v is PgTable => is(v, PgTable));
 const inSchema = new Set(tables.map((t) => getTableConfig(t).name));
 
 test("the backup script's table list parses to plain table names, once each", () => {
