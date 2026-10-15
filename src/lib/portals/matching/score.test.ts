@@ -525,11 +525,15 @@ test("two agencies measuring one villa differently still merge when the plot agr
   assert.equal(scoreMatch(zingraf, sothebys).same, true);
 });
 
-test("without a plot to corroborate it, the same gap still splits", () => {
+test("without a plot, the same price and a floor area within 20% are one house — agreed with the client 2026-10-15", () => {
+  // This split until 2026-10-15. The client's rule: an unstated plot does not block.
   const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 430 });
   const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 400 });
+  assert.equal(scoreMatch(a, b).same, true);
 
-  const v = scoreMatch(a, b);
+  // And past 20% it is still two.
+  const c = candidate({ id: "c", sourceId: "s2", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 330 });
+  const v = scoreMatch(a, c);
   assert.equal(v.same, false);
   assert.equal(v.signals.areaConflict, true);
 });
@@ -612,7 +616,7 @@ test("listings split out together stay together when they still match each other
   // Three villas at one price, chained into one cluster; the guard keeps one,
   // and the other two come back as two properties — not as five single cards.
   const villa = (p: string, n: number, area: number) => Array.from({ length: n }, (_, i) => row(`${p}${i}`, 2_990_000, area));
-  const all = [...villa("a", 4, 200), ...villa("b", 3, 314), ...villa("c", 2, 240)];
+  const all = [...villa("a", 4, 200), ...villa("b", 3, 300), ...villa("c", 2, 400)];
   const edges: [string, string][] = [];
   for (const p of ["a", "b", "c"]) {
     const ids = all.filter((r) => r.id.startsWith(p)).map((r) => r.id);
@@ -637,24 +641,26 @@ test("price and area pointing at different medians still ends, with something ke
   assert.deepEqual(members, ["p1", "p2", "p3", "p4", "p5"], "nobody lost, nobody twice");
 });
 
-test("the same plot to the metre lets two agencies' floor areas disagree — La Croix-Valmer, ref 87276762", () => {
+test("same price, same commune: two agencies' floor areas may differ by 20% — La Croix-Valmer, ref 87276762", () => {
   const theirs = c({ id: "jt", communeInsee: "83048", priceEur: 4_490_000, areaM2: 210, landM2: 1423, agencyId: "johntaylor", description: OTHER_VILLA, title: null });
   const ours = c({ id: "me", communeInsee: "83048", priceEur: 4_490_000, areaM2: 179, landM2: 1423, agencyId: "med", description: BARNES, title: null });
   const v = scoreMatch(ours, theirs);
   assert.equal(v.same, true);
-  assert.equal(v.signals.samePlot, true);
+  assert.equal(v.signals.samePriceBand, true);
   assert.ok(v.confidence >= 0.8);
+  // An unstated plot does not block it.
+  assert.equal(scoreMatch({ ...ours, landM2: null }, { ...theirs, landM2: null }).same, true);
 });
 
-test("the same-plot band never reaches flats, small plots, bare land or two prices", () => {
-  const house = { communeInsee: "83048", priceEur: 4_490_000, areaM2: 179, landM2: 1423, propertyType: "Maison" };
-  const wide = 0.25;
-  assert.equal(areaTolerance(c({ id: "1", ...house }), c({ id: "2", ...house, areaM2: 210 })), wide);
-  assert.notEqual(areaTolerance(c({ id: "1", ...house, propertyType: "Appartement" }), c({ id: "2", ...house })), wide);
-  assert.notEqual(areaTolerance(c({ id: "1", ...house, landM2: 600 }), c({ id: "2", ...house, landM2: 600 })), wide);
-  assert.notEqual(areaTolerance(c({ id: "1", ...house, propertyType: "Terrain" }), c({ id: "2", ...house })), wide);
-  assert.notEqual(areaTolerance(c({ id: "1", ...house, landM2: 1500 }), c({ id: "2", ...house })), wide);
-  assert.notEqual(areaTolerance(c({ id: "1", ...house, priceEur: 4_400_000 }), c({ id: "2", ...house })), wide);
-  // And 210 against 179 without a plot is still two houses.
-  assert.equal(scoreMatch(c({ id: "1", ...house, landM2: null, description: BARNES }), c({ id: "2", ...house, areaM2: 210, landM2: null, description: OTHER_VILLA })).same, false);
+test("the 20% band stops at 20%, at a plot 20% off, at flats, bare plots and two prices", () => {
+  const house = { communeInsee: "83048", priceEur: 4_490_000, areaM2: 200, landM2: 1500, propertyType: "Maison", description: BARNES, title: null };
+  const other = { ...house, description: OTHER_VILLA };
+  assert.equal(scoreMatch(c({ id: "1", ...house }), c({ id: "2", ...other, areaM2: 245 })).same, true, "area 18% apart: one house");
+  assert.equal(scoreMatch(c({ id: "1", ...house }), c({ id: "2", ...other, areaM2: 260 })).same, false, "area 23% apart: two");
+  assert.equal(scoreMatch(c({ id: "1", ...house }), c({ id: "2", ...other, areaM2: 230, landM2: 2000 })).same, false, "plot 25% apart: two");
+  assert.equal(scoreMatch(c({ id: "1", ...house }), c({ id: "2", ...other, areaM2: 230, priceEur: 4_400_000 })).same, false, "two prices: two");
+  assert.equal(areaTolerance(c({ id: "1", ...house, propertyType: "Appartement" }), c({ id: "2", ...house })) < 0.2, true, "flats keep Carrez");
+  assert.equal(areaTolerance(c({ id: "1", ...house, propertyType: "Terrain" }), c({ id: "2", ...house })) < 0.2, true, "bare plots too");
+  assert.equal(areaTolerance(c({ id: "1", ...house, propertyType: "Local" }), c({ id: "2", ...house, propertyType: "Commerce" })) < 0.2, true, "and premises");
+  assert.equal(areaTolerance(c({ id: "1", ...house }), c({ id: "2", ...house, landM2: 1300 })), 0.2);
 });

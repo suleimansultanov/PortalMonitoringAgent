@@ -34,8 +34,8 @@ export type MatchSignals = {
   priceDelta?: number;
   areaClose?: boolean;
   landClose?: boolean;
-  /** The plot agreed to the metre on a priced house, so the floor area was allowed its widest band. */
-  samePlot?: boolean;
+  /** Same price to the euro on two houses whose plots do not disagree: the floor area had the 20% band. */
+  samePriceBand?: boolean;
   roomsEqual?: boolean;
   communeConflict?: boolean;
   /** Shingles on the shorter side — the divisor containment is computed over. */
@@ -90,14 +90,19 @@ const AREA_TOLERANCE_WITH_LAND = 0.1;
  * the pool house, area with the covered terraces; the cadastre quotes the plot
  * once.
  *
- * Narrow on everything else on purpose: a plot of at least PLOT_MIN_M2 (a new
- * build programme sells identical villas on identical small plots at one
- * price), within LAND_EXACT_TOLERANCE, neither side a flat (a flat's "land" is
- * the whole residence's) nor a bare plot.
+ * THE RULE, as agreed with the client on 2026-10-15 (Tomaz, after a call with
+ * Mark): the same price to the euro, the same commune, floor areas within
+ * 20% — and the plots within 20% too, where both state one. An unstated plot
+ * does not block it; a plot that disagrees by more does.
+ *
+ * Not for flats: their area is measured under the Carrez law and quoted
+ * identically everywhere, and one residence sells several flats at one price —
+ * they keep FLAT_AREA_TOLERANCE. Not for bare plots, whose "area" is the land.
+ * The cost is known and accepted: two different villas at one round price in
+ * one commune, 200 and 230 m², now read as one.
  */
-const AREA_TOLERANCE_WITH_EXACT_PLOT = 0.25;
-const LAND_EXACT_TOLERANCE = 0.01;
-const PLOT_MIN_M2 = 1000;
+const AREA_TOLERANCE_SAME_PRICE = 0.2;
+const LAND_TOLERANCE_SAME_PRICE = 0.2;
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
 /**
@@ -305,7 +310,7 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
       return { same: false, confidence: 0, signals };
     }
     if (landDeltaOf(a, b) !== null && landDeltaOf(a, b)! <= LAND_TOLERANCE) signals.landClose = true;
-    if (tolerance === AREA_TOLERANCE_WITH_EXACT_PLOT) signals.samePlot = true;
+    if (tolerance === AREA_TOLERANCE_SAME_PRICE) signals.samePriceBand = true;
   }
 
   // ── 2b. The measurements, for when the prose cannot speak ──────────────
@@ -358,16 +363,14 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
         : null;
 
       /**
-       * The floor area agrees inside the rounding — or, on the same plot to the
-       * metre, inside the widest band (AREA_TOLERANCE_WITH_EXACT_PLOT). Not the
-       * 10% band between those two: measured on 2026-10-15, letting every
-       * plot within 5% widen this rule chained 200–215–230 m² houses into
-       * clusters the coherence guard then had to break, and the market came
-       * out with MORE properties than before.
+       * Two houses at one price: floor areas within 20%, plots within 20%
+       * where stated (AREA_TOLERANCE_SAME_PRICE). Anything else keeps the
+       * rounding band and the 5% plot.
        */
-      const tolerance = areaTolerance(a, b) === AREA_TOLERANCE_WITH_EXACT_PLOT ? AREA_TOLERANCE_WITH_EXACT_PLOT : AREA_TOLERANCE;
+      const wide = sameHouseBand(a, b);
+      const tolerance = wide ? AREA_TOLERANCE_SAME_PRICE : AREA_TOLERANCE;
       if (a.priceEur === b.priceEur && areaDelta <= tolerance) {
-        if (landDelta !== null && landDelta > LAND_TOLERANCE) {
+        if (landDelta !== null && landDelta > (wide ? LAND_TOLERANCE_SAME_PRICE : LAND_TOLERANCE)) {
           signals.landConflict = true;
         } else {
           signals.priceEqual = true;
@@ -494,19 +497,27 @@ function landDeltaOf(a: Candidate, b: Candidate): number | null {
   return Math.abs(a.landM2 - b.landM2) / Math.max(a.landM2, b.landM2);
 }
 
+/** Shops, offices, garages, whole buildings: not a home, and not what the 20% band was agreed for. */
+function isPremises(propertyType: string | null): boolean {
+  if (!propertyType) return false;
+  return /commerce|local|bureau|office|parking|garage|\bbox\b|immeuble|fonds|entrep|warehouse|shop/i.test(propertyType);
+}
+
+/** Two houses (no flat, no bare plot, no premises) at one price, whose plots do not disagree by more than 20%. */
+function sameHouseBand(a: Candidate, b: Candidate): boolean {
+  if (a.priceEur === null || a.priceEur !== b.priceEur) return false;
+  if ([a, b].some((x) => isFlat(x.propertyType) || isPlot(x.propertyType) || isPremises(x.propertyType))) return false;
+  const land = landDeltaOf(a, b);
+  return land === null || land <= LAND_TOLERANCE_SAME_PRICE;
+}
+
 /** How far two floor areas may disagree and still be one property — see the constants. */
 export function areaTolerance(a: Candidate, b: Candidate): number {
   if (isFlat(a.propertyType) || isFlat(b.propertyType)) return FLAT_AREA_TOLERANCE;
+  if (sameHouseBand(a, b)) return AREA_TOLERANCE_SAME_PRICE;
   const land = landDeltaOf(a, b);
   if (land === null || land > LAND_TOLERANCE) return AREA_TOLERANCE;
-  const samePlot =
-    land <= LAND_EXACT_TOLERANCE &&
-    Math.min(a.landM2!, b.landM2!) >= PLOT_MIN_M2 &&
-    !isPlot(a.propertyType) &&
-    !isPlot(b.propertyType) &&
-    a.priceEur !== null &&
-    a.priceEur === b.priceEur;
-  return samePlot ? AREA_TOLERANCE_WITH_EXACT_PLOT : AREA_TOLERANCE_WITH_LAND;
+  return AREA_TOLERANCE_WITH_LAND;
 }
 
 /**
@@ -728,24 +739,24 @@ export function incoherentAreas(
     members.length > 0 && members.every((m) => m.propertyType === undefined || isFlat(m.propertyType));
   return incoherentBy(
     members.map((m) => ({ id: m.id, value: m.areaM2 })),
-    allFlats ? CLUSTER_FLAT_AREA_SPAN : onePlot(members) ? AREA_TOLERANCE_WITH_EXACT_PLOT : CLUSTER_AREA_SPAN,
+    allFlats ? CLUSTER_FLAT_AREA_SPAN : housesOnOnePlot(members) ? AREA_TOLERANCE_SAME_PRICE : CLUSTER_AREA_SPAN,
   );
 }
 
 /**
- * Every member that states a plot states the same one — to the metre, on a
- * real piece of land, and none of them a flat or a bare plot. The pair rule
- * lets floor areas disagree by a quarter on exactly that evidence; a guard on
- * the cluster that did not would undo every merge it makes (measured: 633
- * listings split back out instead of 102).
+ * Houses only, and the plots they state within 20% of each other — the same
+ * evidence the pair rule widens on, so the guard on the cluster allows the same
+ * 20% of floor area. A guard that did not would undo every merge the rule makes
+ * (measured 2026-10-15: 633 listings split back out instead of 102). The price
+ * guard still runs first and still holds the cluster to one price band.
  */
-function onePlot(members: { propertyType?: string | null; landM2?: number | null }[]): boolean {
+function housesOnOnePlot(members: { propertyType?: string | null; landM2?: number | null }[]): boolean {
+  if (members.some((m) => isFlat(m.propertyType ?? null) || isPlot(m.propertyType ?? null) || isPremises(m.propertyType ?? null))) return false;
   const plots = members.map((m) => m.landM2).filter((v): v is number => v !== null && v !== undefined && v > 0);
-  if (plots.length < 2) return false;
-  if (members.some((m) => isFlat(m.propertyType ?? null) || isPlot(m.propertyType ?? null))) return false;
+  if (plots.length < 2) return true;
   const lo = Math.min(...plots);
   const hi = Math.max(...plots);
-  return lo >= PLOT_MIN_M2 && (hi - lo) / hi <= LAND_EXACT_TOLERANCE;
+  return (hi - lo) / hi <= LAND_TOLERANCE_SAME_PRICE;
 }
 
 /**
