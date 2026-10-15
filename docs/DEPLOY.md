@@ -1,12 +1,52 @@
 # Deploying the client-facing app
 
-For showing the product to Med-Estates. The **collector** is not deployed — it
-keeps running from a laptop or a GitHub Action, writing into the same database
-the app reads. See `SCALING.md` for why that split is deliberate.
+The app is the dashboard and `/api/v1`, which the client's own application
+reads (`API.md`). It runs on Vercel. The **collector** is not deployed with it:
+it runs every night on GitHub Actions (`.github/workflows/collect.yml`) and
+writes into the same database the app reads. See `SCALING.md` for why that
+split is deliberate.
 
-> The app is read-only over the database. It never touches S3: gallery images
-> are hotlinked `og:image` URLs stored in the rows themselves. So a deployment
+> The app never touches S3: gallery images are hotlinked `og:image` URLs stored
+> in the rows themselves. It reads what the nightly wrote and writes only its
+> own rows (sign-ins, match status, when a key was last used). So a deployment
 > needs a database and nothing else.
+
+---
+
+## One database
+
+Since 2026-08-29 there is **one** Postgres, on Supabase, and everything uses it:
+
+| Who | Where its connection string lives | Pooler |
+|---|---|---|
+| The deployed app and `/api/v1` | Vercel environment variable `DATABASE_URL` | transaction (6543) |
+| The nightly collector | GitHub Actions secret `DATABASE_URL` | session (5432) |
+| Scripts, migrations and `psql` on the operator's machine | `DATABASE_URL` in `.env.local` | session (5432) |
+
+Nothing is copied between databases and there is no sync step. What the
+nightly writes is what the client reads, from the moment it is written.
+
+Three consequences, each of which has a cost if it is forgotten:
+
+- **`.env.local` is production.** Every `npm run` command that writes —
+  `db:seed`, `reparse`, `db:reset-data`, `user:create`, `key:create` — acts on
+  the client's live data. There is no staging copy to try a change on first,
+  which is why the abort guard in `runner/run.ts` matters more now than it did.
+- **`ENCRYPTION_KEY` must be identical in all three places.** `settings` is
+  encrypted with it. A different key anywhere makes every encrypted setting
+  unreadable there, and the error says "Unsupported state" while pointing at
+  nothing (`CLAUDE.md`, Gotchas).
+- **The backup is a command.** The Supabase Free plan takes none; see §8.
+
+Before 2026-08-29 the collector wrote to a Postgres on the laptop, and
+`scripts/sync-to-supabase.sh` pushed the market across: it emptied eleven
+tables on the target and reloaded them. Its source was `.env.local`, which has
+been production ever since, and it asked for no confirmation. Pointed at
+production it would have truncated those tables and reloaded them from a
+temporary dump deleted on exit — a load that failed half-way left the market
+empty, with no copy anywhere. It was removed on 2026-10-15, together with
+`scripts/migrate-to-supabase.sh`, which prepared a new database for it and
+ended by telling you to run it. Moving to a new database is §3.
 
 ---
 
@@ -50,6 +90,9 @@ Nothing about the data has to be redone in either case.
 
 ## 1. Supabase project
 
+Only when there is no database yet, or when the one there is being replaced
+(§3). Today's deployment already has one.
+
 Pick a European region and write down which one — **a project transfer cannot
 change it**, so the choice outlives whoever owns the account, and the Vercel
 function region in §4 has to match it.
@@ -63,66 +106,81 @@ Save the database password when it is shown; it is not shown again.
 
 From **Project Settings → Database** take two connection strings:
 
-- **Session pooler** (port 5432) — for `psql`, `pg_dump` and migrations.
+- **Session pooler** (port 5432) — for `.env.local`, the GitHub secret, `psql`,
+  `pg_dump` and migrations.
 - **Transaction pooler** (port 6543) — for the app. This is what goes in Vercel.
 
 They are not interchangeable. Migrations through the transaction pooler fail in
 ways that look like network errors.
 
+**No `sslmode=` in either string.** `db/client.ts` turns TLS on by itself for
+any host that is not loopback; an `sslmode` in the string overrides that and
+breaks it. `NIGHTLY.md` has the detail.
+
 Do **not** enable the GitHub integration — see §0.
 
-## 2. Create the schema
-
-From the repo, pointing at Supabase for one command only:
+## 2. The schema
 
 ```bash
-DATABASE_URL="<session pooler string>" npm run db:migrate
+npm run db:migrate
 ```
 
-This runs the same hand-written migrations as local, in order. It is also the
-first real test that the migration runner works against Supabase, which is worth
-knowing before there is data to lose.
+Hand-written, idempotent migrations from `drizzle/`, applied in order and
+recorded in `_migrations`. With `.env.local` pointing at production, that is
+where they go. For a database not yet in `.env.local`, prefix the command with
+`DATABASE_URL="<session pooler string>"` and check with `npm run db:info` that
+the override took.
 
-## 3. Move the collected data across
+**The nightly applies migrations too.** `collect.yml` runs `db:migrate` before
+every night, so a merged migration reaches the database that night even if
+nobody runs it by hand. Vercel deploys `main` the moment it is pushed, though,
+and the app does not migrate. Code that needs a new column is live before the
+night that would add it — so run `npm run db:migrate` before pushing that code,
+not after.
 
-Two and a half thousand properties already exist in the local Postgres.
-Re-crawling to fill Supabase would be about 47 minutes and a gigabyte of
-somebody else's pages for data we already hold — do not do it.
+## 3. Moving to a new database
+
+For replacing the database — a new project, a new account, a new region. Not
+for anything routine.
 
 ```bash
-./scripts/dump-data.sh          # writes pma-data.sql
+./scripts/dump-data.sh backup-$(date +%F).sql
+DATABASE_URL="<new session pooler string>" npm run db:migrate
+PGSSLMODE=require psql "<new session pooler string>" -v ON_ERROR_STOP=1 -f backup-YYYY-MM-DD.sql
 ```
 
-The script reads `DATABASE_URL` from `.env.local` — the same string the
-collector uses, not one typed from memory — and dumps **one table at a time, in
-foreign-key order**. That is not fussiness: a data-only dump has no deferred
-constraints, so a row pointing at a table that has not been loaded yet is
-rejected outright, and `pg_dump` gives no promise that it will honour the order
-of `--table` flags. Alphabetically, `buyer_matches` comes before `buyers`, which
-fails. Adding a table to the schema means adding it to the list in the script,
-after everything it references.
+The dump reads `.env.local` (the current database) and holds every table:
+accounts, the client and its subscriptions, API keys, the Stream.Estate V1
+meter and its per-commune state, and the market. It dumps **one table at a
+time, in foreign-key order**: a data-only dump has no deferred constraints, so
+a row pointing at a table that has not been loaded yet is rejected outright,
+and `pg_dump` gives no promise that it will honour the order of `--table`
+flags. `src/lib/db/dumpData.test.ts` checks the list against the schema.
 
-Load it:
-
-```bash
-psql "<session pooler string>" -v ON_ERROR_STOP=1 -f pma-data.sql
-```
+**Do not run `db:seed` on the new database first.** The dump already holds
+every row the seed would write, under the UUIDs everything else points at. A
+seeded row with a fresh UUID stops the load on the first duplicate.
 
 `ON_ERROR_STOP=1` matters. Without it psql reports failures and carries on, and
 you end up with a database silently missing a table — which then reads as a
-quiet market rather than a failed import.
+quiet market rather than a failed import. `PGSSLMODE=require` gives psql
+encryption without chain verification, which is what the Supabase pooler needs.
 
-Check before trusting it:
+Check before trusting it: `DATABASE_URL="<new session pooler string>" npm run
+db:info` must report the same row counts as `npm run db:info` against the old
+one. Anything lower means part of the load failed.
 
-```bash
-psql "<session pooler string>" -c \
-  "select 'properties' t, count(*) from properties
-   union all select 'portal_listings', count(*) from portal_listings
-   union all select 'buyers', count(*) from buyers;"
-```
+Then switch all three places in one sitting: `.env.local` with
+`./scripts/use-database.sh` (it prompts with the input hidden and
+percent-encodes the password), the GitHub secret `DATABASE_URL`, and Vercel's
+`DATABASE_URL` (the new project's transaction pooler). If the region changed,
+`vercel.json` moves with it (§4).
 
-The counts must match what `npm run db:info` reports locally. Anything lower
-means part of the load failed.
+**Do it outside the nightly's hours, and check Actions first.** Anything written
+to the old database between the dump and the switch is not in the new one. A
+night's collection can be run again; an `api_usage` row cannot — a lost V1
+meter row is money the cap no longer counts. The schedule is 21:00 UTC and
+GitHub starts it between 00:30 and 03:30 UTC.
 
 ## 4. Vercel
 
@@ -135,9 +193,11 @@ Production **and** Preview:
 | `ENCRYPTION_KEY` | **copy the existing value from `.env.local` verbatim** |
 | `AUTH_SECRET` | a fresh one: `npx auth secret` |
 
-`ENCRYPTION_KEY` is not a free choice. Rows in `settings` were encrypted with
-the local key and travelled across in the dump; a different key here makes them
-unreadable, and the error says "Unsupported state" while pointing at nothing.
+`ENCRYPTION_KEY` is not a free choice. It is the key the rows in `settings`
+were encrypted with, and the same value sits in `.env.local` and in the GitHub
+secret `ENCRYPTION_KEY`: one database, one key. A different key here makes
+them unreadable on the deployment, and the error says "Unsupported state"
+while pointing at nothing.
 
 `AUTH_SECRET` is the opposite — it may and should differ per environment. It
 only signs session cookies. Changing it signs everyone out of that environment.
@@ -151,61 +211,63 @@ and comes back.
 needs. If the database is ever recreated elsewhere, move this with it:
 `eu-central-1` → `fra1`, `eu-west-3` → `cdg1`, `eu-west-2` → `lhr1`.
 
-Nothing else is needed. S3, Inngest and the crawler variables belong to the
-collector, which does not run here.
+Nothing else is needed. S3, Stream.Estate keys and the crawler variables belong
+to the collector, which does not run here.
 
-## 5. Create the first account
+## 5. Accounts, and the client's key
 
-There is no sign-up page. After the first successful deploy:
+There is no sign-up page. With `.env.local` pointing at the database:
 
 ```bash
-DATABASE_URL="<session pooler string>" npm run user:create -- \
-  --email=mark@med-estates.com --role=admin
+npm run user:create -- --email=mark@med-estates.com --role=admin
 ```
 
 The generated password is printed once. Run the same command again to reset it.
+
+The client's application authenticates to `/api/v1` with a key, not an
+account:
+
+```bash
+npm run key:create -- --client=med-estates --name="production"
+```
+
+Printed once; hand it over by a channel that is not chat. `API.md` has the
+rest — rotation, `key:list`, `key:revoke`.
 
 ## 6. Check before sending the link
 
 - Open the deployment signed out. It must land on `/login` and show nothing else.
 - `curl -s -o /dev/null -w '%{http_code}' <url>/api/properties` → **401**, not 200.
-- Sign in. The overview should show the same property count as local, and the
-  warning banner about test buyers — that banner is doing its job, leave it.
+- `curl -s -o /dev/null -w '%{http_code}' <url>/api/v1/status` without a key → **401**.
+- Sign in. The overview should show last night's collection, and the warning
+  banner about test buyers — that banner is doing its job, leave it.
 - Check one listing page renders its gallery. Broken images mean the portal
   moved the files, not that the deployment is wrong.
 
-## 7. Afterwards: point the collector at Supabase
+## 7. The collector
 
-Until this is done, nightly collection still writes to the laptop and the
-deployed app never changes. Set `DATABASE_URL` in the repository's GitHub
-Actions secrets to the session pooler string, and the workflow in
-`.github/workflows/collect.yml` fills the same database the client is looking at.
+`collect.yml` reads its database from the repository secret `DATABASE_URL`,
+which is the **session** pooler string of this same database — the collector
+holds a connection across a whole pass, which the transaction pooler will not
+give it. The other secrets it needs are listed in the workflow's `env:` blocks.
 
-Read the IP-address warning at the top of that workflow first.
+Read the IP-address warning at the top of that workflow before changing where
+it runs, and `NIGHTLY.md` for what a night leaves behind and how to read it.
 
-## 8. Keeping the demo up to date
-
-The collector writes to the local Postgres; the deployed app reads Supabase.
-They do not talk to each other, so the demo shows whatever was last pushed:
-
-```bash
-./scripts/sync-to-supabase.sh "<session pooler string>"
-```
-
-Empties the market tables on the target and reloads them from local. Run it
-after a night of collecting, after `reparse`, or before showing anything to
-anyone.
-
-It deliberately leaves `users`, `clients` and `settings` on the target alone.
-Accounts exist only where people log in — copying the local `users` table over
-would delete the account you signed in with, and you would discover it at the
-worst moment. `clients` is the UUID that `buyers` and `market_reports` hang
-off, and recreating it on either side breaks both.
+## 8. Backups
 
 **There are no backups on the Supabase Free plan.** Before anything that
-rewrites rows in bulk, take one — it is the same script that built the first
-load:
+rewrites rows in bulk — `reparse`, a migration, a first run against a new
+source — take one:
 
 ```bash
 ./scripts/dump-data.sh backup-$(date +%F).sql
 ```
+
+It reads `.env.local`, so it dumps production, and only reads. The file is a
+copy of other people's listings plus the client's accounts and key hashes:
+`.gitignore` keeps `backup-*.sql` out of the repository, and it should not
+travel further than the machine that made it.
+
+Restoring is §3 with the dump you already have: into a migrated, unseeded
+database, with `ON_ERROR_STOP=1`.
