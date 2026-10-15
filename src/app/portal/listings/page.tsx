@@ -32,6 +32,14 @@ type Search = {
 /** Four across on a wide screen, so a page always ends on a full row. */
 const PAGE_SIZE = 48;
 
+/**
+ * This screen's own path. The filter chips, the search form and the page
+ * links pointed at `/listings`, which has not existed since the screens moved
+ * under /portal — every filter and every "Next →" was a 404 (found 2026-10-15
+ * while fixing the page order).
+ */
+const HERE = "/portal/listings";
+
 export default async function ListingsPage({
   searchParams,
 }: {
@@ -77,7 +85,7 @@ export default async function ListingsPage({
       if (v !== undefined && v !== "") next.set(k, String(v));
     }
     const qs = next.toString();
-    return qs ? `/listings?${qs}` : "/listings";
+    return qs ? `${HERE}?${qs}` : HERE;
   };
 
   /**
@@ -105,7 +113,7 @@ export default async function ListingsPage({
     }
     if (n > 1) next.set("page", String(n));
     const qs = next.toString();
-    return qs ? `/listings?${qs}` : "/listings";
+    return qs ? `${HERE}?${qs}` : HERE;
   };
 
   return (
@@ -142,7 +150,7 @@ export default async function ListingsPage({
         of step with the URL — the address bar IS the state, so a filtered
         search can be pasted into a message and opens the same screen.
       */}
-      <form method="GET" action="/listings" className="mb-4 flex flex-wrap items-center gap-2">
+      <form method="GET" action={HERE} className="mb-4 flex flex-wrap items-center gap-2">
         {(["commune", "source", "new"] as const).map((k) =>
           sp[k] ? <input key={k} type="hidden" name={k} value={sp[k]} /> : null,
         )}

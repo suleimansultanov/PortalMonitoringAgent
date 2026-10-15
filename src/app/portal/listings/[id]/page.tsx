@@ -34,8 +34,11 @@ export const dynamic = "force-dynamic";
  */
 const CARRIED_FILTERS = ["commune", "source", "new", "q", "page"] as const;
 
+/** Was `/listings`, which has not existed since the screens moved under /portal. */
+const LISTINGS = "/portal/listings";
+
 function backHref(from: string | undefined): string {
-  if (!from) return "/listings";
+  if (!from) return LISTINGS;
 
   const incoming = new URLSearchParams(from);
   const safe = new URLSearchParams();
@@ -45,7 +48,7 @@ function backHref(from: string | undefined): string {
   }
 
   const qs = safe.toString();
-  return qs ? `/listings?${qs}` : "/listings";
+  return qs ? `${LISTINGS}?${qs}` : LISTINGS;
 }
 
 export default async function PropertyPage({
@@ -103,8 +106,13 @@ export default async function PropertyPage({
     })
     .filter((c) => c.rows.length > 0 || c.flags.length > 0);
 
-  // Do the portals agree on the price? A disagreement is a finding, not noise.
-  const prices = listings.map((l) => l.priceEur).filter((x): x is number => x !== null);
+  // Do the portals agree on the price? A disagreement is a finding, not noise —
+  // between listings live now. A delisted one's last price is history, and
+  // setting it against today's invented a disagreement nobody could act on.
+  const prices = listings
+    .filter((l) => l.status === "active")
+    .map((l) => l.priceEur)
+    .filter((x): x is number => x !== null);
   const spread =
     prices.length > 1 ? Math.max(...prices) - Math.min(...prices) : 0;
 
@@ -130,7 +138,7 @@ export default async function PropertyPage({
         href={back}
         className="mb-5 inline-block text-[11px] uppercase tracking-[0.14em] text-[var(--color-muted)] transition-colors hover:text-[var(--color-ink)]"
       >
-        ← {back === "/listings" ? "Listings" : "Back to results"}
+        ← {back === LISTINGS ? "Listings" : "Back to results"}
       </Link>
 
       {/*

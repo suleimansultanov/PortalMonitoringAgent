@@ -17,6 +17,7 @@ import { AGGREGATORS, carriedPortals, portalLinks, portalOf } from "@/lib/portal
 import { hasFeature } from "@/lib/matching/buyers";
 import { getReport, type ReportRow } from "@/lib/reports/queries";
 import { communesWithin, type MarketScope } from "@/lib/auth/scope";
+import { servedProperty } from "./served";
 
 /**
  * Every read the product screens make, in one place.
@@ -99,6 +100,48 @@ export function ownMatches(scope: MarketScope): SQL {
   return eq(buyers.clientId, scope.clientId);
 }
 
+/**
+ * ON THE MARKET, AS THE CLIENT'S APP SEES IT.
+ *
+ * Active, in the client's communes, and SERVED: carried by at least one
+ * active listing from a source that is still collected and that the client
+ * subscribes to — `servedProperty`, the predicate /api/v1 uses
+ * (lib/api/served.ts). Until 2026-10-15 the screens counted every active row:
+ * 7 392 "active properties" on the Overview against 6 278 served to the
+ * client's app, cards priced from Figaro as read in September by a collector
+ * switched off on the 16th, and a portal filter offering sources nobody runs.
+ * Two screens showing two markets, with nothing to say which is right.
+ *
+ * Every list and count of properties on the screens goes through this.
+ */
+export function liveProperty(scope: MarketScope): SQL {
+  return and(
+    eq(properties.status, "active"),
+    inCommunes(scope.communeInsee),
+    servedProperty(scope.sourceIds),
+  )!;
+}
+
+/**
+ * The same rule for one listing, inside a hand-written subquery over
+ * `portal_listings pl join portal_sources ps`: active, from a source still
+ * collected, that the client subscribes to.
+ */
+function servedListing(scope: MarketScope): SQL {
+  return sql`pl.status = 'active' and ps.enabled and ${uuidIn(sql`pl.source_id`, scope.sourceIds)}`;
+}
+
+/** "Prix sur demande", said by a listing the client is served. A null price alone is not evidence. */
+function priceOnRequest(scope: MarketScope): SQL<boolean> {
+  return sql<boolean>`exists (
+    select 1 from ${portalListings} pl
+    join ${portalSources} ps on ps.id = pl.source_id
+    where pl.property_id = ${properties.id}
+      and ${servedListing(scope)}
+      and (pl.raw->>'priceOnRequest') = 'true'
+  )`;
+}
+
 export type ListingRow = {
   id: string;
   title: string | null;
@@ -153,6 +196,9 @@ export type ListingFilters = {
   offset?: number;
 };
 
+/** Newest first, and total: see the note where `listProperties` uses it. */
+export const LISTING_ORDER = [desc(properties.firstListedAt), desc(properties.id)] as const;
+
 /**
  * Properties, with the portals carrying each one.
  *
@@ -175,9 +221,9 @@ export async function listProperties(
   const offset = f.offset ?? 0;
 
   const conditions = [
-    eq(properties.status, "active"),
-    // A commune outside the scope narrows to nothing rather than widening.
-    inCommunes(communesWithin(scope.communeInsee, f.communeInsee)),
+    // What /api/v1 serves this client. A commune outside the scope narrows to
+    // nothing rather than widening.
+    liveProperty({ ...scope, communeInsee: communesWithin(scope.communeInsee, f.communeInsee) }),
   ];
   if (f.newWithinDays !== undefined) {
     conditions.push(
@@ -194,7 +240,7 @@ export async function listProperties(
         select 1 from ${portalListings} pl
         join ${portalSources} ps on ps.id = pl.source_id
         where pl.property_id = ${properties.id} and ps.key = ${f.source}
-          and ${uuidIn(sql`pl.source_id`, scope.sourceIds)}
+          and ${servedListing(scope)}
       )`,
     );
   }
@@ -247,9 +293,12 @@ export async function listProperties(
   const [{ listings }] = await db
     .select({ listings: sql<number>`count(*)::int` })
     .from(portalListings)
+    .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
     .where(
       and(
         eq(portalListings.status, "active"),
+        // Only the entries the client is served: not a switched-off collector's.
+        eq(portalSources.enabled, true),
         fromSources(scope.sourceIds),
         inArray(portalListings.propertyId, matching),
       ),
@@ -269,12 +318,7 @@ export async function listProperties(
        * 2026-10-07, of which 58 were on request and the rest were prices
        * the parser had not read (Green-Acres in dollars, mostly).
        */
-      priceOnRequest: sql<boolean>`exists (
-        select 1 from ${portalListings} pl
-        where pl.property_id = ${properties.id}
-          and pl.status = 'active'
-          and (pl.raw->>'priceOnRequest') = 'true'
-      )`,
+      priceOnRequest: priceOnRequest(scope),
       areaM2: properties.areaM2,
       landM2: properties.landM2,
       rooms: properties.rooms,
@@ -292,7 +336,15 @@ export async function listProperties(
     .from(properties)
     .leftJoin(portalAgencies, eq(portalAgencies.id, properties.agencyId))
     .where(where)
-    .orderBy(desc(properties.firstListedAt))
+    /**
+     * `id` breaks the ties. `first_listed_at` is not unique — a backfill
+     * stamps hundreds of properties in the same pass — and OFFSET over an
+     * order with ties lets Postgres put the tied rows in a different order on
+     * every query, so page two repeated some of page one and skipped others.
+     * With the id the order is total and each page is the next one. Served by
+     * `properties_active_listed_idx` (drizzle/0010).
+     */
+    .orderBy(...LISTING_ORDER)
     .limit(limit)
     .offset(offset);
 
@@ -341,6 +393,8 @@ async function portalsFor(
       and(
         inArray(portalListings.propertyId, propertyIds),
         eq(portalListings.status, "active"),
+        // No chip for a collector switched off: its link is a month-old reading.
+        eq(portalSources.enabled, true),
         fromSources(scope.sourceIds),
       ),
     );
@@ -464,6 +518,11 @@ export type MatchRow = {
  *
  * Dismissed ones are excluded by default: an agent said no, and putting it back
  * in front of them teaches them the screen does not listen.
+ *
+ * Only matches on properties still on the market as the client's app sees it
+ * (`liveProperty`). The card shows no "delisted" mark, so a match on a
+ * property that has gone, or that only a switched-off collector still
+ * carries, read as a live proposal at a stale price.
  */
 export async function listMatches(
   scope: MarketScope,
@@ -477,7 +536,7 @@ export async function listMatches(
   const limit = Math.min(opts.limit ?? 100, 300);
 
   // This client's buyers. A `buyerId` of another client's buyer finds nothing.
-  const conditions: SQL[] = [ownMatches(scope)];
+  const conditions: SQL[] = [ownMatches(scope), liveProperty(scope)];
   if (!opts.includeTestData) conditions.push(eq(buyers.isTestData, false));
   if (!opts.includeDismissed) conditions.push(sql`${buyerMatches.status} <> 'dismissed'`);
   if (opts.buyerId) conditions.push(eq(buyerMatches.buyerId, opts.buyerId));
@@ -498,12 +557,7 @@ export async function listMatches(
       imageUrl: properties.imageUrl,
       imageUrls: properties.imageUrls,
       priceEur: properties.priceEur,
-      priceOnRequest: sql<boolean>`exists (
-        select 1 from ${portalListings} pl
-        where pl.property_id = ${properties.id}
-          and pl.status = 'active'
-          and (pl.raw->>'priceOnRequest') = 'true'
-      )`,
+      priceOnRequest: priceOnRequest(scope),
       areaM2: properties.areaM2,
       landM2: properties.landM2,
       rooms: properties.rooms,
@@ -658,6 +712,13 @@ export type PropertyDetail = {
  * OTHER portals say about the same villa, and what has happened to it over
  * time. A portal shows a price; we can show that two portals disagree about it,
  * which is either a stale listing or an agency quietly testing a number.
+ *
+ * What it says comes from sources still collected, as in /api/v1. A
+ * switched-off collector's listing is a reading nobody has checked since —
+ * Figaro's, by 2026-10-15, a month old — and putting its price beside last
+ * night's makes up a disagreement. Delisted listings of running sources stay:
+ * they are the history. A property that only switched-off or unsubscribed
+ * sources ever carried is not found.
  */
 export async function propertyDetail(
   scope: MarketScope,
@@ -719,10 +780,16 @@ export async function propertyDetail(
     })
     .from(portalListings)
     .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-    .where(and(eq(portalListings.propertyId, id), fromSources(scope.sourceIds)))
+    .where(
+      and(
+        eq(portalListings.propertyId, id),
+        eq(portalSources.enabled, true),
+        fromSources(scope.sourceIds),
+      ),
+    )
     .orderBy(portalSources.key);
 
-  // Nothing of it reaches this client through a source it subscribes to.
+  // Nothing of it reaches this client through a source it subscribes to and we still run.
   if (listingRows.length === 0) return null;
 
   const eventRows = await db
@@ -737,9 +804,20 @@ export async function propertyDetail(
     })
     .from(portalListingEvents)
     .innerJoin(portalSources, eq(portalSources.id, portalListingEvents.sourceId))
+    /**
+     * Through the listing, as /api/v1/events does — not the event's own
+     * `property_id`. That copy is written when the event is, usually before
+     * resolve has given the listing its property, and nothing fills it in
+     * afterwards: on 2026-10-15 it was null on 28 512 of 40 484 events and
+     * pointed at a since-merged property on 2 346 more, so this History said
+     * "Nothing recorded yet" about most of the market.
+     */
+    .innerJoin(portalListings, eq(portalListings.id, portalListingEvents.listingId))
     .where(
       and(
-        eq(portalListingEvents.propertyId, id),
+        eq(portalListings.propertyId, id),
+        // The event's own source still collected, as /api/v1/events has it.
+        eq(portalSources.enabled, true),
         scope.sourceIds.length > 0
           ? inArray(portalListingEvents.sourceId, scope.sourceIds)
           : sql`false`,
@@ -753,13 +831,7 @@ export async function propertyDetail(
     const [c] = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(properties)
-      .where(
-        and(
-          eq(properties.agencyId, row.agencyId),
-          eq(properties.status, "active"),
-          inCommunes(scope.communeInsee),
-        ),
-      );
+      .where(and(eq(properties.agencyId, row.agencyId), liveProperty(scope)));
     agencyActive = Number(c?.n ?? 0);
   }
 
@@ -889,10 +961,12 @@ export async function communeStats(scope: MarketScope): Promise<CommuneStat[]> {
       (
         select count(*)::int from ${portalListingEvents} e
         join ${portalListings} l on l.id = e.listing_id
+        join ${portalSources} s on s.id = e.source_id
         where l.property_id in (
           select p2.id from ${properties} p2 where p2.commune_insee = ${properties.communeInsee}
         )
-        and ${uuidIn(sql`e.source_id`, scope.sourceIds)}
+        -- A cut seen by a source still collected, as /api/v1/events serves them.
+        and s.enabled and ${uuidIn(sql`e.source_id`, scope.sourceIds)}
         and e.type = 'price_changed'
         and (e.payload->>'direction') = 'down'
         and e.occurred_at > now() - interval '30 days'
@@ -900,6 +974,20 @@ export async function communeStats(scope: MarketScope): Promise<CommuneStat[]> {
       count(*) filter (where ${properties.firstListedAt} > now() - interval '30 days')::int as new_30d
     from ${properties}
     where ${inCommunes(scope.communeInsee)}
+      /**
+       * The live market as the client's app sees it, plus what has gone. A
+       * delisted property stays in, because days-on-market is measured on what
+       * left; an active one counts only if it is served — not the 1 114 on
+       * 2026-10-15 that only a switched-off collector still carried, at its
+       * last price.
+       */
+      and (
+        ${servedProperty(scope.sourceIds)}
+        or (${properties.status} <> 'active' and exists (
+          select 1 from ${portalListings} pl
+          where pl.property_id = ${properties.id} and ${uuidIn(sql`pl.source_id`, scope.sourceIds)}
+        ))
+      )
     group by ${properties.communeInsee}
     order by active desc
   `);
@@ -935,6 +1023,10 @@ export async function communeStats(scope: MarketScope): Promise<CommuneStat[]> {
  * source with nothing behind it makes a filter chip that leads to an empty
  * screen — and an empty screen in this product reads as "no market here",
  * which is the one impression it must never give by accident.
+ *
+ * Only sources still collected. A switched-off one keeps its active rows, so
+ * until 2026-10-15 the bar offered Figaro, SMC, Superimmo and JamesEdition as
+ * filters — each leading to listings nobody had checked in weeks.
  */
 export async function listSourceOptions(scope: MarketScope): Promise<
   { key: string; name: string; properties: number }[]
@@ -950,7 +1042,10 @@ export async function listSourceOptions(scope: MarketScope): Promise<
     .innerJoin(properties, eq(properties.id, portalListings.propertyId))
     .where(
       and(
+        // The join is the served rule itself: an active listing, of a running,
+        // subscribed source, on an active property in the client's communes.
         eq(portalListings.status, "active"),
+        eq(portalSources.enabled, true),
         fromSources(scope.sourceIds),
         eq(properties.status, "active"),
         inCommunes(scope.communeInsee),
@@ -982,7 +1077,7 @@ export async function agencyStats(scope: MarketScope, limit = 25): Promise<Agenc
     })
     .from(properties)
     .innerJoin(portalAgencies, eq(portalAgencies.id, properties.agencyId))
-    .where(and(eq(properties.status, "active"), inCommunes(scope.communeInsee)))
+    .where(liveProperty(scope))
     .groupBy(portalAgencies.id, portalAgencies.name)
     .orderBy(desc(sql`count(*)`))
     .limit(limit);
@@ -1007,10 +1102,11 @@ export async function overview(scope: MarketScope): Promise<{
   /** The sources this client subscribes to, switched on or not. */
   sources: { key: string; name: string; enabled: boolean; lastRunAt: Date | null }[];
 }> {
+  // The figure /api/v1/status gives the client's app — see `liveProperty`.
   const [{ active }] = await db
-    .select({ active: sql<number>`count(*) filter (where status = 'active')::int` })
+    .select({ active: sql<number>`count(*)::int` })
     .from(properties)
-    .where(inCommunes(scope.communeInsee));
+    .where(liveProperty(scope));
 
   /**
    * "New this week" needs a week of history behind it.
@@ -1024,11 +1120,16 @@ export async function overview(scope: MarketScope): Promise<{
    * So it is only a figure once the earliest sighting is older than the window.
    * Until then the screen shows that it is still filling, which is the true
    * answer.
+   *
+   * The count is of what is live now; the earliest sighting is of everything,
+   * because it measures how long we have been watching, not the market.
    */
   const [{ fresh, earliest }] = await db
     .select({
-      fresh: sql<number>`count(*) filter (where first_listed_at > now() - interval '7 days')::int`,
-      earliest: sql<Date | null>`min(first_listed_at)`,
+      fresh: sql<number>`count(*) filter (
+        where ${liveProperty(scope)} and ${properties.firstListedAt} > now() - interval '7 days'
+      )::int`,
+      earliest: sql<Date | null>`min(${properties.firstListedAt})`,
     })
     .from(properties)
     .where(inCommunes(scope.communeInsee));
@@ -1061,9 +1162,12 @@ export async function overview(scope: MarketScope): Promise<{
     .select({ open: sql<number>`count(*)::int` })
     .from(buyerMatches)
     .innerJoin(buyers, eq(buyers.id, buyerMatches.buyerId))
+    .innerJoin(properties, eq(properties.id, buyerMatches.propertyId))
     .where(
       and(
         ownMatches(scope),
+        // The same matches the Matches screen lists: on a property still live.
+        liveProperty(scope),
         inArray(buyerMatches.status, ["new", "seen"]),
         eq(buyers.isTestData, false),
       ),

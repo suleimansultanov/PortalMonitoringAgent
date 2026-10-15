@@ -12,6 +12,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Portal Monitoring Agent — schema.
@@ -270,6 +271,10 @@ export const properties = pgTable(
   (t) => ({
     communeIdx: index("properties_commune_idx").on(t.communeInsee),
     refIdx: index("properties_agency_ref_idx").on(t.agencyId, t.agencyRef),
+    /** The Listings screen's total order, for OFFSET paging. See drizzle/0010. */
+    activeListedIdx: index("properties_active_listed_idx")
+      .on(t.firstListedAt.desc(), t.id.desc())
+      .where(sql`${t.status} = 'active'`),
   }),
 );
 

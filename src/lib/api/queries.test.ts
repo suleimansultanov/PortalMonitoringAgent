@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
-import { fromSources, inCommunes, ownMatches } from "./queries";
+import { fromSources, inCommunes, LISTING_ORDER, liveProperty, ownMatches } from "./queries";
 
 /** The SQL a predicate becomes, without a database. */
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
@@ -27,6 +27,24 @@ test("no communes is no market — never a missing filter", () => {
 test("no subscribed source is no listing — never every source", () => {
   assert.equal(render(fromSources([])).sql, "false");
   assert.equal(render(fromSources(["s1"])).sql, `"portal_listings"."source_id" in ($1)`);
+});
+
+test("the screens' market is what /api/v1 serves: active, in scope, carried by a running subscribed source", () => {
+  const q = render(liveProperty(scope));
+  assert.match(q.sql, /^\("properties"\."status" = \$1 and "properties"\."commune_insee" in \(\$2\) and exists \(/);
+  // servedProperty itself, not a copy of it: the enabled source and the subscription.
+  assert.match(q.sql, /l\.status = 'active' and s\.enabled and l\.source_id in \(\$3::uuid\)/);
+  assert.deepEqual(q.params, ["active", "83119", "s1"]);
+});
+
+test("a client subscribed to no source is served no property — 'and false', not every source", () => {
+  const q = render(liveProperty({ ...scope, sourceIds: [] }));
+  assert.match(q.sql, /s\.enabled and false\n\)/);
+});
+
+test("the listing order is total: first sighting, then id — a tie no longer reshuffles between pages", () => {
+  const rendered = LISTING_ORDER.map((o) => render(o).sql);
+  assert.deepEqual(rendered, [`"properties"."first_listed_at" desc`, `"properties"."id" desc`]);
 });
 
 test("every read in queries.ts takes the scope first, so forgetting it is a type error", () => {

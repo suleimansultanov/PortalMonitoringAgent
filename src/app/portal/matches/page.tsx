@@ -56,7 +56,7 @@ export default async function MatchesPage({
       <div className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Matches</h1>
         <Link
-          href={includeTestData ? "/matches" : "/matches?test=1"}
+          href={includeTestData ? "/portal/matches" : "/portal/matches?test=1"}
           className="text-sm text-[var(--color-muted)] underline underline-offset-4 hover:text-[var(--color-ink)]"
         >
           {includeTestData ? "Hide test buyers" : "Show test buyers"}
