@@ -1,7 +1,7 @@
 "use server";
 
-import { AuthError } from "next-auth";
-import { signIn, signOut } from "./index";
+import { AuthError, CredentialsSignin } from "next-auth";
+import { RATE_LIMITED, signIn, signOut } from "./index";
 
 /**
  * Sign in from the login form.
@@ -28,6 +28,10 @@ export async function authenticate(
     });
   } catch (err) {
     if (err instanceof AuthError) {
+      // A server action answers 200 whatever happens, so the 429 is a sentence.
+      if (err instanceof CredentialsSignin && err.code === RATE_LIMITED) {
+        return "Too many failed attempts. Try again in a few minutes (at most fifteen).";
+      }
       return err.type === "CredentialsSignin"
         ? "Wrong email or password."
         : "Could not sign in. Check the server logs.";

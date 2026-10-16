@@ -1,10 +1,25 @@
-import NextAuth from "next-auth";
+import NextAuth, { CredentialsSignin } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema, withDbRetry } from "@/lib/db/client";
+import { clientIp, loginRefusal, recordFailedLogin } from "@/lib/api/rateLimit";
 import { authConfig } from "./config";
+
+/** The `code` a refused-for-too-many-attempts sign-in carries. */
+export const RATE_LIMITED = "rate_limited";
+
+/**
+ * Too many failed attempts for this email from this address, or from this
+ * address at all (limits in lib/api/rateLimit.ts). A CredentialsSignin, so
+ * next-auth passes it through untouched; the login form reads its `code`, and
+ * a direct POST to the callback is answered 429 before it gets here
+ * (app/api/auth/[...nextauth]/route.ts).
+ */
+class TooManyAttempts extends CredentialsSignin {
+  code = RATE_LIMITED;
+}
 
 /**
  * The Node half of auth: the one piece that reads the database.
@@ -38,13 +53,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
       },
 
-      async authorize(raw) {
+      async authorize(raw, request) {
         const parsed = credentialsSchema.safeParse(raw);
         // Zod at the boundary, as everywhere else in this project. A malformed
         // POST is a failed login, not a 500.
         if (!parsed.success) return null;
 
         const email = parsed.data.email.trim().toLowerCase();
+
+        /**
+         * Before bcrypt, and whether or not the account exists: refusing only
+         * real accounts would answer "does this person have an account" to
+         * anyone who counts the 429s. Until 2026-10-15 nothing limited this,
+         * so a password could be guessed as fast as bcrypt allowed.
+         */
+        const ip = clientIp(request.headers);
+        if ((await loginRefusal(email, ip)) !== null) throw new TooManyAttempts();
 
         const [user] = await withDbRetry(() =>
           db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1),
@@ -55,7 +79,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // One indistinguishable failure for every reason. The person signing in
         // learns nothing from which of these was true, and neither does anyone
         // guessing.
-        if (!user || !user.passwordHash || !user.active || !ok) return null;
+        if (!user || !user.passwordHash || !user.active || !ok) {
+          await recordFailedLogin(email, ip);
+          return null;
+        }
 
         // Best effort. A failure to record the timestamp must not fail a
         // legitimate login — it is a nicety, not part of the decision.
@@ -78,9 +105,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
 });
 
-/** True when there is a signed-in user. For server components and route handlers. */
-export async function requireSession() {
-  const session = await auth();
-  if (!session?.user) throw new Error("Not authenticated");
-  return session;
-}
+// Screens and routes do not read the session directly: `requireClient()` and
+// `clientForRequest()` in ./tenant.ts give them the client they may read.
+// (`requireSession()`, which only proved somebody was signed in, was removed
+// on 2026-10-15 — it was never called, and "signed in" was never the question.)

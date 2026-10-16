@@ -49,18 +49,57 @@ declare module "next-auth/jwt" {
  */
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
 
-/** Paths that must stay reachable without a session. */
-export const PUBLIC_PREFIXES = [
+/**
+ * THE PATHS THAT ANSWER WITHOUT A SESSION. The one list.
+ *
+ * Until 2026-10-15 there were two: a `PUBLIC_PREFIXES` array here that nothing
+ * imported, and the middleware matcher, which disagreed with it and carried a
+ * global tail — `.*\.(svg|png|…)$` — that skipped the login for ANY path ending
+ * in an image extension. `/portal/x.png` reached the page with no session; it
+ * answered 500 only because `x.png` is not a uuid. The first screen whose
+ * parameter is not a uuid would have been open to anyone who added `.png`.
+ *
+ * Now the matcher only keeps the build's own assets away from the edge (for
+ * cost, and a test holds it to this list), and `authorized` below asks
+ * `isPublicPath` for everything else. Exact paths and roots, never patterns:
+ * a pattern is how the tail happened.
+ */
+export const PUBLIC_PATHS: readonly string[] = [
   "/login",
+  /**
+   * The API documentation, deliberately (2026-09-04). It describes an API that
+   * answers 401 without a key and holds no market data of its own, and its
+   * readers are developers building a client instance — who by definition
+   * have no account here. Exactly these two paths, not a `/docs` root.
+   */
+  "/docs",
+  "/docs/openapi",
+  // Next's own image optimiser. The URL is this path with a query string.
+  "/_next/image",
+  "/favicon.ico",
+  // Files in `public/` are served at the root. There are none today; one that
+  // must load without a session is listed here by its full name.
+];
+
+/** The path itself and everything beneath it. */
+export const PUBLIC_ROOTS: readonly string[] = [
+  // next-auth's own endpoints: sign-in, callback, CSRF, session.
   "/api/auth",
   /**
-   * Inngest authenticates every request with its own signing key and has no
-   * cookie to present. Putting a login in front of it does not make it safer —
-   * it makes the job runner silently stop working, which is the kind of failure
-   * that is noticed a week later in missing data.
+   * The client-instance API authenticates with a key, in the Node runtime
+   * (lib/api/guard.ts): the key lookup needs the database, which this edge
+   * runtime cannot reach. A session check here would only ever say no.
    */
-  "/api/inngest",
+  "/api/v1",
+  // The build's hashed JS and CSS. Nothing of ours lives under /_next.
+  "/_next/static",
 ];
+
+export function isPublicPath(pathname: string): boolean {
+  if (PUBLIC_PATHS.includes(pathname)) return true;
+  // `root + "/"`, so `/api/v1` does not also open `/api/v1beta`.
+  return PUBLIC_ROOTS.some((root) => pathname === root || pathname.startsWith(`${root}/`));
+}
 
 export const authConfig = {
   /**
@@ -90,6 +129,7 @@ export const authConfig = {
 
   callbacks: {
     authorized({ auth, request }) {
+      if (isPublicPath(request.nextUrl.pathname)) return true;
       if (auth?.user) return true;
 
       /**

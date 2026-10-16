@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
-import { authorise } from "@/lib/api/guard";
+import { NextResponse } from "next/server";
+import { keyedRoute } from "@/lib/api/guard";
 import { reportList } from "@/lib/api/v1";
 import { dbErrorMessage } from "@/lib/db/errors";
 
@@ -14,12 +14,10 @@ import { dbErrorMessage } from "@/lib/db/errors";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
-  const auth = await authorise(req);
-  if ("response" in auth) return auth.response;
-
+// Key, rate limit and journal: keyedRoute (lib/api/guard.ts).
+export const GET = keyedRoute(async (_req, scope) => {
   try {
-    const reports = await reportList(auth.scope);
+    const reports = await reportList(scope);
     return NextResponse.json({
       reports,
       caveat:
@@ -31,4 +29,4 @@ export async function GET(req: NextRequest) {
     console.error("[api/v1/reports]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
-}
+});

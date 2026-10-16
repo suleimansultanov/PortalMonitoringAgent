@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { dbErrorMessage } from "@/lib/db/errors";
 import { agencyStats, communeStats, overview } from "@/lib/api/queries";
+import { clientForRequest } from "@/lib/auth/tenant";
 
 /**
  * GET /api/reports
@@ -15,11 +16,15 @@ import { agencyStats, communeStats, overview } from "@/lib/api/queries";
  */
 
 export async function GET() {
+  const client = await clientForRequest();
+  if ("response" in client) return client.response;
+  const { scope } = client;
+
   try {
     const [communes, agencies, head] = await Promise.all([
-      communeStats(),
-      agencyStats(),
-      overview(),
+      communeStats(scope),
+      agencyStats(scope),
+      overview(scope),
     ]);
 
     /**
@@ -37,10 +42,12 @@ export async function GET() {
         "we started watching will look newer than it is.",
     ];
 
+    // Out of the client's own communes, not a hardcoded twelve.
+    const watched = scope.communeInsee.length;
     const covered = communes.filter((c) => c.active > 0).length;
-    if (covered < 12) {
+    if (covered < watched) {
       warnings.push(
-        `Only ${covered} of 12 communes have any stock collected so far. ` +
+        `Only ${covered} of ${watched} communes have any stock collected so far. ` +
           `Comparisons between communes are not meaningful yet.`,
       );
     }

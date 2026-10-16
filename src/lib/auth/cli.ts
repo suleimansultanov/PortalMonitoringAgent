@@ -1,13 +1,18 @@
 import crypto from "node:crypto";
-import { deactivateUser, listUsers, upsertUser, type Role } from "./users";
+import { deactivateUser, linkClient, listUsers, upsertUser, type Role } from "./users";
 
 /**
  * Account management from the terminal.
  *
- *   npm run user:create -- --email=mark@med-estates.com --role=admin
+ *   npm run user:create -- --email=mark@med-estates.com --role=admin --client=med-estates
  *   npm run user:create -- --email=… --password='…'
  *   npm run user:create -- --list
  *   npm run user:create -- --email=… --deactivate
+ *   npm run user:create -- --email=… --client=med-estates --link
+ *
+ * Every account needs a client: the screens show one client's market and an
+ * account without one is refused (lib/auth/scope.ts). `--link` attaches an
+ * existing account to a client and leaves its password alone.
  *
  * With no `--password` a strong one is generated and printed once. That is
  * better than a prompt here: the realistic caller is whoever is deploying, and
@@ -22,6 +27,7 @@ type Args = {
   client?: string;
   list: boolean;
   deactivate: boolean;
+  link: boolean;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -41,6 +47,7 @@ function parseArgs(argv: string[]): Args {
     client: get("client"),
     list: argv.includes("--list"),
     deactivate: argv.includes("--deactivate"),
+    link: argv.includes("--link"),
   };
 }
 
@@ -61,7 +68,8 @@ async function main(args: Args): Promise<void> {
     for (const u of users) {
       const last = u.lastLoginAt ? u.lastLoginAt.toISOString().slice(0, 16).replace("T", " ") : "never";
       console.log(
-        `${u.active ? " " : "✗"} ${u.email.padEnd(34)} ${u.role.padEnd(7)} last login: ${last}`,
+        `${u.active ? " " : "✗"} ${u.email.padEnd(34)} ${u.role.padEnd(7)} ` +
+          `${(u.client ?? "NO CLIENT, sees nothing").padEnd(22)} last login: ${last}`,
       );
     }
     return;
@@ -72,7 +80,8 @@ async function main(args: Args): Promise<void> {
       "Usage:\n" +
         "  npm run user:create -- --email=you@example.com [--password=…] [--name=…] [--role=admin|member] [--client=slug]\n" +
         "  npm run user:create -- --list\n" +
-        "  npm run user:create -- --email=you@example.com --deactivate\n",
+        "  npm run user:create -- --email=you@example.com --deactivate\n" +
+        "  npm run user:create -- --email=you@example.com --client=slug --link\n",
     );
     process.exitCode = 1;
     return;
@@ -83,10 +92,26 @@ async function main(args: Args): Promise<void> {
     console.log(done ? `Deactivated ${args.email}.` : `No user ${args.email}.`);
     if (done) {
       console.log(
-        "\nNote: sessions already issued stay valid until they expire (12 h).\n" +
-          "Rotate AUTH_SECRET to end every session everywhere immediately.",
+        "\nThe screens refuse it from its next page load: the account is read per\n" +
+          "request. Its session cookie stays valid until it expires (12 h); rotate\n" +
+          "AUTH_SECRET to end every session everywhere immediately.",
       );
     }
+    return;
+  }
+
+  if (args.link) {
+    if (!args.client) {
+      console.error("--link needs --client=<slug>.");
+      process.exitCode = 1;
+      return;
+    }
+    const done = await linkClient(args.email, args.client);
+    console.log(
+      done
+        ? `Linked ${args.email} to ${args.client}. Password unchanged; takes effect on the next page load.`
+        : `No user ${args.email}.`,
+    );
     return;
   }
 

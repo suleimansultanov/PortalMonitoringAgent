@@ -108,7 +108,29 @@ export async function upsertUser(opts: {
   return { id: created.id, email: created.email, role: created.role, created: true };
 }
 
-/** Leaves the row and its history in place; only stops the next sign-in. */
+/**
+ * Link an account to a client without touching its password.
+ *
+ * Every screen is scoped to the session's client and an account without one
+ * is refused (lib/auth/scope.ts). On 2026-10-15 the only production account
+ * was an admin with no client, so the first deploy of that rule needed a way
+ * to link it that did not also reset the password — `upsertUser` always does.
+ * Takes effect on the next page load: the client is read per request, not
+ * from the session cookie.
+ */
+export async function linkClient(email: string, clientSlug: string): Promise<boolean> {
+  const clientId = await resolveClientId(clientSlug);
+  const result = await withDbRetry(() =>
+    db
+      .update(schema.users)
+      .set({ clientId, updatedAt: new Date() })
+      .where(eq(schema.users.email, normaliseEmail(email)))
+      .returning({ id: schema.users.id }),
+  );
+  return result.length > 0;
+}
+
+/** Leaves the row and its history in place; stops the next sign-in and the next page load. */
 export async function deactivateUser(email: string): Promise<boolean> {
   const result = await withDbRetry(() =>
     db
@@ -129,7 +151,10 @@ export async function listUsers() {
         role: schema.users.role,
         active: schema.users.active,
         lastLoginAt: schema.users.lastLoginAt,
+        // Shown because an account without a client sees nothing (scope.ts).
+        client: schema.clients.slug,
       })
-      .from(schema.users),
+      .from(schema.users)
+      .leftJoin(schema.clients, eq(schema.clients.id, schema.users.clientId)),
   );
 }

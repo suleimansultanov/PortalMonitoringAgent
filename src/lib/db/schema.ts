@@ -1,4 +1,5 @@
 import {
+  check,
   pgTable,
   primaryKey,
   uuid,
@@ -12,6 +13,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Portal Monitoring Agent — schema.
@@ -75,7 +77,11 @@ export const users = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({ emailUnique: uniqueIndex("users_email_unique").on(t.email) }),
+  (t) => ({
+    emailUnique: uniqueIndex("users_email_unique").on(t.email),
+    // Every status-like column has a CHECK since drizzle/0011; checks.test.ts ties each to its code.
+    roleCheck: check("users_role_check", sql`${t.role} IN ('admin', 'member')`),
+  }),
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +120,13 @@ export const portalSources = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({ keyUnique: uniqueIndex("portal_sources_key_unique").on(t.key) }),
+  (t) => ({
+    keyUnique: uniqueIndex("portal_sources_key_unique").on(t.key),
+    discoveryModeCheck: check(
+      "portal_sources_discovery_mode_check",
+      sql`${t.discoveryMode} IN ('sitemap', 'index')`,
+    ),
+  }),
 );
 
 export const clientSources = pgTable(
@@ -177,6 +189,11 @@ export const portalRuns = pgTable(
   },
   (t) => ({
     sourceStartedIdx: index("portal_runs_source_started_idx").on(t.sourceId, t.startedAt),
+    modeCheck: check("portal_runs_mode_check", sql`${t.mode} IN ('scheduled', 'manual', 'backfill')`),
+    statusCheck: check(
+      "portal_runs_status_check",
+      sql`${t.status} IN ('running', 'done', 'partial', 'aborted', 'error')`,
+    ),
   }),
 );
 
@@ -276,6 +293,11 @@ export const properties = pgTable(
   (t) => ({
     communeIdx: index("properties_commune_idx").on(t.communeInsee),
     refIdx: index("properties_agency_ref_idx").on(t.agencyId, t.agencyRef),
+    /** The Listings screen's total order, for OFFSET paging. See drizzle/0010. */
+    activeListedIdx: index("properties_active_listed_idx")
+      .on(t.firstListedAt.desc(), t.id.desc())
+      .where(sql`${t.status} = 'active'`),
+    statusCheck: check("properties_status_check", sql`${t.status} IN ('active', 'delisted')`),
   }),
 );
 
@@ -371,6 +393,11 @@ export const portalListings = pgTable(
     communeStatusIdx: index("portal_listings_commune_status_idx").on(t.communeInsee, t.status),
     /** Blocking key for the matcher: same agency, same mandate reference. */
     agencyRefIdx: index("portal_listings_agency_ref_idx").on(t.agencyId, t.agencyRef),
+    statusCheck: check("portal_listings_status_check", sql`${t.status} IN ('active', 'delisted')`),
+    parseStatusCheck: check(
+      "portal_listings_parse_status_check",
+      sql`${t.parseStatus} IN ('ok', 'partial', 'failed')`,
+    ),
   }),
 );
 
@@ -417,6 +444,10 @@ export const portalListingEvents = pgTable(
     listingIdx: index("portal_listing_events_listing_idx").on(t.listingId, t.occurredAt),
     propertyIdx: index("portal_listing_events_property_idx").on(t.propertyId, t.occurredAt),
     typeIdx: index("portal_listing_events_type_idx").on(t.type, t.occurredAt),
+    typeCheck: check(
+      "portal_listing_events_type_check",
+      sql`${t.type} IN ('listed', 'price_changed', 'delisted', 'relisted', 'availability_changed', 'updated')`,
+    ),
   }),
 );
 
@@ -508,6 +539,10 @@ export const buyers = pgTable(
     clientIdx: index("buyers_client_idx").on(t.clientId, t.active),
     testIdx: index("buyers_test_idx").on(t.isTestData),
     crmUnique: uniqueIndex("buyers_crm_unique").on(t.clientId, t.crmContactId),
+    criteriaSourceCheck: check(
+      "buyers_criteria_source_check",
+      sql`${t.criteriaSource} IN ('fields', 'extracted', 'manual')`,
+    ),
   }),
 );
 
@@ -557,6 +592,10 @@ export const buyerMatches = pgTable(
     pairUnique: uniqueIndex("buyer_matches_pair_unique").on(t.buyerId, t.propertyId),
     buyerIdx: index("buyer_matches_buyer_idx").on(t.buyerId, t.status, t.score),
     statusIdx: index("buyer_matches_status_idx").on(t.status, t.createdAt),
+    statusCheck: check(
+      "buyer_matches_status_check",
+      sql`${t.status} IN ('new', 'seen', 'sent', 'dismissed')`,
+    ),
   }),
 );
 
@@ -634,6 +673,7 @@ export const marketReports = pgTable(
       t.periodStart,
     ),
     clientIdx: index("market_reports_client_idx").on(t.clientId, t.periodStart),
+    kindCheck: check("market_reports_kind_check", sql`${t.kind} IN ('monthly', 'weekly', 'adhoc')`),
   }),
 );
 
@@ -722,6 +762,49 @@ export const apiUsage = pgTable(
   },
   (t) => ({
     sourceAtIdx: index("api_usage_source_at_idx").on(t.sourceKey, t.at),
+    kindCheck: check(
+      "api_usage_kind_check",
+      sql`${t.kind} IS NULL OR ${t.kind} IN ('count', 'reserve', 'settle', 'legacy')`,
+    ),
+  }),
+);
+
+/**
+ * Fixed-window request counters: one row per bucket (`v1-key:…`, `login:…`),
+ * reset when its window passes. Read and written by `lib/api/rateLimit.ts`
+ * only; see drizzle/0010 for why in Postgres.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    bucket: text("bucket").primaryKey(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => ({
+    windowIdx: index("rate_limits_window_idx").on(t.windowStart),
+  }),
+);
+
+/**
+ * One row per /api/v1 request, answered or refused: so a 401, a 429 and a
+ * client polling every second can be seen. Append-only, kept 90 days.
+ */
+export const apiRequestLog = pgTable(
+  "api_request_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    /** Null when no key was accepted — the rows worth reading. */
+    keyId: uuid("key_id").references(() => clientApiKeys.id, { onDelete: "set null" }),
+    path: text("path").notNull(),
+    status: integer("status").notNull(),
+    ip: text("ip"),
+    durationMs: integer("duration_ms"),
+  },
+  (t) => ({
+    atIdx: index("api_request_log_at_idx").on(t.at),
+    keyAtIdx: index("api_request_log_key_at_idx").on(t.keyId, t.at),
   }),
 );
 

@@ -4,11 +4,12 @@ import { openApiDocument } from "@/lib/api/openapi";
 /**
  * GET /docs/openapi — the specification itself.
  *
- * Under /docs rather than under /api/v1, and the difference matters: `/api/v1`
- * is exempted from the session middleware because client instances authenticate
- * with a key, so a spec served from there would be readable by anyone on the
- * internet. Here it sits behind the same login as the rest of our interface,
- * which is where an internal service's documentation belongs.
+ * Readable without a login, like /docs, and on purpose (2026-09-04): its
+ * readers are developers building a client instance, who have no account here.
+ * It describes endpoints that answer 401 without a key and carries no market
+ * data. Until 2026-10-15 this comment said the opposite; the exemption is
+ * listed in `PUBLIC_PATHS` (lib/auth/config.ts), and only these two paths are
+ * open — not everything under /docs.
  */
 
 export const runtime = "nodejs";

@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { authorise } from "@/lib/api/guard";
+import { NextResponse } from "next/server";
+import { keyedRoute } from "@/lib/api/guard";
+import { isUuid } from "@/lib/api/params";
 import { reportById } from "@/lib/api/v1";
 import { dbErrorMessage } from "@/lib/db/errors";
 
@@ -14,10 +15,8 @@ import { dbErrorMessage } from "@/lib/db/errors";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest, context: { params: Promise<unknown> }) {
-  const auth = await authorise(req);
-  if ("response" in auth) return auth.response;
-
+// Key, rate limit and journal: keyedRoute (lib/api/guard.ts).
+export const GET = keyedRoute(async (_req, scope, context) => {
   /**
    * Typed loosely and narrowed here, because Next's generated route types
    * declare `params` as `Promise<unknown>` and reject a handler that promises
@@ -25,9 +24,12 @@ export async function GET(req: NextRequest, context: { params: Promise<unknown> 
    */
   const { id } = (await context.params) as { id?: string };
   if (!id) return NextResponse.json({ error: "no id" }, { status: 400 });
+  // Not a uuid, so no report: the same 404 as any other missing one, where
+  // Postgres would have made it a 500 (before 2026-10-15).
+  if (!isUuid(id)) return NextResponse.json({ error: "no such report" }, { status: 404 });
 
   try {
-    const report = await reportById(auth.scope, id);
+    const report = await reportById(scope, id);
     if (!report) {
       // Not "forbidden": whether a report exists that belongs to somebody else
       // is not this client's business either.
@@ -38,4 +40,4 @@ export async function GET(req: NextRequest, context: { params: Promise<unknown> 
     console.error("[api/v1/reports/id]", dbErrorMessage(err));
     return NextResponse.json({ error: "query failed" }, { status: 500 });
   }
-}
+});

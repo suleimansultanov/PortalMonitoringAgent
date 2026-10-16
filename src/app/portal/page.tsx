@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { overview, communeStats } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { Card, Stat, Warnings } from "@/components/ui";
 
 /**
@@ -15,14 +16,16 @@ import { Card, Stat, Warnings } from "@/components/ui";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const [head, communes] = await Promise.all([overview(), communeStats()]);
+  const scope = await requireClient();
+  const [head, communes] = await Promise.all([overview(scope), communeStats(scope)]);
+  const watched = scope.communeInsee.length;
   const covered = communes.filter((c) => c.active > 0).length;
   const enabled = head.sources.filter((s) => s.enabled).length;
 
   const warnings: string[] = [];
-  if (covered < 12) {
+  if (covered < watched) {
     warnings.push(
-      `${covered} of 12 communes have any stock collected. The numbers below ` +
+      `${covered} of ${watched} communes have any stock collected. The numbers below ` +
         `describe what we have crawled, not the market.`,
     );
   }
@@ -69,11 +72,11 @@ export default async function Home() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Coverage">
           <div className="space-y-3 px-5 py-4 text-sm">
-            <Row label="Communes with stock" value={`${covered} of 12`} />
+            <Row label="Communes with stock" value={`${covered} of ${watched}`} />
             <Row label="Sources enabled" value={`${enabled} of ${head.sources.length}`} />
             <p className="pt-2 text-xs text-[var(--color-muted)]">
               A commune showing nothing is far more likely to be uncrawled than quiet.
-              Until all twelve are collected, comparisons between them say more about
+              Until all of them are collected, comparisons between them say more about
               our coverage than about the market.
             </p>
           </div>

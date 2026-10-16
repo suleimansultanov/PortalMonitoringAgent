@@ -1,21 +1,25 @@
 import "server-only";
-import { NextResponse } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
+import { db } from "@/lib/db/client";
+import { apiRequestLog } from "@/lib/db/schema";
+import { dbErrorMessage } from "@/lib/db/errors";
 import { keyFromRequest, resolveKey, type KeyScope } from "./keys";
+import { bucket, clientIp, hit, LIMITS, pruneNowAndThen } from "./rateLimit";
 
 /**
  * The guard on every /api/v1 route.
  *
- * `middleware.ts` deliberately skips this prefix: its NextAuth check is a
- * browser mechanism, and it runs on the edge where a database lookup is not
- * available. So the key check lives here, in the Node runtime, and every v1
- * route calls it as its first statement.
+ * `middleware.ts` deliberately lets this prefix through without a session
+ * (`PUBLIC_ROOTS` in lib/auth/config.ts): its NextAuth check is a browser
+ * mechanism, and it runs on the edge where a database lookup is not available.
+ * So the key check lives here, in the Node runtime.
  *
- * That makes it a rule to remember on each new file — the exact shape the
- * middleware comment warns about. It is accepted here because the alternative
- * is worse: an edge middleware cannot read the keys table, so the choice is
- * between one line per route and a second cache of credentials at the edge.
- * The mitigation is that a route which forgets this returns market data with no
- * client scope at all, which the first test against it makes obvious.
+ * Every v1 route is written as `export const GET = keyedRoute(async (req,
+ * scope) => …)`, so the handler cannot run without a scope, cannot run past
+ * its key's rate limit, and is journalled whatever it answers. The rule still
+ * lives in each file — an edge middleware cannot read the keys table — and
+ * src/lib/api/guard.test.ts fails if a v1 route exports a handler any other
+ * way.
  */
 export async function authorise(
   req: Request,
@@ -41,6 +45,101 @@ export async function authorise(
     };
   }
   return { scope };
+}
+
+/** 429, with the seconds until the window turns. */
+export function tooManyRequests(retryAfterSec: number): NextResponse {
+  return NextResponse.json(
+    {
+      error: "rate_limited",
+      detail: `Too many requests. Retry after ${retryAfterSec} seconds.`,
+      retryAfter: retryAfterSec,
+    },
+    { status: 429, headers: { "Retry-After": String(retryAfterSec) } },
+  );
+}
+
+/**
+ * Next's generated route types declare `params` as `Promise<unknown>` and
+ * reject a handler that promises to know its own shape, so every route is
+ * typed this loosely and narrows the params itself.
+ */
+export type RouteContext = { params: Promise<unknown> };
+
+/**
+ * A v1 route: key, then rate limit, then the handler, then the journal.
+ *
+ * Refused requests are counted too. A key over its limit gets 429 and keeps
+ * counting until the window turns; a request with no acceptable key counts
+ * against its address, so a script trying keys meets 429 within minutes —
+ * and both appear in `api_request_log`, which until 2026-10-15 did not exist:
+ * a key being guessed, or a client polling every second, left no trace.
+ */
+export function keyedRoute(
+  handler: (req: NextRequest, scope: KeyScope, context: RouteContext) => Promise<Response>,
+): (req: NextRequest, context: RouteContext) => Promise<Response> {
+  return async (req, context) => {
+    const started = Date.now();
+    const ip = clientIp(req.headers);
+    let keyId: string | null = null;
+    let response: Response;
+
+    try {
+      const auth = await authorise(req);
+      if ("response" in auth) {
+        const verdict = await hit(bucket("v1-unauthorised", ip), LIMITS.v1UnauthorisedPerIp);
+        response = verdict.allowed ? auth.response : tooManyRequests(verdict.retryAfterSec);
+      } else {
+        keyId = auth.scope.keyId;
+        const verdict = await hit(bucket("v1-key", keyId), LIMITS.v1PerKey);
+        response = verdict.allowed
+          ? await handler(req, auth.scope, context)
+          : tooManyRequests(verdict.retryAfterSec);
+      }
+    } catch (err) {
+      // The key lookup itself failed. Answered like a failed query, and journalled.
+      console.error(`[api/v1] ${req.nextUrl.pathname}`, dbErrorMessage(err));
+      response = NextResponse.json({ error: "query failed" }, { status: 500 });
+    }
+
+    journal({
+      keyId,
+      path: req.nextUrl.pathname,
+      status: response.status,
+      ip,
+      durationMs: Date.now() - started,
+    });
+    return response;
+  };
+}
+
+/**
+ * Written after the response is sent (`after`, which Vercel keeps the
+ * function alive for), so the client never waits on its own log line. A
+ * journal that cannot be written is logged and dropped: it must never fail
+ * the request it describes.
+ */
+function journal(entry: {
+  keyId: string | null;
+  path: string;
+  status: number;
+  ip: string;
+  durationMs: number;
+}): void {
+  const write = async () => {
+    try {
+      await db.insert(apiRequestLog).values(entry);
+      await pruneNowAndThen();
+    } catch (err) {
+      console.warn("[api/v1] journal not written:", dbErrorMessage(err));
+    }
+  };
+  try {
+    after(write);
+  } catch {
+    // Outside a request scope (a script, a test): write now, unawaited.
+    void write();
+  }
 }
 
 /**

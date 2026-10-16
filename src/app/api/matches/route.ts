@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dbErrorMessage } from "@/lib/db/errors";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { buyerMatches } from "@/lib/db/schema";
-import { listMatches } from "@/lib/api/queries";
+import { listMatches, setMatchStatus } from "@/lib/api/queries";
+import { clientForRequest } from "@/lib/auth/tenant";
 
 /**
  * GET  /api/matches   — proposed matches, best first
  * PATCH /api/matches  — an agent acting on one
+ *
+ * Both read and write the signed-in account's client's matches and nothing
+ * else (lib/auth/tenant.ts). Until 2026-10-15 GET listed every client's buyers
+ * and PATCH changed any match by id.
  *
  * `includeTestData` defaults to FALSE. The invented buyers must not pad a count
  * anyone might act on; asking for them is a deliberate act, and the rows that
@@ -29,6 +31,9 @@ const Query = z.object({
 });
 
 export async function GET(req: NextRequest) {
+  const client = await clientForRequest();
+  if ("response" in client) return client.response;
+
   const parsed = Query.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (!parsed.success) {
     return NextResponse.json(
@@ -38,7 +43,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const rows = await listMatches(parsed.data);
+    const rows = await listMatches(client.scope, parsed.data);
     return NextResponse.json({
       rows,
       total: rows.length,
@@ -63,6 +68,9 @@ const Patch = z.object({
 });
 
 export async function PATCH(req: NextRequest) {
+  const client = await clientForRequest();
+  if ("response" in client) return client.response;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -78,18 +86,9 @@ export async function PATCH(req: NextRequest) {
     );
   }
 
-  const { id, status, dismissedReason } = parsed.data;
   try {
-    const [updated] = await db
-      .update(buyerMatches)
-      .set({
-        status,
-        dismissedReason: status === "dismissed" ? (dismissedReason ?? null) : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(buyerMatches.id, id))
-      .returning({ id: buyerMatches.id, status: buyerMatches.status });
-
+    // Another client's match answers "not found": its existence is not ours to confirm.
+    const updated = await setMatchStatus(client.scope, parsed.data);
     if (!updated) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json(updated);
   } catch (err) {

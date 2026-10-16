@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { listReports } from "@/lib/reports/queries";
-import { agencyStats, communeStats, overview } from "@/lib/api/queries";
+import { agencyStats, clientReports, communeStats, overview } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { PageTitle, Card, Empty, Warnings, money } from "@/components/ui";
 
 /**
@@ -16,13 +16,16 @@ import { PageTitle, Card, Empty, Warnings, money } from "@/components/ui";
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const reports = await listReports();
-  const [communes, agencies, head] = await Promise.all([
-    communeStats(),
-    agencyStats(),
-    overview(),
+  const scope = await requireClient();
+  // This client's reports — the old reader took Med-Estates' by a hardcoded slug.
+  const [reports, communes, agencies, head] = await Promise.all([
+    clientReports(scope),
+    communeStats(scope),
+    agencyStats(scope),
+    overview(scope),
   ]);
 
+  const watched = scope.communeInsee.length;
   const covered = communes.filter((c) => c.active > 0).length;
   const idle = head.sources.filter((s) => !s.enabled);
 
@@ -39,30 +42,28 @@ export default async function ReportsPage() {
         `as this month's arrivals.`,
     );
   }
-  if (covered < 12) {
+  if (covered < watched) {
     liveWarnings.push(
-      `Only ${covered} of 12 communes have any stock collected. Comparing communes ` +
+      `Only ${covered} of ${watched} communes have any stock collected. Comparing communes ` +
         `to each other is not meaningful yet.`,
     );
   }
   /**
-   * `enabled` gates the SCHEDULER, not collection. Four portals are collecting
-   * today with every source flagged disabled, because every pass so far has
-   * been started by hand — so the old wording here ("every count below is an
-   * undercount") told the client that correct figures were wrong, which costs
-   * more trust than an actual error would.
-   *
-   * What is true, and worth saying, is that nothing refreshes on its own.
+   * `enabled` now decides what is SHOWN, here and in /api/v1: a switched-off
+   * source's rows stay in the database but are counted nowhere (see
+   * `liveProperty` in lib/api/queries.ts). Until 2026-10-15 it only gated
+   * the scheduler, and this said so; the figures below already leave these
+   * sources out, and the sentence says which.
    */
   if (idle.length === head.sources.length) {
     liveWarnings.push(
-      `No source is on a schedule yet — the figures refresh only when a collection ` +
-        `is run by hand, so they are as old as the last run.`,
+      `Every source is switched off, so nothing below is current — the figures ` +
+        `count only sources still being collected.`,
     );
   } else if (idle.length > 0) {
     liveWarnings.push(
-      `Not on a schedule: ${idle.map((s) => s.key).join(", ")}. Those refresh only ` +
-        `when run by hand.`,
+      `Switched off and left out of every figure below: ${idle.map((s) => s.key).join(", ")}. ` +
+        `What they carried is counted through the sources still running, where those carry it.`,
     );
   }
 

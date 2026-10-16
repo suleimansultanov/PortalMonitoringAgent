@@ -8,7 +8,8 @@ import { authConfig } from "@/lib/auth/config";
  * screens and four API routes today and there will be more; a rule that has to
  * be remembered on every new file is a rule that will eventually be forgotten
  * on one, and the forgotten one is the leak. Here the default is closed and the
- * exceptions are listed in `PUBLIC_PREFIXES`, where they can be read.
+ * exceptions are listed once, in `PUBLIC_PATHS` / `PUBLIC_ROOTS`
+ * (lib/auth/config.ts), where `authorized` reads them.
  *
  * Only `authConfig` is imported — the edge-safe half. Importing `@/lib/auth`
  * here would drag `pg` and `bcryptjs` into the edge bundle and break the build.
@@ -17,23 +18,21 @@ export default NextAuth(authConfig).auth;
 
 export const config = {
   /**
-   * Everything except next-auth's own endpoints, the login page, the Inngest
-   * webhook (it authenticates with a signing key and has no cookie), the
-   * client-instance API (it authenticates with a key, and the lookup needs a
-   * database this edge runtime cannot reach — see lib/api/guard.ts), the API
-   * documentation, and static assets.
+   * Which requests reach the guard at all: everything but the build's own
+   * assets, which are skipped for cost alone — every chunk of every page would
+   * otherwise be an edge invocation. WHO MAY SKIP THE LOGIN is not decided
+   * here. It is `isPublicPath` in lib/auth/config.ts, and
+   * src/middleware.test.ts fails if this line ever skips a path that list does
+   * not make public.
    *
-   * `docs` is public deliberately. It describes an API that cannot be used
-   * without a key and contains no market data of its own — while the people who
-   * need it are developers building a client instance, who by definition have
-   * no account on this deployment. Documentation nobody can read is
-   * documentation that drifts.
+   * Until 2026-10-15 this line was the list, with a global tail that let any
+   * path ending in `.png` past the login. Next requires the matcher to be a
+   * literal, so it cannot import the list — which is exactly why it no longer
+   * carries one.
    *
    * Note this is a denylist of paths to SKIP, not an allowlist of paths to
    * protect. A new screen is guarded the moment it exists, without anyone
    * touching this line — which is the whole point.
    */
-  matcher: [
-    "/((?!api/auth|api/inngest|api/v1|docs|login|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|txt|xml)$).*)",
-  ],
+  matcher: ["/((?!_next/static/|_next/image$|favicon\\.ico$).*)"],
 };

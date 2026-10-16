@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listProperties, listSourceOptions, featureLabel, COMMUNE_LABELS } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { PageTitle, Empty, Warnings, money, m2, ago } from "@/components/ui";
 
 /**
@@ -31,18 +32,27 @@ type Search = {
 /** Four across on a wide screen, so a page always ends on a full row. */
 const PAGE_SIZE = 48;
 
+/**
+ * This screen's own path. The filter chips, the search form and the page
+ * links pointed at `/listings`, which has not existed since the screens moved
+ * under /portal — every filter and every "Next →" was a 404 (found 2026-10-15
+ * while fixing the page order).
+ */
+const HERE = "/portal/listings";
+
 export default async function ListingsPage({
   searchParams,
 }: {
   searchParams: Promise<Search>;
 }) {
+  const scope = await requireClient();
   const sp = await searchParams;
   const newWithinDays = sp.new ? Number(sp.new) : undefined;
   const q = sp.q?.trim() || undefined;
   const page = Math.max(1, Number(sp.page) || 1);
 
   const [{ rows, total, totalListings }, sources] = await Promise.all([
-    listProperties({
+    listProperties(scope, {
       communeInsee: sp.commune ? [sp.commune] : undefined,
       source: sp.source,
       q,
@@ -50,7 +60,7 @@ export default async function ListingsPage({
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     }),
-    listSourceOptions(),
+    listSourceOptions(scope),
   ]);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -75,7 +85,7 @@ export default async function ListingsPage({
       if (v !== undefined && v !== "") next.set(k, String(v));
     }
     const qs = next.toString();
-    return qs ? `/listings?${qs}` : "/listings";
+    return qs ? `${HERE}?${qs}` : HERE;
   };
 
   /**
@@ -103,7 +113,7 @@ export default async function ListingsPage({
     }
     if (n > 1) next.set("page", String(n));
     const qs = next.toString();
-    return qs ? `/listings?${qs}` : "/listings";
+    return qs ? `${HERE}?${qs}` : HERE;
   };
 
   return (
@@ -140,7 +150,7 @@ export default async function ListingsPage({
         of step with the URL — the address bar IS the state, so a filtered
         search can be pasted into a message and opens the same screen.
       */}
-      <form method="GET" action="/listings" className="mb-4 flex flex-wrap items-center gap-2">
+      <form method="GET" action={HERE} className="mb-4 flex flex-wrap items-center gap-2">
         {(["commune", "source", "new"] as const).map((k) =>
           sp[k] ? <input key={k} type="hidden" name={k} value={sp[k]} /> : null,
         )}
@@ -198,12 +208,13 @@ export default async function ListingsPage({
           Commune
         </span>
         <Filter href={href({ commune: undefined })} active={!sp.commune} label="All" />
-        {Object.entries(COMMUNE_LABELS).map(([insee, label]) => (
+        {/* The client's communes, not every commune we have a label for. */}
+        {scope.communeInsee.map((insee) => (
           <Filter
             key={insee}
             href={href({ commune: insee })}
             active={sp.commune === insee}
-            label={label}
+            label={COMMUNE_LABELS[insee] ?? insee}
           />
         ))}
       </div>

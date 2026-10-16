@@ -18,7 +18,9 @@ Built as a product, not a one-off — see "Tenancy" below.
 - **Migrations:** hand-written idempotent SQL in `drizzle/`, applied by
   `src/lib/db/migrate.ts`. **`drizzle-kit generate` is not used** — see the
   comment at the top of the migrate script.
-- **Jobs:** Inngest. **Storage:** S3 for raw pages. **Auth:** next-auth v5, see below.
+- **Jobs:** GitHub Actions — `.github/workflows/collect.yml` runs
+  `src/lib/portals/nightly.ts`. (Inngest was removed on 2026-10-15: nothing
+  sent it an event.) **Storage:** S3 for raw pages. **Auth:** next-auth v5, see below.
 - **Parsing:** cheerio. Structured markup first, selectors last.
 
 ## Tenancy — the load-bearing decision
@@ -134,20 +136,48 @@ The config is **split in two on purpose**:
 - `src/lib/auth/index.ts` — Node only. The Credentials provider, bcrypt, and
   the query against `users`.
 
-Exempt paths are listed in `PUBLIC_PREFIXES` and in the middleware matcher.
-**`/api/inngest` must stay exempt** — it authenticates with its own signing key
-and has no cookie; putting a login in front of it does not harden anything, it
-silently stops the job runner.
+Exempt paths are listed **once**, in `PUBLIC_PATHS` / `PUBLIC_ROOTS`
+(`config.ts`, read by `isPublicPath` in the `authorized` callback): `/login`,
+`/api/auth/*`, `/api/v1/*` (it has its own key check, `lib/api/guard.ts`),
+`/docs` and `/docs/openapi` (deliberately public, 2026-09-04), and the build's
+assets. Exact paths and roots, never patterns. The middleware matcher only
+skips `_next/static`, `_next/image` and `favicon.ico`, for cost;
+`src/middleware.test.ts` fails if it ever skips anything the list does not make
+public. Until 2026-10-15 the matcher was the list, and its `.*\.png$` tail let
+`/portal/x.png` past the login.
 
-Sessions are JWTs, so `users.active = false` stops the *next* sign-in, not the
-session already in a browser. Rotating `AUTH_SECRET` is what ends every session
-now. Accounts are created from the terminal — there is no sign-up page:
+**Signed in is not the question; which client is.** Every screen calls
+`requireClient()` and every internal route `clientForRequest()`
+(`src/lib/auth/tenant.ts`, Node only), and every read in `lib/api/queries.ts`
+takes that scope as its first argument: the client's buyers, matches and
+reports by id; the market narrowed to its communes and subscribed sources, as
+its API key is. An account with no client is sent to `/no-access` (403 from an
+API route) — never shown everything. Meta-tests in `lib/auth/scope.test.ts`
+and `lib/api/queries.test.ts` fail if a page, a route or a read forgets.
+
+The client is read from `users` on every request, not from the JWT, so linking,
+moving or deactivating an account takes effect on its next page load. The
+session cookie itself stays valid until it expires (12 h); rotating
+`AUTH_SECRET` is what ends every session now. Accounts are created from the
+terminal — there is no sign-up page:
 
 ```
-npm run user:create -- --email=… --role=admin   # prints a generated password once
+npm run user:create -- --email=… --role=admin --client=med-estates   # prints a generated password once
+npm run user:create -- --email=… --client=med-estates --link          # link, password unchanged
 npm run user:create -- --list
 npm run user:create -- --email=… --deactivate
 ```
+
+**Rate limits and the request journal** (`src/lib/api/rateLimit.ts`, tables
+`rate_limits` and `api_request_log`, drizzle/0010): 120 requests a minute per
+API key, 30 unauthorised requests per 10 minutes per address, 10 failed
+sign-ins per 15 minutes per email+address (50 per address). Fixed windows
+counted in Postgres — on Vercel a counter in memory dies with the function.
+Over the limit: `429` with `Retry-After`. The limiter **fails open**: if it
+cannot write its count, the request goes through. Every `/api/v1` request is
+journalled with its key (null when refused), path and status; v1 routes are
+written as `export const GET = keyedRoute(…)` (`lib/api/guard.ts`), and a
+meta-test fails on any that is not.
 
 Deploying the app for a client: `docs/DEPLOY.md`.
 
@@ -161,6 +191,12 @@ Deploying the app for a client: `docs/DEPLOY.md`.
   and surfaces as "Unsupported state". This has already bitten the sibling
   project; do not repeat it.
 - Zod-parse at every DB and network boundary — no `as` casts on fetched data.
+- **Every status-like column has a `CHECK`** (`status`, `type`, `kind`, `role`,
+  `mode`, `parse_status`, `criteria_source`, `discovery_mode`; drizzle/0011).
+  A new value in code — an event type, a run status — needs a migration that
+  widens the constraint, or its first write fails mid-nightly.
+  `src/lib/db/checks.test.ts` compares each list with the union type it comes
+  from and fails first.
 - Honour each source's `crawl_delay_ms`. It comes from their robots.txt.
 - `portal_sources.permission_note` records *why* we are allowed to collect from
   a source. Fill it in. The day someone asks, the answer needs to be next to the
@@ -174,5 +210,5 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 ## Related
 - **LeadEstateVault** (`../LeadEstateVault/vault`) — sibling project. The db
   client, S3 helpers, settings store, crypto and auth guards were ported from
-  there, along with the Inngest patterns (`syncFathomCalls`, `extractCallCard`)
-  that this pipeline mirrors.
+  there. (So were its Inngest patterns, removed here on 2026-10-15 when the
+  nightly moved to GitHub Actions.)

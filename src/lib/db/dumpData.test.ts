@@ -32,11 +32,17 @@ const SCRIPT = path.resolve(HERE, "../../../scripts/dump-data.sh");
 /**
  * Tables deliberately left out of the backup: table name → why.
  *
- * Empty on 2026-10-15, because every table holds something a restore would
- * miss. A reason here is a decision somebody made, so write it as one, e.g.
+ * Empty until 2026-10-16, when the two service tables of 0010 joined it.
+ * Every other table holds something a restore would miss. A reason here is a
+ * decision somebody made, so write it as one, e.g.
  * `some_cache: "derived from portal_listings every night; rebuilt, never restored"`.
  */
-const NOT_BACKED_UP: Record<string, string> = {};
+const NOT_BACKED_UP: Record<string, string> = {
+  rate_limits:
+    "fixed-window counters a minute to fifteen minutes long; a restored count is a stale one, and an empty table is the correct state after a restore",
+  api_request_log:
+    "a journal of /api/v1 requests kept 90 days for spotting key abuse; restoring it restores nothing the app or a client reads, and it is the fastest-growing table to dump",
+};
 
 /** The `TABLES=( … )` array in the script, in order, comments removed. */
 function tablesInScript(): string[] {

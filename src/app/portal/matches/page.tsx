@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { communeStats, listMatches } from "@/lib/api/queries";
+import { requireClient } from "@/lib/auth/tenant";
 import { MatchList, type Match } from "@/components/MatchList";
 import { Warnings } from "@/components/ui";
 
@@ -18,12 +19,13 @@ export default async function MatchesPage({
 }: {
   searchParams: Promise<{ test?: string }>;
 }) {
+  const scope = await requireClient();
   const sp = await searchParams;
   const includeTestData = sp.test === "1";
 
   const [rows, communes] = await Promise.all([
-    listMatches({ includeTestData, limit: 100 }) as unknown as Promise<Match[]>,
-    communeStats(),
+    listMatches(scope, { includeTestData, limit: 100 }) as unknown as Promise<Match[]>,
+    communeStats(scope),
   ]);
   const covered = communes.filter((c) => c.active > 0).length;
 
@@ -54,7 +56,7 @@ export default async function MatchesPage({
       <div className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Matches</h1>
         <Link
-          href={includeTestData ? "/matches" : "/matches?test=1"}
+          href={includeTestData ? "/portal/matches" : "/portal/matches?test=1"}
           className="text-sm text-[var(--color-muted)] underline underline-offset-4 hover:text-[var(--color-ink)]"
         >
           {includeTestData ? "Hide test buyers" : "Show test buyers"}
