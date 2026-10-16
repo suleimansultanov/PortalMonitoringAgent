@@ -101,6 +101,12 @@ concurrency:
   group: nightly-collection
   cancel-in-progress: false
 
+# Read the repository, nothing more. The collecting job runs `npm ci` and
+# parses other people's pages; it has no business holding a token that can
+# write anywhere. The one job that writes (an issue, below) asks for that alone.
+permissions:
+  contents: read
+
 jobs:
   collect:
     # `PMA_RUNNER` (repo variable) = `self-hosted` moves the pass to our EU box
@@ -110,6 +116,10 @@ jobs:
     # leaves a `running` row in portal_runs and no summary; being killed by this
     # leaves the same, but at a time we chose and can reason about.
     timeout-minutes: 330
+    outputs:
+      # The night's summary.txt, so the failure report below can quote it.
+      # Empty when the run died before writing one.
+      summary: ${{ steps.summary.outputs.text }}
 
     steps:
       - uses: actions/checkout@v4
@@ -154,17 +164,22 @@ jobs:
           COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
 
       - name: Collect
+        # The inputs arrive through `env:` and are read as "$VARIABLES", never
+        # written into this script as `${{ inputs.* }}`. Interpolated, a value is
+        # pasted into the shell source before bash reads it: a `$(…)` typed into
+        # the `communes` box would run, in a step that holds every secret below.
         run: |
-          # Two at once by default since 2026-10-15: the refresh queue now sees the
-          # listings it was blind to (REVIEW 1.2), each source spends up to 45 min
-          # re-reading them, and one at a time the first such run reached the
-          # 330-minute ceiling inside Green-Acres — Bien'ici, V2 and the resolve
-          # never ran. Two sources are two different sites; no portal sees more.
-          ARGS="--parallel=${{ inputs.parallel || '2' }}"
-          if [ -n "${{ inputs.sources }}" ]; then ARGS="$ARGS --sources=${{ inputs.sources }}"; fi
-          if [ -n "${{ inputs.communes }}" ]; then ARGS="$ARGS --communes=${{ inputs.communes }}"; fi
+          # Two at once by default since 2026-10-15 (IN_PARALLEL below): the refresh
+          # queue now sees the listings it was blind to (REVIEW 1.2), each source
+          # spends up to 45 min re-reading them, and one at a time the first such
+          # run reached the 330-minute ceiling inside Green-Acres — Bien'ici, V2
+          # and the resolve never ran. Two sources are two different sites; no
+          # portal sees more.
+          ARGS="--parallel=$IN_PARALLEL"
+          if [ -n "$IN_SOURCES" ]; then ARGS="$ARGS --sources=$IN_SOURCES"; fi
+          if [ -n "$IN_COMMUNES" ]; then ARGS="$ARGS --communes=$IN_COMMUNES"; fi
           # Sunday's schedule, or a hand-triggered run that asked for it.
-          if [ "${{ github.event.schedule }}" = "0 21 * * 0" ] || [ "${{ inputs.full }}" = "true" ]; then
+          if [ "$SCHEDULE" = "0 21 * * 0" ] || [ "$IN_FULL" = "true" ]; then
             ARGS="$ARGS --full"
             echo "FULL SWEEP — every list walked to the end, so delistings get written."
           fi
@@ -179,8 +194,16 @@ jobs:
           # A subtraction rather than a hand-written list of the other five, so
           # that a seventh portal is included by default rather than forgotten.
           ARGS="$ARGS --exclude=superimmo"
+          # Unquoted on purpose: ARGS is several flags and has to split into
+          # them, exactly as it did when the inputs were pasted in.
           npm run nightly -- $ARGS
         env:
+          # Blank on a scheduled night, which is what the defaults are for.
+          IN_PARALLEL: ${{ inputs.parallel || '2' }}
+          IN_SOURCES: ${{ inputs.sources }}
+          IN_COMMUNES: ${{ inputs.communes }}
+          IN_FULL: ${{ inputs.full }}
+          SCHEDULE: ${{ github.event.schedule }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           COLLECTOR_USER_AGENT: ${{ secrets.CRAWLER_USER_AGENT }}
@@ -203,6 +226,7 @@ jobs:
 
       # `always()`, because the summary matters most on the night that failed.
       - name: Publish the summary
+        id: summary
         if: always()
         run: |
           if [ -f logs/latest/summary.txt ]; then
@@ -211,6 +235,14 @@ jobs:
               cat logs/latest/summary.txt
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Also as the job's output, for the issue a failed night opens.
+            # printf, so the last line ends in a newline whatever the file
+            # does: a delimiter glued to it is not found, and the step fails.
+            {
+              echo "text<<PMA_SUMMARY_$GITHUB_RUN_ID"
+              printf '%s\n' "$(cat logs/latest/summary.txt)"
+              echo "PMA_SUMMARY_$GITHUB_RUN_ID"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "No summary was written — the run died before it got that far." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -228,10 +260,18 @@ jobs:
       # .pages/ on the runner, which is destroyed with the job — so the run
       # would leave nothing to re-parse against, and `npm run reparse` would
       # have nothing to work on. This is a stopgap that shouts, not a solution.
+      #
+      # The test is in the script, not in `if:`. A step's own `env:` is not
+      # yet set when its `if:` is evaluated, so `env.S3_BUCKET == ''` read an
+      # empty value on every night and the warning printed whether S3 was
+      # configured or not. And the message is in single quotes: in double
+      # quotes the backticks around the command ran `npm run reparse`.
       - name: Warn if pages have nowhere to go
-        if: always() && env.S3_BUCKET == ''
+        if: always()
         run: |
-          echo "::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against tonight's collection."
+          if [ -z "$S3_BUCKET" ]; then
+            echo '::warning::S3_BUCKET is not set. Fetched pages were written to the runner and are now gone. `npm run reparse` cannot be used against this collection.'
+          fi
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
 
@@ -272,3 +312,96 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+
+  # ── A red night has to reach a person ─────────────────────────────────────
+  #
+  # JamesEdition kept this workflow red for four weeks — refused with 403 from
+  # 16 September, switched off on 14 October — and nobody was told. A red cross
+  # on the Actions tab is a signal only to someone who opens the Actions tab,
+  # and nobody does that to check on a job that is supposed to just work.
+  #
+  # So a failed night opens an issue labelled `nightly-failure`, mentioning
+  # the repository's owner, and GitHub sends that as an email. While it stays
+  # open, every further red night is a comment on it rather than a new issue:
+  # one thread per outage, not one per night. Close it when the night is green
+  # again; the next failure opens a fresh one.
+  #
+  # A JOB OF ITS OWN, not a last step of `collect`, for two reasons:
+  #   - It has to run when `collect` could not finish: killed at 330 minutes,
+  #     or the self-hosted box gone mid-run, where a last step of that job may
+  #     never get to run. This one runs on GitHub's runner whatever happened
+  #     to the other.
+  #   - It is the only thing here that writes to the repository. Kept apart,
+  #     the job that runs `npm ci` and parses portal pages never holds that
+  #     token.
+  #
+  # What counts as red: anything but success, except a run cancelled by hand
+  # (whoever cancelled it already knows). That includes a night where any
+  # source is graded FAIL: nightly.ts exits 1 for those, and that is what
+  # turns the Collect step red. A `warn` night exits 0 and stays quiet.
+  report-failure:
+    needs: collect
+    if: ${{ !cancelled() && needs.collect.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open an issue, or add to the one already open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.collect.result }}
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          ACTOR: ${{ github.triggering_actor }}
+          SUMMARY: ${{ needs.collect.outputs.summary }}
+        run: |
+          LABEL=nightly-failure
+          if [ "$EVENT" = "schedule" ]; then
+            TRIGGER="the schedule ($SCHEDULE)"
+          else
+            TRIGGER="$EVENT, started by $ACTOR"
+          fi
+
+          BODY="$RUNNER_TEMP/body.md"
+          {
+            echo "The nightly collection ended with result **$RESULT** (reported $(date -u '+%Y-%m-%d %H:%M') UTC)."
+            echo
+            echo "- Run: $RUN_URL"
+            echo "- Trigger: $TRIGGER"
+            echo
+            if [ -n "$SUMMARY" ]; then
+              echo '```'
+              printf '%s\n' "$SUMMARY"
+              echo '```'
+            else
+              echo "No summary reached this report. Either the run stopped before the collector"
+              echo "finished (install, migrations, preflight, the 330-minute limit, the runner"
+              echo "itself), or GitHub withheld it for containing a secret's value."
+              echo "The run's log says which."
+            fi
+          } > "$BODY"
+
+          # The label has to exist before an issue can carry it. --force makes
+          # this a no-op on every night after the first.
+          gh label create "$LABEL" --force --color B60205 \
+            --description "Opened by collect.yml when a night fails" > /dev/null
+
+          OPEN="$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body-file "$BODY"
+            echo "Added to issue #$OPEN."
+          else
+            {
+              echo "@$OWNER — a night of collection failed."
+              echo "Later failures are added here as comments while this issue is open."
+              echo "Close it once the night is green again; the next failure opens a new one."
+              echo
+              cat "$BODY"
+            } > "$BODY.new"
+            gh issue create --title "Nightly collection is failing" --label "$LABEL" --body-file "$BODY.new"
+          fi

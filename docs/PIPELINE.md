@@ -1,5 +1,13 @@
 # How the pipeline works
 
+> **Historical — written 2026-08-28, not maintained.** Written when three
+> portals were collected by hand from a laptop. The seven steps still describe
+> the pipeline (`CLAUDE.md` "Pipeline" is the maintained summary, `runner/run.ts`
+> the truth); the storage table, the commands and "What is not automated yet"
+> predate the nightly on GitHub Actions (`NIGHTLY.md`), pages in S3, and the
+> Stream.Estate sources (`docs/HANDOFF.md` §3). Traps found since are in
+> `CLAUDE.md`.
+
 Everything the product displays is read from Postgres. **No screen ever talks to
 a portal.** Opening Listings, Matches or a property page runs SQL against data
 that a collection run put there earlier — which is why the app is fast, why it

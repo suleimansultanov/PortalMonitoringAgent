@@ -8,6 +8,10 @@
 # uses, rather than one typed from memory. A psql session and the collector
 # disagreeing about whether a table exists has already cost an evening here.
 #
+# Since 2026-08-29 that string is the one Supabase database the app, the API
+# and the nightly all share, so this is the backup of production. Reading is
+# all it does; nothing here writes to the database.
+#
 # WHY ONE pg_dump PER TABLE
 #
 # A data-only dump carries no deferred constraints: the rows are simply COPYed
@@ -49,6 +53,21 @@ else
 fi
 
 # Parents first. Adding a table? Put it after everything it references.
+#
+# EVERY TABLE IN THE SCHEMA, NOT ONLY THE MARKET. Until 2026-10-15 this list
+# stopped at `settings`, and three tables added since were in no backup:
+#
+#   client_api_keys       the client's keys. A restore without them answers
+#                         401 to the client's application until new keys are
+#                         issued and someone on their side installs them.
+#   api_usage             the Stream.Estate V1 meter. A restore without it
+#                         reads the month as unspent, and the cap that stops
+#                         the client's card being charged protects nothing.
+#   source_commune_state  where V1 stands in each commune. Without it every
+#                         commune takes its stock again, about 5 400 paid items.
+#
+# src/lib/db/dumpData.test.ts compares this list with schema.ts, so the next
+# new table fails the tests until someone decides whether it belongs here.
 TABLES=(
   clients
   users
@@ -64,6 +83,9 @@ TABLES=(
   buyer_matches
   market_reports
   settings
+  client_api_keys
+  api_usage
+  source_commune_state
 )
 
 : > "$OUT"

@@ -1,5 +1,12 @@
 # Running a collection locally
 
+> **Historical — written 2026-08-28, last edited 2026-08-29, not maintained.**
+> How to collect into a Postgres in Docker on the laptop. That ended on
+> 2026-08-29 (its last section, "One database, not two"): `.env.local` now
+> points at the production database, so every command below — the seed, a
+> collection, `user:create` — acts on the client's live data, not a local
+> copy. Superseded by `DEPLOY.md` ("One database") and `NIGHTLY.md`.
+
 No S3, no Vercel, no Inngest. Postgres in Docker and one command.
 
 ## 1. Database
