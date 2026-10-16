@@ -79,7 +79,13 @@ questioned and reversed.
   article (`plan+de+la+tour+83120`); `le+plan…` answers 410.
 - **Vizzit is Green-Acres' engine with twice the catalogue**, not a mirror.
   Same ids, same page, same parser (`adapters/vizzit.ts` reuses it) — so a fix
-  to one is a fix to both, and so is a break.
+  to one is a fix to both, and so is a break. **A quarter of its index is other
+  portals' adverts** (idealista, SeLoger, Rightmove, Belles Demeures…), the
+  portal printed where the agency goes, and the GitHub runner is answered 410
+  for every one of them: ~1 000 a night for ten nights, "new" again each time
+  because a failed page is never stored. They are marked `syndicatedFrom` and
+  left unfetched; a 404/410 on a listing never held is `unserved`, not a
+  failure. Agencies' own sites are NOT marked — some of those are served.
 - **Zoopla Overseas leads with sterling and has no agencies.** Store only the
   listing's own EUR figure (`currencyCode`), never the pound. Every listing is
   syndicated by Properstar in English: do not store it as the agency, and

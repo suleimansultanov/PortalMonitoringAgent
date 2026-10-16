@@ -468,9 +468,9 @@ export const greenAcresAdapter: PortalAdapter = {
  * is malformed is skipped rather than yielding a broken URL that would 404 and
  * count as a failure.
  */
-export function cardsOnPage(html: string, host: string): { id: string; url: string }[] {
+export function cardsOnPage(html: string, host: string): { id: string; url: string; company: string | null }[] {
   const $ = cheerio.load(html);
-  const out: { id: string; url: string }[] = [];
+  const out: { id: string; url: string; company: string | null }[] = [];
   const seen = new Set<string>();
 
   $("[data-advertid]").each((_, el) => {
@@ -491,8 +491,17 @@ export function cardsOnPage(html: string, host: string): { id: string; url: stri
     // attributes; only listing URLs are wanted.
     if (!ID_FROM_URL.test(url)) return;
 
+    /**
+     * Who the card says is selling. An agency's name — or, on Vizzit, the
+     * PORTAL the advert was syndicated from, printed in the same place
+     * (`idealista.fr`, `Seloger`, `Rightmove`; 2026-10-16). Null on a card
+     * without the block, such as the older trimmed fixtures.
+     */
+    const name = $(el).find(".company-name").first().text().replace(/\s+/g, " ").trim();
+    const logo = $(el).find("img[alt^='company logo']").first().attr("alt")?.replace(/^company logo\s*:\s*/i, "").trim();
+
     seen.add(id);
-    out.push({ id, url });
+    out.push({ id, url, company: name || logo || null });
   });
 
   return out;

@@ -278,6 +278,10 @@ function renderSummary(
     ["refresh", (o) => String(o.refreshed ?? "-")],
     ["stored", (o) => String(o.ingested ?? "-")],
     ["fail", (o) => String(o.failed ?? "-")],
+    // Advertised and not served (404/410 on a listing never held), and adverts
+    // the index syndicates from other portals — neither is a failure of ours.
+    ["unserved", (o) => String(o.notServed ?? "-")],
+    ["elsewhere", (o) => String(o.syndicated ?? "-")],
     ["gone", (o) => String(o.delisted ?? "-")],
     ["backlog", (o) => String(o.refreshBacklog ?? "-")],
     ["time", (o) => human(o.durationMs)],
@@ -307,6 +311,18 @@ function renderSummary(
     lines.push("why listings failed (a sample, the full set is in the per-source log):");
     for (const o of withSamples) {
       for (const f of o.failureSamples ?? []) {
+        lines.push(`  ${o.sourceKey}  ${f.error}`);
+        lines.push(`      ${f.url}`);
+      }
+    }
+  }
+
+  const withUnserved = outcomes.filter((o) => o.notServedSamples?.length);
+  if (withUnserved.length > 0) {
+    lines.push("");
+    lines.push("advertised by the index but not served (404/410 on a listing never held — sold today, or not served to this address):");
+    for (const o of withUnserved) {
+      for (const f of o.notServedSamples ?? []) {
         lines.push(`  ${o.sourceKey}  ${f.error}`);
         lines.push(`      ${f.url}`);
       }

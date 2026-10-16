@@ -96,6 +96,17 @@ export type DiscoveredListing = {
   /** Commune as the discovery step understood it, for filtering before fetch. */
   communeHint?: string;
   /**
+   * The portal this advert was syndicated FROM, when the index says so.
+   *
+   * Vizzit's index (2026-10-16) carries adverts from idealista, SeLoger,
+   * Rightmove, Belles Demeures and Lux-Résidences, with that portal printed
+   * where the agency goes — and the GitHub runner is answered 410 for every
+   * one of them. Set, the runner still counts the listing as discovered (it
+   * is in the index, so nothing known is delisted for its sake) but does not
+   * fetch it unless it already holds it. The name as `portalOf` would show it.
+   */
+  syndicatedFrom?: string;
+  /**
    * When the PORTAL says this listing last changed, if its index page says so.
    *
    * Optional, and absent on most sources: an adapter supplies it only where the

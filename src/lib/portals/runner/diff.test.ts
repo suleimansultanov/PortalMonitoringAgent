@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedInHand, diffListings, shouldAbort, needsRefresh } from "./diff";
+import { changedInHand, diffListings, planFetch, shouldAbort, needsRefresh } from "./diff";
 
 test("splits discovered ids into added and present", () => {
   const r = diffListings({ known: ["a", "b"], discovered: ["b", "c"], complete: true });
@@ -250,4 +250,11 @@ test("a record in hand that differs from the stored one is re-read; an identical
   // a: identical. b: changed. c: changed but already queued as stale — not twice.
   // d: we hold a row and no stored page — taken as changed. e: discovery holds no record.
   assert.deepEqual(changed, ["b", "d"]);
+});
+
+test("a new advert syndicated from another portal is not fetched; a known one keeps its refresh", () => {
+  const from: Record<string, string> = { b: "SeLoger", c: "Idealista", k: "SeLoger" };
+  const plan = planFetch({ added: ["a", "b", "c"], refresh: ["k"], syndicatedFrom: (id) => from[id] });
+  assert.deepEqual(plan.toFetch, ["a", "k"]);
+  assert.deepEqual(plan.syndicated, { SeLoger: 1, Idealista: 1 });
 });

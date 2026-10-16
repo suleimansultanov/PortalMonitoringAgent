@@ -6,7 +6,7 @@ import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { contentHash } from "@/lib/utils/crypto";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing, PoliteFetch } from "../types";
-import { changedInHand, diffListings, needsRefresh, shouldAbort } from "./diff";
+import { changedInHand, diffListings, needsRefresh, planFetch, shouldAbort } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
 
@@ -176,6 +176,22 @@ export type RunSummary = {
    * malformed, or the parser choked — and those need completely different fixes.
    */
   failureSamples?: { externalId: string; url: string; error: string }[];
+  /**
+   * Discovered adverts the index syndicates from other portals, left unfetched
+   * (`DiscoveredListing.syndicatedFrom`). In `discovered`, not in `added`.
+   */
+  syndicated?: number;
+  /**
+   * ADVERTISED, NOT SERVED: fetches of listings we never held that answered
+   * 404 or 410. The index listed it an hour ago and the page is not there —
+   * it sold this afternoon, or the portal does not serve that advert to this
+   * address. Not a failure of ours, so not in `failed` and not in the grade;
+   * counted and sampled so a pile of them is still visible (Vizzit, ~1 000 a
+   * night, 2026-10-06…15). A KNOWN listing that disappears stays a failure:
+   * we hold a page that no longer exists.
+   */
+  notServed?: number;
+  notServedSamples?: { externalId: string; url: string; error: string }[];
 };
 
 export async function runSource(opts: RunOptions): Promise<RunSummary> {
@@ -997,7 +1013,20 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     }
 
     // ── 5. Ingest ─────────────────────────────────────────────────────────
-    const toFetch = [...diff.added, ...diff.refresh];
+    const plan = planFetch({
+      added: diff.added,
+      refresh: diff.refresh,
+      syndicatedFrom: (id) => discovered.get(id)?.syndicatedFrom,
+    });
+    const toFetch = plan.toFetch;
+    const syndicated = Object.values(plan.syndicated).reduce((a, b) => a + b, 0);
+    if (syndicated > 0) {
+      console.log(
+        `[run:${source.key}] ${syndicated} new listings are adverts syndicated from other portals ` +
+          `(${Object.entries(plan.syndicated).map(([portal, n]) => `${portal} ${n}`).join(", ")}) — not fetched: ` +
+          `they are those portals' adverts, and this portal does not serve them to this address`,
+      );
+    }
     if (toFetch.length > 0) {
       /**
        * An estimate, from the one number we actually know: our own crawl delay.
@@ -1014,7 +1043,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       const pages = toFetch.length - inHand;
       console.log(
         `[run:${source.key}] fetching ${toFetch.length} listings ` +
-          `(${diff.added.length} new, ${diff.refresh.length} due a refresh) — ` +
+          `(${diff.added.length - syndicated} new, ${diff.refresh.length} due a refresh) — ` +
           (pages === 0
             ? `records already in hand from discovery: no requests, storing only`
             : `${inHand > 0 ? `${inHand} in hand, ` : ""}at least ` +
@@ -1023,6 +1052,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     }
     let ingested = 0;
     let failed = 0;
+    /** See `RunSummary.notServed`. */
+    let notServed = 0;
+    const notServedSamples: { externalId: string; url: string; error: string }[] = [];
     /** Counted separately from `failed`: throttling is not a parser problem. */
     let rateLimited = 0;
     /**
@@ -1121,6 +1153,16 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
           ingested += 1;
           servedThisSession += 1;
           refusalStreak = 0;
+        } else if (
+          outcome.status === "fetch_failed" &&
+          /not found \((404|410)\)/.test(outcome.error ?? "") &&
+          !knownIds.has(externalId)
+        ) {
+          // Advertised, not served — see RunSummary.notServed for why this is not `failed`.
+          notServed += 1;
+          if (notServedSamples.length < 5) {
+            notServedSamples.push({ externalId, url: target.url, error: outcome.error ?? "not found" });
+          }
         } else {
           failed += 1;
           if (failureSamples.length < 5) {
@@ -1294,7 +1336,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       .update(portalRuns)
       .set({
         status: finalStatus,
-        newCount: diff.added.length,
+        newCount: diff.added.length - syndicated,
         goneCount: delisted,
         fetchedCount: ingested,
         parsedCount: ingested,
@@ -1315,7 +1357,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       runId,
       status: finalStatus,
       discovered: discovered.size,
-      added: diff.added.length,
+      // What the pass set out to fetch: syndicated adverts were never on that list.
+      added: diff.added.length - syndicated,
       refreshed: diff.refresh.length,
       refreshBacklog: Math.max(0, refreshDue - staleRows.length),
       delisted,
@@ -1325,6 +1368,9 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       communesVisited: opts.communeInsee.length,
       communesIncomplete: partialCommunes.size,
       failureSamples: failureSamples.length > 0 ? failureSamples : undefined,
+      syndicated: syndicated > 0 ? syndicated : undefined,
+      notServed: notServed > 0 ? notServed : undefined,
+      notServedSamples: notServedSamples.length > 0 ? notServedSamples : undefined,
     };
   } catch (err) {
     const message = (err as Error).message;

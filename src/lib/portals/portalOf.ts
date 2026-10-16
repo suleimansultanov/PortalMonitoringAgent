@@ -125,6 +125,38 @@ export function shownAs(url: string): { key: string; name: string } | null {
   return PORTALS.has(p.key) ? p : { ...AGENCY_SITES };
 }
 
+/**
+ * The portal a label names, when it does — "SeLoger", "idealista.fr",
+ * "Belles Demeures" — or null for anything else: an agency, an agency's own
+ * website, a person.
+ *
+ * For index cards that print a PORTAL where the agency goes. Vizzit's does
+ * (2026-10-16): its index carries adverts syndicated from idealista, SeLoger,
+ * Rightmove, Belles Demeures and Lux-Résidences, and the card's agency line
+ * is the only thing that says so before the page is fetched. Matched on the
+ * brand with case, accents, spaces and a plural dropped, or on the domain —
+ * never on an agency's own domain (`tardieu.fr`), which is not a portal.
+ */
+export function portalNamed(label: string | null | undefined): { key: string; name: string } | null {
+  const raw = label?.trim();
+  if (!raw) return null;
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(raw)) {
+    const p = portalOf(`https://${raw.toLowerCase()}/`);
+    return p && PORTALS.has(p.key) ? p : null;
+  }
+  const wanted = fold(raw);
+  for (const key of PORTALS) {
+    const brand = fold(NAMES[key] ?? key);
+    if (wanted === brand || wanted === `${brand}s` || `${wanted}s` === brand) return { key, name: NAMES[key] ?? key };
+  }
+  return null;
+}
+
+/** Letters and digits only, accents and case dropped: "Lux-Résidences" → "luxresidences". */
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 /** One portal carrying a property: where the link goes, and who brought it if not us. */
 export type PortalLink = { key: string; name: string; url: string; via?: string; publishedAt?: string | null };
 

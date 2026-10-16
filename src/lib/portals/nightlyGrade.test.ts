@@ -117,3 +117,10 @@ test("the shut-door rule does not fire when the counts are simply absent", () =>
     communesVisited: undefined, communesIncomplete: undefined }));
   assert.equal(g.grade, "ok");
 });
+
+test("adverts the portal did not serve are not failures — Vizzit, 1 062 of 1 194 a night, graded warn for ten nights", () => {
+  const g = grade(clean({ added: 113, failed: 0, notServed: 1062, syndicated: 900 }));
+  assert.equal(g.grade, "ok");
+  // And a known page that disappeared still is one.
+  assert.equal(grade(clean({ added: 113, failed: 9, notServed: 1062 })).grade, "warn");
+});

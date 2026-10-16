@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { carriedPortals, portalKey, portalLinks, portalOf } from "./portalOf";
+import { carriedPortals, portalKey, portalLinks, portalNamed, portalOf } from "./portalOf";
 
 test("the portal is the label before the public suffix", () => {
   assert.equal(portalKey("https://www.bellesdemeures.com/annonces/vente/123"), "bellesdemeures");
@@ -91,4 +91,21 @@ test("an agency's own website is shown as 'Agency websites', a portal as itself"
   ]);
   assert.deepEqual(ps.map((p) => [p.key, p.name]), [["agency-sites", "Agency websites"], ["seloger", "SeLoger"]]);
   assert.equal(ps[0].url, "https://www.tardieu.fr/vente/123", "the link still opens the agency's site");
+});
+
+test("a card's agency line that names a portal is recognised; an agency, a person or an agency's site is not", () => {
+  // Every label below is one Vizzit's Saint-Tropez index printed on 2026-10-16.
+  assert.equal(portalNamed("Seloger")?.key, "seloger");
+  assert.equal(portalNamed("idealista.fr")?.key, "idealista");
+  assert.equal(portalNamed("Rightmove")?.key, "rightmove");
+  assert.equal(portalNamed("Belles Demeures")?.key, "bellesdemeures");
+  assert.equal(portalNamed("Lux-Résidences")?.key, "lux-residence");
+  assert.equal(portalNamed("tardieu.fr"), null, "an agency's own website is not a portal");
+  assert.equal(portalNamed("meissler-co.com"), null);
+  assert.equal(portalNamed("cotedazurestate.com"), null, "stored from the runner on 2026-10-15 — must stay fetched");
+  assert.equal(portalNamed("EMILE GARCIN"), null);
+  assert.equal(portalNamed("Romain Bressy"), null);
+  assert.equal(portalNamed("Orpi"), null, "an agency network, not a listing portal");
+  assert.equal(portalNamed(""), null);
+  assert.equal(portalNamed(null), null);
 });

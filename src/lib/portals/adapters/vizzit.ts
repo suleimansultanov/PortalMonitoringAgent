@@ -2,6 +2,7 @@ import type { DiscoverContext, DiscoveredListing, PortalAdapter } from "../types
 import { isPastLastPage } from "../runner/fetcher";
 import { addressableCommunes } from "./unconfigured";
 import { cardsOnPage, greenAcresAdapter } from "./greenacres";
+import { portalNamed } from "../portalOf";
 
 /**
  * Vizzit (vizzit.fr) — Green-Acres' engine under its French-market name.
@@ -26,6 +27,20 @@ import { cardsOnPage, greenAcresAdapter } from "./greenacres";
  * WHAT IS NOT. The index lives at `/acheter/<slug>` and its pagination block
  * states the commune's total (`data-total-results`), which Green-Acres' own
  * adapter never had: each commune is graded against the portal's own count.
+ *
+ * AND A QUARTER OF THAT CATALOGUE IS NOT VIZZIT'S. Found 2026-10-16, after
+ * ten nights of "1 000 of 1 100 listings failed (410)": the index carries
+ * adverts syndicated from idealista, SeLoger, Rightmove, Belles Demeures and
+ * Lux-Résidences, and from agencies' own websites, with the source printed
+ * where the agency's name goes. The GitHub runner is answered 410 for every
+ * one of the portal ones (an EU address is served the page, `noindex`, no
+ * JSON-LD, the portal in the agency block); and because a page that fails is
+ * never stored, each of them was "new" again the next night. Those cards are
+ * yielded with `syndicatedFrom` set — counted, so a known listing is never
+ * delisted for their sake and the commune's total still reconciles — and the
+ * runner leaves them unfetched. Agencies' own sites are not marked: some of
+ * those the runner IS served (cotedazurestate.com, stored 2026-10-15), and a
+ * card cannot tell which.
  *
  * ACCESS: `scripts/access-test.mjs --direct` from GitHub Actions, 2026-10-04 —
  * index and listing 200 to our user-agent. robots.txt is Green-Acres' own:
@@ -62,6 +77,8 @@ export const vizzitAdapter: PortalAdapter = {
 
     for (const c of communes.filter((x) => wanted.includes(x.insee))) {
       const seen = new Set<string>();
+      /** Adverts the index syndicates from other portals, by portal. See the header. */
+      const syndicated = new Map<string, number>();
       let total: number | null = null;
       let knownStreak = 0;
       /** Set by every exit that is not "the results ran out". */
@@ -110,6 +127,13 @@ export const vizzitAdapter: PortalAdapter = {
 
         for (const card of fresh) {
           seen.add(card.id);
+          const portal = portalNamed(card.company);
+          if (portal) {
+            // Neither known nor new to the delta stop: another portal's advert does not say where Vizzit's own list ends.
+            syndicated.set(portal.name, (syndicated.get(portal.name) ?? 0) + 1);
+            yield { externalId: card.id, url: card.url, communeHint: c.slug, syndicatedFrom: portal.name };
+            continue;
+          }
           if (ctx.delta) {
             if (ctx.delta.knows(card.id)) {
               knownStreak += 1;
@@ -132,6 +156,13 @@ export const vizzitAdapter: PortalAdapter = {
         }
       }
 
+      const elsewhere = [...syndicated.values()].reduce((a, b) => a + b, 0);
+      if (elsewhere > 0) {
+        console.log(
+          `[vizzit] ${c.slug}: ${elsewhere} of ${seen.size} cards are adverts syndicated from other portals ` +
+            `(${[...syndicated].map(([n, k]) => `${n} ${k}`).join(", ")}) — marked, left for the runner to skip`,
+        );
+      }
       if (stoppedOnKnown) {
         ctx.incomplete(c.insee, `stopped after ${knownStreak} listings we already hold — the rest is older`);
         continue;

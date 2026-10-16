@@ -15,7 +15,7 @@ const COMMUNES = [{ insee: "83119", slug: "saint-tropez", label: "Saint-Tropez" 
 
 async function discoverWith(pageFor: (url: string) => string, config: Record<string, unknown> = {}) {
   const asked: string[] = [];
-  const out: { externalId: string; url: string }[] = [];
+  const out: { externalId: string; url: string; syndicatedFrom?: string }[] = [];
   const incomplete: [string, string][] = [];
   const ctx = {
     fetch: async (url: string) => {
@@ -121,4 +121,36 @@ test("a listing that exists only on Vizzit keeps its photographs on Vizzit's own
   assert.equal(r.listing.imageUrls.length, 8);
   for (const u of r.listing.imageUrls) assert.match(u, /^https:\/\/lb1\.vizzit\.com\//);
   assert.equal(r.listing.imageUrls[0], r.listing.imageUrl, "the cover is the first photograph, once");
+});
+
+/**
+ * Saint-Tropez page 1 as served on 2026-10-16, with the agency blocks kept.
+ * Twenty of its twenty-three cards are not Vizzit's own adverts: the agency
+ * line names idealista.fr, Seloger, Rightmove, Belles Demeures, Lux-Résidences
+ * — or an agency's own website (tardieu.fr, meissler-co.com).
+ */
+const INDEX_SYNDICATED = fs.readFileSync(path.join(FIXTURES, "vizzit-index-saint-tropez-syndicated.html"), "utf8");
+
+test("an advert syndicated from another portal is yielded marked, counted, and never fetched as Vizzit's own", async () => {
+  // Page two is empty: the results ran out, which is the one exit that lets the
+  // "read N of the M they state" check speak.
+  const { out, incomplete } = await discoverWith((url) =>
+    url.endsWith("/acheter/saint-tropez") ? INDEX_SYNDICATED : "<html><body></body></html>",
+  );
+
+  assert.equal(out.length, 23, "every card is discovered — a known one must never be delisted for being skipped");
+  const marked = out.filter((d) => d.syndicatedFrom);
+  assert.equal(marked.length, 15);
+  assert.deepEqual(
+    [...new Set(marked.map((d) => d.syndicatedFrom))].sort(),
+    ["Belles Demeures", "Idealista", "Lux-Residence", "Rightmove", "SeLoger"],
+  );
+  const by = new Map(out.map((d) => [d.externalId, d.syndicatedFrom]));
+  assert.equal(by.get("Aorn267lw1srcudi"), "Idealista", "answered 410 to the runner on 2026-10-15, served to an EU address");
+  assert.equal(by.get("A2ku8knqi8v3m553"), "SeLoger");
+  // An agency's own website is not a portal: some of those the runner is served, so they stay on the fetch list.
+  assert.equal(by.get("Aetvadd46jjytc0a"), undefined, "tardieu.fr");
+  assert.equal(by.get("Arf3n2j96v9oojo8"), undefined, "a real agency, stored since 2026-10-05");
+  // The portal's own total still reconciles against every card, syndicated or not.
+  assert.ok(incomplete.some(([, r]) => /read 23 of the 578/.test(r)), JSON.stringify(incomplete));
 });

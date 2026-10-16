@@ -235,3 +235,31 @@ export function changedInHand(input: {
   }
   return out;
 }
+
+/**
+ * What to fetch, from what discovery found.
+ *
+ * A NEW listing the index syndicates from another portal is left out. Vizzit's
+ * index carries idealista's, SeLoger's and Rightmove's adverts with the portal
+ * printed where the agency goes, and the GitHub runner was answered 410 for
+ * every one of them: 1 062 of 1 194 fetches on 2026-10-15, about a thousand a
+ * night since 10-06, each "new" again the next night because a page that
+ * fails is never stored. They are those portals' adverts, not this one's. A
+ * KNOWN one — served to us once — keeps its refresh: the portal evidently does
+ * serve it to this address, and we hold a page to keep current.
+ */
+export function planFetch(input: {
+  added: string[];
+  refresh: string[];
+  syndicatedFrom: (id: string) => string | undefined;
+}): { toFetch: string[]; syndicated: Record<string, number> } {
+  const syndicated: Record<string, number> = {};
+  const toFetch: string[] = [];
+  for (const id of input.added) {
+    const from = input.syndicatedFrom(id);
+    if (from) syndicated[from] = (syndicated[from] ?? 0) + 1;
+    else toFetch.push(id);
+  }
+  toFetch.push(...input.refresh);
+  return { toFetch, syndicated };
+}
