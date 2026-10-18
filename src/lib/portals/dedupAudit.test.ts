@@ -37,7 +37,7 @@ test("the client's villa, still two cards: same price, same plot, 179 against 21
   });
   assert.equal(r.twins.length, 1);
   assert.equal(r.twins[0].by, "size");
-  assert.equal(r.twins[0].guarded, false);
+  assert.equal(r.twins[0].wouldMerge, null, "no replay supplied");
 });
 
 test("the same agency's mandate on two properties is a twin whatever the prices say", () => {
@@ -71,29 +71,47 @@ test("properties in two communes are never compared", () => {
   assert.equal(r.twins.length, 0);
 });
 
-test("a chain the guard splits is reported as kept apart, not as a miss", () => {
-  // 200 – 230 – 270 m² at one price: each neighbour within 20%, the ends 26% apart.
+test("a twin whose listings the replayed resolve puts in one group is an anomaly; one it splits is the guard's decision", () => {
+  const listings: AuditListing[] = [
+    { id: "la", propertyId: "a", source: "vizzit", priceEur: 4_490_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { id: "lb", propertyId: "b", source: "bienici", priceEur: 4_490_000, areaM2: 230, landM2: null, propertyType: "Maison" },
+    { id: "lc", propertyId: "c", source: "etreproprio", priceEur: 4_490_000, areaM2: 270, landM2: null, propertyType: "Maison" },
+  ];
+  const group: Record<string, string> = { la: "g1", lb: "g1", lc: "g2" };
   const r = auditDuplicates({
     properties: [
       prop({ id: "a", areaM2: 200, landM2: null, description: "x" }),
       prop({ id: "b", areaM2: 230, landM2: null, description: "y" }),
       prop({ id: "c", areaM2: 270, landM2: null, description: "z" }),
     ],
+    listings,
+    groupOf: (id) => group[id],
+  });
+  const pairs = r.twins.map((t) => `${t.a.id}${t.b.id}:${t.wouldMerge ? "anomaly" : "guard"}`).sort();
+  assert.deepEqual(pairs, ["ab:anomaly", "bc:guard"], "a–b and b–c score; a–c does not");
+});
+
+test("without a replay the question is left open, not answered", () => {
+  const r = auditDuplicates({
+    properties: [prop({ id: "a" }), prop({ id: "b", areaM2: 210, description: "other words entirely here" })],
     listings: [],
   });
-  const pairs = r.twins.map((t) => `${t.a.id}${t.b.id}:${t.guarded ? "guarded" : "miss"}`).sort();
-  assert.equal(pairs.length, 2, "a–b and b–c score; a–c does not");
-  assert.ok(pairs.some((p) => p.endsWith("guarded")), `the guard separates one end: ${pairs}`);
-  assert.ok(pairs.some((p) => p.endsWith("miss")), `and leaves the other pair as a miss: ${pairs}`);
+  assert.equal(r.twins.length, 1);
+  assert.equal(r.twins[0].wouldMerge, null);
 });
 
 test("a property whose listings disagree on price by more than the guard allows is welded", () => {
   const listings: AuditListing[] = [
-    { propertyId: "p", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
-    { propertyId: "p", source: "bienici", priceEur: 1_800_000, areaM2: 200, landM2: null, propertyType: "Maison" },
-    { propertyId: "q", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
-    { propertyId: "q", source: "bienici", priceEur: 1_000_000, areaM2: 205, landM2: null, propertyType: "Maison" },
+    { id: "p1", propertyId: "p", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { id: "p2", propertyId: "p", source: "bienici", priceEur: 1_800_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { id: "q1", propertyId: "q", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { id: "q2", propertyId: "q", source: "bienici", priceEur: 1_000_000, areaM2: 205, landM2: null, propertyType: "Maison" },
+    { id: "r1", propertyId: "r", source: "vizzit", priceEur: 2_000_000, areaM2: 300, landM2: 1000, propertyType: "Maison" },
+    { id: "r2", propertyId: "r", source: "bienici", priceEur: 2_000_000, areaM2: 400, landM2: 1000, propertyType: "Maison" },
   ];
-  const r = auditDuplicates({ properties: [prop({ id: "p", priceEur: 1_000_000 }), prop({ id: "q", priceEur: 1_000_000, communeInsee: "83119" })], listings });
-  assert.deepEqual(r.welded.map((w) => [w.property.id, w.on]), [["p", "price"]]);
+  const r = auditDuplicates({
+    properties: [prop({ id: "p", priceEur: 1_000_000 }), prop({ id: "q", priceEur: 1_000_000, communeInsee: "83119" }), prop({ id: "r", priceEur: 2_000_000, communeInsee: "83068" })],
+    listings,
+  });
+  assert.deepEqual(r.welded.map((w) => [w.property.id, w.on]), [["p", "price"], ["r", "area"]]);
 });

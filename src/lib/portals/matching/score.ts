@@ -513,7 +513,15 @@ function sameHouseBand(a: Candidate, b: Candidate): boolean {
 
 /** How far two floor areas may disagree and still be one property — see the constants. */
 export function areaTolerance(a: Candidate, b: Candidate): number {
-  if (isFlat(a.propertyType) || isFlat(b.propertyType)) return FLAT_AREA_TOLERANCE;
+  /**
+   * Carrez precision only when BOTH portals call it a flat. Agencies file a
+   * villa as "Appartement" on one portal and "Maison" on the next (Sainte-
+   * Maxime, 595 000 €, 2026-10-18: one mandate, three portals, typed both
+   * ways), and holding such a pair to 1.5% split the house. A pair the portals
+   * disagree about gets the ordinary rounding band — neither tightened nor
+   * widened — and joins through the rows that agree.
+   */
+  if (isFlat(a.propertyType) && isFlat(b.propertyType)) return FLAT_AREA_TOLERANCE;
   if (sameHouseBand(a, b)) return AREA_TOLERANCE_SAME_PRICE;
   const land = landDeltaOf(a, b);
   if (land === null || land > LAND_TOLERANCE) return AREA_TOLERANCE;
@@ -690,12 +698,26 @@ export function cluster(
 const CLUSTER_PRICE_SPAN = 0.35;
 
 /**
- * And above this spread in floor area, whatever the prices say.
+ * How far a chain of houses may run end to end before it is cut, when no
+ * single member is out of the band on its own.
  *
- * Tighter than the price rule on purpose. A price legitimately differs between
- * portals — one is stale, one is negotiated — while a villa's floor area is
- * the same number everywhere, give or take how each portal rounds it. Ten per
- * cent is far wider than any rounding and far narrower than 480 against 355.
+ * The band for houses is the client's own (AREA_TOLERANCE_SAME_PRICE, 20%),
+ * measured from the median: four agencies quoting 130, 148, 160 and 167 m²
+ * for one villa are each within a fifth of 160 and are one house, though the
+ * ends are 22% apart. A guard that cut at the widest gap whenever the ends
+ * exceeded the band turned exactly those into two cards — 98 pairs on
+ * 2026-10-18, every one of them a pair the pair rule had just joined. But a
+ * chain can run on: 280 – 325 – 378 – 400 at one price is two villas, joined
+ * through the middle. Past this ceiling end to end, it is cut at the widest
+ * gap and the side holding the median stays.
+ */
+const CLUSTER_AREA_CHAIN = 0.3;
+
+/**
+ * And the band when the plots do NOT mostly agree: the rounding band of the
+ * pair rules, with the forced split. Two houses at one price on two plots is
+ * what this is for (Grimaud, 3 950 000 €: 330 m² on 2 500 against 400 m² on
+ * 3 239–4 000); far narrower than 480 against 355.
  */
 const CLUSTER_AREA_SPAN = 0.1;
 
@@ -734,29 +756,50 @@ export function incoherentAreas(
    * a flat's area is measured under the Carrez law and quoted the same way
    * everywhere, so a spread across a cluster of flats is a cluster holding
    * more than one flat.
+   *
+   * By MAJORITY of the rows that state a type. "Every member a flat" let one
+   * portal's "Appartement" on a villa hold the whole cluster to the flat band
+   * (2026-10-18: 31 of 149 pairs left apart); "any member a flat" did the
+   * same in the other direction. One portal's label is one vote.
    */
-  const allFlats =
-    members.length > 0 && members.every((m) => m.propertyType === undefined || isFlat(m.propertyType));
-  return incoherentBy(
-    members.map((m) => ({ id: m.id, value: m.areaM2 })),
-    allFlats ? CLUSTER_FLAT_AREA_SPAN : housesOnOnePlot(members) ? AREA_TOLERANCE_SAME_PRICE : CLUSTER_AREA_SPAN,
-  );
+  const areas = members.map((m) => ({ id: m.id, value: m.areaM2 }));
+  if (mostlyFlats(members)) return incoherentBy(areas, CLUSTER_FLAT_AREA_SPAN);
+  return plotsMostlyAgree(members)
+    ? incoherentBy(areas, AREA_TOLERANCE_SAME_PRICE, { chainsUpTo: CLUSTER_AREA_CHAIN })
+    : incoherentBy(areas, CLUSTER_AREA_SPAN);
 }
 
 /**
- * Houses only, and the plots they state within 20% of each other — the same
- * evidence the pair rule widens on, so the guard on the cluster allows the same
- * 20% of floor area. A guard that did not would undo every merge the rule makes
- * (measured 2026-10-15: 633 listings split back out instead of 102). The price
- * guard still runs first and still holds the cluster to one price band.
+ * Do the plots the members state put them on one piece of ground? More than
+ * half of them within a fifth of the median plot. Fewer than two stated: yes —
+ * unknown is not a disagreement.
+ *
+ * By majority from the median, not by the cluster's extremes. "Every plot
+ * within 20% of every other" let one row saying 923 m² under a villa on 1 500
+ * (Cavalaire, 2026-10-18) drop the floor-area band from 20% to 10% for thirty
+ * rows, and three agencies' listings of one house became three cards.
+ *
+ * NOT a reason to evict a member on its own. Measured the same day: of 1 562
+ * served houses with two or more listings stating a plot, 197 (13%) have
+ * plots more than 20% apart and 85 more than 60% — one house, several
+ * portals, several readings of "terrain". A guard that split on the plot tore
+ * 1 859 listings out of their clusters in a dry run. The plot chooses the
+ * band; the floor area decides.
  */
-function housesOnOnePlot(members: { propertyType?: string | null; landM2?: number | null }[]): boolean {
-  if (members.some((m) => isFlat(m.propertyType ?? null) || isPlot(m.propertyType ?? null) || isPremises(m.propertyType ?? null))) return false;
+function plotsMostlyAgree(members: { landM2?: number | null }[]): boolean {
   const plots = members.map((m) => m.landM2).filter((v): v is number => v !== null && v !== undefined && v > 0);
   if (plots.length < 2) return true;
-  const lo = Math.min(...plots);
-  const hi = Math.max(...plots);
-  return (hi - lo) / hi <= LAND_TOLERANCE_SAME_PRICE;
+  const sorted = [...plots].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const agreeing = plots.filter((v) => Math.abs(v - median) / Math.max(v, median) <= LAND_TOLERANCE_SAME_PRICE).length;
+  return agreeing * 2 > plots.length;
+}
+
+/** More than half of the rows that state a type call it a flat. No type stated anywhere: not flats. */
+function mostlyFlats(members: { propertyType?: string | null }[]): boolean {
+  const typed = members.filter((m) => m.propertyType !== undefined && m.propertyType !== null);
+  const flats = typed.filter((m) => isFlat(m.propertyType!)).length;
+  return typed.length > 0 && flats * 2 > typed.length;
 }
 
 /**
@@ -770,6 +813,7 @@ function housesOnOnePlot(members: { propertyType?: string | null; landM2?: numbe
 function incoherentBy(
   members: { id: string; value: number | null }[],
   tolerance: number,
+  opts: { chainsUpTo?: number } = {},
 ): string[] {
   const known = members.filter((m) => m.value !== null) as { id: string; value: number }[];
   if (known.length < 2) return [];
@@ -798,7 +842,12 @@ function incoherentBy(
    * widest relative gap instead and keep the side holding the median. It always
    * removes something, which is the point: a wrong split shows a duplicate, a
    * wrong merge hides a property.
+   *
+   * Unless the caller allows a chain: measurements of one house from several
+   * hands spread wider than any one of them is from the middle, and up to
+   * `chainsUpTo` end to end that is one house, not a cluster to cut.
    */
+  if (opts.chainsUpTo !== undefined && span <= opts.chainsUpTo) return [];
   let gapAt = 1;
   let widest = 0;
   for (let i = 1; i < sorted.length; i++) {
@@ -867,7 +916,8 @@ export function splitIncoherent<
      * A cluster welded together by measurement-only merges is coherent in
      * price BY CONSTRUCTION — every such merge required the prices to be
      * identical — so the price guard passes it and sees nothing. Area is what
-     * catches those, and a group has to survive both to stand.
+     * catches those, and a group has to survive both to stand. The plot is not
+     * a third guard: it chooses the floor-area band (see plotsMostlyAgree).
      *
      * Each guard keeps the members around its own median, so applied one at a
      * time something always stays. Applied together (2026-10-15) the price
@@ -875,19 +925,15 @@ export function splitIncoherent<
      * evicted everyone, the whole group re-clustered into itself, and the loop
      * never ended.
      */
-    let outliers = new Set(incoherentMembers(group.map((g) => ({ id: g.id, priceEur: g.priceEur }))));
-    if (outliers.size === 0) {
-      outliers = new Set(
-        incoherentAreas(
-          group.map((g) => ({
-            id: g.id,
-            areaM2: g.areaM2 === null ? null : Number(g.areaM2),
-            propertyType: g.propertyType,
-            landM2: g.landM2 === null ? null : Number(g.landM2),
-          })),
-        ),
-      );
-    }
+    const members = group.map((g) => ({
+      id: g.id,
+      priceEur: g.priceEur,
+      areaM2: g.areaM2 === null ? null : Number(g.areaM2),
+      landM2: g.landM2 === null ? null : Number(g.landM2),
+      propertyType: g.propertyType,
+    }));
+    let outliers = new Set(incoherentMembers(members));
+    if (outliers.size === 0) outliers = new Set(incoherentAreas(members));
     if (outliers.size === 0) continue;
     const kept = group.filter((g) => !outliers.has(g.id));
     if (kept.length === 0) throw new Error("splitIncoherent: a guard evicted its own median — the loop would not end");
@@ -920,6 +966,57 @@ export function splitIncoherent<
     }
   }
   return evicted;
+}
+
+/**
+ * THE PIPELINE, in one place: score every plausible pair, cluster what
+ * matched, break apart what does not hold together. The resolve writes its
+ * result, dedup:check measures it dry, the duplicate audit replays it to ask
+ * whether what was written is what it would decide — and they have to be the
+ * same function, or the measurement is of something else.
+ *
+ * `bestSignals` keeps the strongest evidence per listing, not the last: a
+ * listing that matched three others should carry the reason easiest to
+ * defend, which is almost always the exact mandate reference if one fired.
+ */
+export function clusterCandidates(
+  candidates: Candidate[],
+  threshold: number,
+): {
+  /** Group key → member ids. Keys are opaque; a split-out group's key is minted. */
+  groups: Map<string, string[]>;
+  edges: { a: Candidate; b: Candidate; verdict: MatchVerdict }[];
+  bestSignals: Map<string, { confidence: number; signals: MatchSignals }>;
+  /** Listings the coherence guards split back out. */
+  evicted: number;
+} {
+  const edges: { a: Candidate; b: Candidate; verdict: MatchVerdict }[] = [];
+  const bestSignals = new Map<string, { confidence: number; signals: MatchSignals }>();
+  for (const [a, b] of candidatePairs(candidates)) {
+    const verdict = scoreMatch(a, b);
+    if (!verdict.same || verdict.confidence < threshold) continue;
+    edges.push({ a, b, verdict });
+    for (const id of [a.id, b.id]) {
+      const prev = bestSignals.get(id);
+      if (!prev || verdict.confidence > prev.confidence) bestSignals.set(id, { confidence: verdict.confidence, signals: verdict.signals });
+    }
+  }
+  const matched: [string, string][] = edges.map((e) => [e.a.id, e.b.id]);
+  const roots = cluster(
+    candidates.map((c) => c.id),
+    matched,
+  );
+  const grouped = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const key = roots.get(c.id) ?? c.id;
+    const list = grouped.get(key);
+    if (list) list.push(c);
+    else grouped.set(key, [c]);
+  }
+  const evicted = splitIncoherent(grouped, matched);
+  const groups = new Map<string, string[]>();
+  for (const [key, members] of grouped) if (members.length > 0) groups.set(key, members.map((m) => m.id));
+  return { groups, edges, bestSignals, evicted };
 }
 
 function round(n: number): number {

@@ -9,6 +9,7 @@ import {
   looksLikeMandateRef,
   splitIncoherent,
   areaTolerance,
+  clusterCandidates,
   type Candidate,
 } from "./score";
 import { containment, normaliseForCompare } from "./text";
@@ -663,4 +664,76 @@ test("the 20% band stops at 20%, at a plot 20% off, at flats, bare plots and two
   assert.equal(areaTolerance(c({ id: "1", ...house, propertyType: "Terrain" }), c({ id: "2", ...house })) < 0.2, true, "bare plots too");
   assert.equal(areaTolerance(c({ id: "1", ...house, propertyType: "Local" }), c({ id: "2", ...house, propertyType: "Commerce" })) < 0.2, true, "and premises");
   assert.equal(areaTolerance(c({ id: "1", ...house }), c({ id: "2", ...house, landM2: 1300 })), 0.2);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The cluster guard after 2026-10-18: one bad row is one row, not the band
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("one odd plot under a villa is evicted on its own; it does not tighten the band for thirty rows — Cavalaire, 1 490 000 €", () => {
+  // Three agencies, 188–215 m² on 1 500–1 580 m²; one portal's row says 923 m² of land.
+  const rows = [
+    { id: "odd1", areaM2: 184, landM2: 923, propertyType: "Maison" },
+    { id: "odd2", areaM2: 184, landM2: 923, propertyType: "Maison" },
+    { id: "a1", areaM2: 188, landM2: 1500, propertyType: "Maison" },
+    { id: "a2", areaM2: 188.3, landM2: 1550, propertyType: "Maison" },
+    { id: "a3", areaM2: 190, landM2: 1580, propertyType: "Maison" },
+    { id: "a4", areaM2: 197, landM2: null, propertyType: "Maison" },
+    { id: "b1", areaM2: 207, landM2: 1580, propertyType: "Maison" },
+    { id: "c1", areaM2: 215, landM2: 1579, propertyType: "Maison" },
+  ];
+  assert.deepEqual(incoherentAreas(rows), [], "most plots agree, so the band is the house band: 184 to 215 is one house");
+});
+
+test("plots that split down the middle keep the strict band — Grimaud, 3 950 000 €: 330 m² on 2 500 against 400 m² on 3 239–4 000", () => {
+  const rows = [
+    { id: "a1", areaM2: 330, landM2: 2500, propertyType: "Maison" },
+    { id: "a2", areaM2: 340, landM2: 2500, propertyType: "Maison" },
+    { id: "a3", areaM2: 340, landM2: 2500, propertyType: "Maison" },
+    { id: "b1", areaM2: 380, landM2: 3239, propertyType: "Maison" },
+    { id: "b2", areaM2: 400, landM2: 4000, propertyType: "Maison" },
+    { id: "b3", areaM2: 400, landM2: 4000, propertyType: "Maison" },
+  ];
+  const evicted = incoherentAreas(rows);
+  assert.ok(evicted.length > 0, "two plots, 18% of floor area apart: two houses");
+  assert.ok(evicted.every((id) => id.startsWith("a")) || evicted.every((id) => id.startsWith("b")), `one side goes whole: ${evicted}`);
+});
+
+test("a chain within a fifth of its median is one house; past thirty per cent end to end it is cut at the widest gap — Sainte-Maxime, 2 950 000 €", () => {
+  const house = (id: string, areaM2: number) => ({ id, areaM2, propertyType: "Maison" });
+  assert.deepEqual(incoherentAreas([house("a", 130), house("b", 148), house("c", 160), house("d", 167)]), [], "22% end to end, every area within 20% of 160");
+  const cut = incoherentAreas([house("a", 279), house("b", 280), house("c", 325), house("d", 325), house("e", 378), house("f", 400), house("g", 402)]);
+  assert.deepEqual(cut.sort(), ["e", "f", "g"], "30.6% end to end: cut at 325 → 378, the side with the median stays");
+});
+
+test("a minority of rows typed as a flat does not hold a house to the Carrez band; a majority does", () => {
+  const rows = [
+    { id: "a", areaM2: 148, propertyType: "Maison" },
+    { id: "b", areaM2: 160, propertyType: "Immobilier" },
+    { id: "c", areaM2: 165, propertyType: "Appartement" },
+    { id: "d", areaM2: 167, propertyType: "Maison" },
+    { id: "e", areaM2: 167, propertyType: "Appartement" },
+  ];
+  assert.deepEqual(incoherentAreas(rows), [], "three of five say house: 148 to 167 is one house");
+  const flats = rows.map((r) => ({ ...r, propertyType: "Appartement" }));
+  assert.ok(incoherentAreas(flats).length > 0, "all flats: 148 against 167 is two flats");
+});
+
+test("a pair typed house on one portal and flat on another gets the ordinary band, not Carrez", () => {
+  const base = { communeInsee: "83115", priceEur: 595_000, areaM2: 148, landM2: 650 };
+  const house = c({ id: "h", ...base, propertyType: "Maison" });
+  const flat = c({ id: "f", ...base, propertyType: "Appartement" });
+  assert.equal(areaTolerance(house, flat) >= 0.03, true);
+  assert.equal(areaTolerance(flat, c({ id: "f2", ...base, propertyType: "Appartement" })), 0.015);
+});
+
+test("clusterCandidates groups what matched and keeps the strongest evidence per listing", () => {
+  const a = c({ id: "a", agencyId: "ag", agencyRef: "70880", description: BARNES });
+  const b = c({ id: "b", sourceId: "s2", agencyId: "ag", agencyRef: "70880", description: BARNES_TRUNCATED });
+  const other = c({ id: "o", sourceId: "s3", priceEur: 1_000_000, description: OTHER_VILLA });
+  const r = clusterCandidates([a, b, other], 0.8);
+  const groups = [...r.groups.values()].map((ids) => ids.sort().join(",")).sort();
+  assert.deepEqual(groups, ["a,b", "o"]);
+  assert.equal(r.bestSignals.get("a")?.signals.agencyRefExact, true);
+  assert.equal(r.evicted, 0);
 });

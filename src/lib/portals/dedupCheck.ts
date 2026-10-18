@@ -1,13 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalSources } from "@/lib/db/schema";
-import {
-  candidatePairs,
-  cluster,
-  splitIncoherent,
-  scoreMatch,
-  type Candidate,
-} from "./matching/score";
+import { clusterCandidates, type Candidate } from "./matching/score";
 
 /**
  * What would the matcher do, before it is allowed to do it?
@@ -120,12 +114,8 @@ async function main(): Promise<void> {
       description: r.description,
     }));
     const byId = new Map(candidates.map((c) => [c.id, c]));
-
-    const matched: [string, string][] = [];
-    for (const [a, b] of candidatePairs(candidates)) {
-      const v = scoreMatch(a, b);
-      if (!v.same || v.confidence < THRESHOLD) continue;
-      matched.push([a.id, b.id]);
+    const clustered = clusterCandidates(candidates, THRESHOLD);
+    for (const { a, b, verdict: v } of clustered.edges) {
       if (v.signals.structuralOnly) {
         structuralEdges++;
         if (samples.length < 10 && a.sourceId !== b.sourceId) {
@@ -139,27 +129,10 @@ async function main(): Promise<void> {
         textEdges++;
       }
     }
-
-    const assigned = cluster(
-      candidates.map((c) => c.id),
-      matched,
-    );
-    const sizes = new Map<string, string[]>();
-    for (const [id, root] of assigned) {
-      const members = sizes.get(root);
-      if (members) members.push(id);
-      else sizes.set(root, [id]);
-    }
-
-    /**
-     * The same coherence guards `resolve` applies, or this reports a number the
-     * real run will never produce. Measuring a pipeline without the half that
-     * corrects it is worse than not measuring: it reads as evidence.
-     */
-    const rowsBy = new Map<string, Candidate[]>([...sizes].map(([k, ids]) => [k, ids.map((id) => byId.get(id)!)]));
-    split += splitIncoherent(rowsBy, matched);
-    sizes.clear();
-    for (const [k, members] of rowsBy) if (members.length > 0) sizes.set(k, members.map((x) => x.id));
+    // The same coherence guards `resolve` applies, inside the same function: a
+    // number the real run will produce, not one measured without the half that corrects it.
+    split += clustered.evicted;
+    const sizes = clustered.groups;
 
     listings += candidates.length;
     clusters += sizes.size;

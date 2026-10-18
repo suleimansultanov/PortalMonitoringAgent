@@ -4,14 +4,7 @@ import { db, withDbRetry } from "@/lib/db/client";
 import { portalListings, portalSources, properties } from "@/lib/db/schema";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { coverFromGallery } from "../images";
-import {
-  candidatePairs,
-  cluster,
-  scoreMatch,
-  splitIncoherent,
-  type Candidate,
-  type MatchSignals,
-} from "./score";
+import { clusterCandidates, type Candidate } from "./score";
 
 /**
  * Turning listings into properties.
@@ -160,60 +153,24 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
     description: r.description,
   }));
 
-  // ── Score ───────────────────────────────────────────────────────────────
-  const matched: [string, string][] = [];
-  const bestSignals = new Map<string, { confidence: number; signals: MatchSignals }>();
-
-  for (const [a, b] of candidatePairs(candidates)) {
-    const verdict = scoreMatch(a, b);
-    if (!verdict.same || verdict.confidence < threshold) continue;
-
-    matched.push([a.id, b.id]);
-
-    /**
-     * Keep the strongest evidence per listing, not the last. A listing that
-     * matched three others should carry the reason that is easiest to defend —
-     * which is almost always the exact mandate reference, if one fired.
-     */
-    for (const id of [a.id, b.id]) {
-      const prev = bestSignals.get(id);
-      if (!prev || verdict.confidence > prev.confidence) {
-        bestSignals.set(id, { confidence: verdict.confidence, signals: verdict.signals });
-      }
-    }
-  }
-
-  const clusters = cluster(
-    candidates.map((c) => c.id),
-    matched,
-  );
-
-  // ── Group ───────────────────────────────────────────────────────────────
-  const groups = new Map<string, typeof rows>();
-  for (const row of rows) {
-    const key = clusters.get(row.id) ?? row.id;
-    const list = groups.get(key);
-    if (list) list.push(row);
-    else groups.set(key, [row]);
-  }
-
+  // ── Score, cluster, guard ───────────────────────────────────────────────
   /**
-   * Break apart clusters that are not internally plausible.
-   *
-   * Union-find is transitive, so one wrong edge welds two blobs together and
-   * every further wrong edge doubles the damage. This ran for real: a single
+   * One pipeline, shared with dedup:check and the duplicate audit — see
+   * clusterCandidates. The guard inside it is the last line of defence:
+   * union-find is transitive, so one wrong edge welds two blobs together and
+   * every further wrong edge doubles the damage. It ran for real: a single
    * "property" in Sainte-Maxime held 47 listings priced from €739k to €7.8M,
    * chained through dozens of accidental text matches.
-   *
-   * The pair rules have been tightened, but a check on the RESULT is a
-   * different kind of guard — it does not depend on getting the scoring right,
-   * which is exactly why it is worth having.
    */
-  const evicted = splitIncoherent(groups, matched);
-  if (evicted > 0) {
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  const clustered = clusterCandidates(candidates, threshold);
+  const bestSignals = clustered.bestSignals;
+  const groups = new Map<string, typeof rows>();
+  for (const [key, ids] of clustered.groups) groups.set(key, ids.map((id) => rowById.get(id)!));
+  if (clustered.evicted > 0) {
     console.warn(
-      `[resolve] ${communeInsee}: ${evicted} listing(s) split out of incoherent clusters ` +
-        `(price or floor area spread too wide to be one property)`,
+      `[resolve] ${communeInsee}: ${clustered.evicted} listing(s) split out of incoherent clusters ` +
+        `(price, plot or floor area spread too wide to be one property)`,
     );
   }
 

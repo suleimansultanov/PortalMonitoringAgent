@@ -6,11 +6,10 @@ import { servedProperty } from "@/lib/api/served";
 import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import {
   candidatePairs,
-  cluster,
+  clusterCandidates,
   incoherentAreas,
   incoherentMembers,
   scoreMatch,
-  splitIncoherent,
   type Candidate,
   type MatchSignals,
 } from "./matching/score";
@@ -26,28 +25,30 @@ import {
  * from the client entirely while a split only shows one twice — the asymmetry
  * the whole matcher is built around, and the reason a person looks first.
  *
- * TWO QUESTIONS, in both directions the matcher can be wrong:
+ * THREE QUESTIONS:
  *
- *   TWINS LEFT APART. Every active property the client is served is scored
- *   against every other in its commune exactly as two listings would be —
- *   `candidatePairs` and `scoreMatch`, the same threshold the resolve reads.
- *   A pair the rules call one house is a duplicate on the client's screen by
- *   our own definition. Measured with the rules rather than with a looser
- *   "same price, close size" net on purpose: the client's complaint of
- *   2026-10-15 (one villa, two cards, 179 against 210 m²) became a rule that
- *   day, and this is what checks the rule is being applied, every night, over
- *   what is stored rather than over what the matcher believed in memory.
+ *   TWINS. Every active property the client is served is scored against every
+ *   other in its commune exactly as two listings would be — `candidatePairs`
+ *   and `scoreMatch`, the resolve's own threshold. A pair the rules call one
+ *   house is a duplicate on the client's screen by our own definition. The
+ *   client's complaint of 2026-10-15 (one villa, two cards, 179 against
+ *   210 m²) became a rule that day; this checks the rule is being applied,
+ *   every night, over what is stored rather than over what the matcher
+ *   believed in memory.
  *
- *   Some of these are deliberate. The coherence guard splits a cluster whose
- *   ends do not fit together even when each adjacent pair does, so a pair the
- *   guard separated scores as a twin here every night. They are told apart:
- *   the twins are clustered and guarded the way the resolve does it, and a
- *   pair the guard would split again is reported as such, not as a miss.
+ *   Each twin is then asked the sharper question: WOULD THE RESOLVE ITSELF
+ *   MERGE THEM? The whole pipeline is replayed over the commune's listings —
+ *   `clusterCandidates`, the same function the resolve writes from — and if
+ *   the two properties' listings land in one group, the resolve disagrees
+ *   with what is stored: an anomaly, something to find. If they land in two,
+ *   the cluster guard separated them on purpose — a chain whose ends do not
+ *   fit, two plots, a stale row from a source no longer collected — and the
+ *   pair is a rule to question, listed with what kept it apart.
  *
- *   HOUSES WELDED TOGETHER. A property whose served listings disagree on
- *   price by more than the cluster guard allows, or on floor area, is two
- *   houses under one card. The guard runs inside the resolve and should
- *   leave none; this reads the rows and says whether it did.
+ *   WELDED. A property whose served listings disagree on price or floor area
+ *   by more than the guard allows is two houses under one card. The
+ *   guard runs inside the resolve and should leave none; this reads the rows
+ *   back and says whether it did.
  *
  * Not caught, and said plainly: two listings of one house that the rules do
  * not join — a price the agencies state differently, a size a quarter apart.
@@ -72,6 +73,7 @@ export type AuditProperty = {
 };
 
 export type AuditListing = {
+  id: string;
   propertyId: string;
   source: string;
   priceEur: number | null;
@@ -86,15 +88,18 @@ export type Twin = {
   confidence: number;
   /** What joined them: the mandate, the measurements alone, or the prose. */
   by: "mandate" | "size" | "text";
-  /** True when the resolve's own guard would split this pair again: reported, not a miss. */
-  guarded: boolean;
+  /**
+   * Replaying the resolve over the commune's listings puts the two properties'
+   * listings in one group: the resolve disagrees with what is stored. Null
+   * when no replay was supplied.
+   */
+  wouldMerge: boolean | null;
   signals: MatchSignals;
 };
 
 export type Welded = {
   property: AuditProperty;
   listings: AuditListing[];
-  /** Which dimension disagrees. */
   on: "price" | "area";
 };
 
@@ -125,73 +130,59 @@ function asCandidate(p: AuditProperty): Candidate {
   };
 }
 
-/** Pure: everything below is arithmetic over rows already in hand, so it can be argued with in a test. */
-export function auditDuplicates(
-  input: { properties: AuditProperty[]; listings: AuditListing[]; threshold?: number },
-): AuditResult {
+/**
+ * Pure: arithmetic over rows already in hand, so it can be argued with in a
+ * test. `groupOf` is the resolve replayed — listing id → the group the
+ * pipeline would put it in — supplied by `loadForAudit` or by a test.
+ */
+export function auditDuplicates(input: {
+  properties: AuditProperty[];
+  listings: AuditListing[];
+  threshold?: number;
+  groupOf?: (listingId: string) => string | undefined;
+}): AuditResult {
   const threshold = input.threshold ?? DEFAULT_MATCH_THRESHOLD;
   const byId = new Map(input.properties.map((p) => [p.id, p]));
-
-  // ── Twins left apart ──────────────────────────────────────────────────
-  const candidates = input.properties.filter((p) => p.communeInsee !== null).map(asCandidate);
-  const edges: [string, string][] = [];
-  const verdicts = new Map<string, { confidence: number; signals: MatchSignals }>();
-  for (const [a, b] of candidatePairs(candidates)) {
-    const v = scoreMatch(a, b);
-    if (!v.same || v.confidence < threshold) continue;
-    edges.push([a.id, b.id]);
-    verdicts.set(`${a.id}|${b.id}`, { confidence: v.confidence, signals: v.signals });
-  }
-
-  /**
-   * Cluster and guard the twins the way the resolve does, so a pair the guard
-   * would separate again is told apart from a pair the resolve simply never
-   * joined. Same functions, same order: price first, then floor area.
-   */
-  const roots = cluster(
-    candidates.map((c) => c.id),
-    edges,
-  );
-  const groups = new Map<string, AuditProperty[]>();
-  for (const c of candidates) {
-    const root = roots.get(c.id) ?? c.id;
-    const list = groups.get(root);
-    const p = byId.get(c.id)!;
-    if (list) list.push(p);
-    else groups.set(root, [p]);
-  }
-  splitIncoherent(groups, edges);
-  const groupOf = new Map<string, string>();
-  for (const [key, members] of groups) for (const m of members) groupOf.set(m.id, key);
-
-  const twins: Twin[] = [];
-  for (const [key, v] of verdicts) {
-    const [aId, bId] = key.split("|");
-    const a = byId.get(aId)!;
-    const b = byId.get(bId)!;
-    twins.push({
-      a,
-      b,
-      confidence: v.confidence,
-      by: v.signals.agencyRefExact ? "mandate" : v.signals.structuralOnly ? "size" : "text",
-      guarded: groupOf.get(aId) !== groupOf.get(bId),
-      signals: v.signals,
-    });
-  }
-  twins.sort((x, y) => Number(x.guarded) - Number(y.guarded) || y.confidence - x.confidence);
-
-  // ── Houses welded together ────────────────────────────────────────────
   const listingsOf = new Map<string, AuditListing[]>();
   for (const l of input.listings) {
     const list = listingsOf.get(l.propertyId);
     if (list) list.push(l);
     else listingsOf.set(l.propertyId, [l]);
   }
+
+  // ── Twins ─────────────────────────────────────────────────────────────
+  const twins: Twin[] = [];
+  const candidates = input.properties.filter((p) => p.communeInsee !== null).map(asCandidate);
+  for (const [a, b] of candidatePairs(candidates)) {
+    const v = scoreMatch(a, b);
+    if (!v.same || v.confidence < threshold) continue;
+    const pa = byId.get(a.id)!;
+    const pb = byId.get(b.id)!;
+    let wouldMerge: boolean | null = null;
+    if (input.groupOf) {
+      const groupsA = new Set((listingsOf.get(pa.id) ?? []).map((l) => input.groupOf!(l.id)).filter((g): g is string => !!g));
+      wouldMerge = (listingsOf.get(pb.id) ?? []).some((l) => {
+        const g = input.groupOf!(l.id);
+        return !!g && groupsA.has(g);
+      });
+    }
+    twins.push({
+      a: pa,
+      b: pb,
+      confidence: v.confidence,
+      by: v.signals.agencyRefExact ? "mandate" : v.signals.structuralOnly ? "size" : "text",
+      wouldMerge,
+      signals: v.signals,
+    });
+  }
+  twins.sort((x, y) => Number(y.wouldMerge) - Number(x.wouldMerge) || y.confidence - x.confidence);
+
+  // ── Welded ────────────────────────────────────────────────────────────
   const welded: Welded[] = [];
   for (const p of input.properties) {
     const ls = listingsOf.get(p.id) ?? [];
     if (ls.length < 2) continue;
-    const members = ls.map((l, i) => ({ id: String(i), priceEur: l.priceEur, areaM2: l.areaM2, landM2: l.landM2, propertyType: l.propertyType }));
+    const members = ls.map((l) => ({ id: l.id, priceEur: l.priceEur, areaM2: l.areaM2, landM2: l.landM2, propertyType: l.propertyType }));
     if (incoherentMembers(members).length > 0) welded.push({ property: p, listings: ls, on: "price" });
     else if (incoherentAreas(members).length > 0) welded.push({ property: p, listings: ls, on: "area" });
   }
@@ -199,8 +190,16 @@ export function auditDuplicates(
   return { properties: input.properties.length, twins, welded };
 }
 
-/** What the client is served: active properties carried by a source still collected, and those listings. */
-export async function loadForAudit(communes?: string[]): Promise<{ properties: AuditProperty[]; listings: AuditListing[] }> {
+/**
+ * What the client is served — active properties carried by a source still
+ * collected, and those listings — plus the resolve replayed over EVERY active
+ * listing of each commune, switched-off sources included, because that is what
+ * the resolve clusters.
+ */
+export async function loadForAudit(
+  threshold: number,
+  communes?: string[],
+): Promise<{ properties: AuditProperty[]; listings: AuditListing[]; groupOf: (listingId: string) => string | undefined }> {
   const rows = await db
     .select({
       id: properties.id,
@@ -231,54 +230,83 @@ export async function loadForAudit(communes?: string[]): Promise<{ properties: A
     areaM2: r.areaM2 === null ? null : Number(r.areaM2),
     landM2: r.landM2 === null ? null : Number(r.landM2),
   }));
+  const served = new Set(props.map((p) => p.id));
 
-  const ids = props.map((p) => p.id);
   const listings: AuditListing[] = [];
-  // In slices: `in (…)` over seven thousand ids is one statement too many for the pooler's 10 s.
-  for (let i = 0; i < ids.length; i += 1000) {
-    const slice = ids.slice(i, i + 1000);
-    const ls = await db
+  const groupOf = new Map<string, string>();
+  const communesSeen = [...new Set(props.map((p) => p.communeInsee).filter((c): c is string => c !== null))];
+  for (const commune of communesSeen) {
+    // Every active row of the commune, as the resolve reads it.
+    const all = await db
       .select({
+        id: portalListings.id,
         propertyId: portalListings.propertyId,
+        sourceId: portalListings.sourceId,
         source: portalSources.key,
+        enabled: portalSources.enabled,
+        communeInsee: portalListings.communeInsee,
         priceEur: portalListings.priceEur,
         areaM2: portalListings.areaM2,
         landM2: portalListings.landM2,
+        rooms: portalListings.rooms,
+        bedrooms: portalListings.bedrooms,
         propertyType: portalListings.propertyType,
+        agencyId: portalListings.agencyId,
+        agencyRef: portalListings.agencyRef,
+        title: portalListings.title,
+        description: portalListings.description,
       })
       .from(portalListings)
       .innerJoin(portalSources, eq(portalSources.id, portalListings.sourceId))
-      .where(and(inArray(portalListings.propertyId, slice), eq(portalListings.status, "active"), eq(portalSources.enabled, true)));
-    for (const l of ls) {
-      if (!l.propertyId) continue;
+      .where(and(eq(portalListings.communeInsee, commune), eq(portalListings.status, "active")));
+    const candidates: Candidate[] = all.map((r) => ({
+      id: r.id,
+      sourceId: r.sourceId,
+      communeInsee: r.communeInsee,
+      priceEur: r.priceEur,
+      areaM2: r.areaM2 === null ? null : Number(r.areaM2),
+      landM2: r.landM2 === null ? null : Number(r.landM2),
+      rooms: r.rooms,
+      bedrooms: r.bedrooms,
+      propertyType: r.propertyType,
+      agencyId: r.agencyId,
+      agencyRef: r.agencyRef,
+      title: r.title,
+      description: r.description,
+    }));
+    const { groups } = clusterCandidates(candidates, threshold);
+    for (const [key, ids] of groups) for (const id of ids) groupOf.set(id, `${commune}:${key}`);
+    for (const r of all) {
+      if (!r.enabled || !r.propertyId || !served.has(r.propertyId)) continue;
       listings.push({
-        propertyId: l.propertyId,
-        source: l.source,
-        priceEur: l.priceEur,
-        areaM2: l.areaM2 === null ? null : Number(l.areaM2),
-        landM2: l.landM2 === null ? null : Number(l.landM2),
-        propertyType: l.propertyType,
+        id: r.id,
+        propertyId: r.propertyId,
+        source: r.source,
+        priceEur: r.priceEur,
+        areaM2: r.areaM2 === null ? null : Number(r.areaM2),
+        landM2: r.landM2 === null ? null : Number(r.landM2),
+        propertyType: r.propertyType,
       });
     }
   }
-  return { properties: props, listings };
+  return { properties: props, listings, groupOf: (id) => groupOf.get(id) };
 }
 
-/** Load, score, and say it in one line — what the nightly appends to its summary. */
+/** Load, replay, and say it in one line — what the nightly appends to its summary. */
 export async function auditLine(): Promise<{ line: string; worst: string[] }> {
   const threshold = await getNumberSetting(SETTING_KEYS.MATCH_THRESHOLD, DEFAULT_MATCH_THRESHOLD);
-  const r = auditDuplicates({ ...(await loadForAudit()), threshold });
-  const misses = r.twins.filter((t) => !t.guarded);
-  const guarded = r.twins.length - misses.length;
-  const count = (by: Twin["by"]) => misses.filter((t) => t.by === by).length;
+  const r = auditDuplicates({ ...(await loadForAudit(threshold)), threshold });
+  const anomalies = r.twins.filter((t) => t.wouldMerge);
+  const guarded = r.twins.filter((t) => !t.wouldMerge);
+  const count = (list: Twin[], by: Twin["by"]) => list.filter((t) => t.by === by).length;
   const line =
-    misses.length === 0 && r.welded.length === 0
-      ? `duplicate audit: ${r.properties} served properties, none that the rules call one house, none welded`
-      : `duplicate audit: ${misses.length} pair(s) the rules call one house still apart ` +
-        `(mandate ${count("mandate")}, size ${count("size")}, text ${count("text")})` +
-        (guarded > 0 ? `, ${guarded} more the guard keeps apart on purpose` : "") +
-        `; ${r.welded.length} propert(ies) welded from two houses — \`npm run dedup:audit\` lists them`;
-  return { line, worst: [...misses.slice(0, 5).map(describeTwin), ...r.welded.slice(0, 3).map(describeWelded)] };
+    r.twins.length === 0 && r.welded.length === 0
+      ? `duplicate audit: ${r.properties} served properties — none the rules call one house, none welded`
+      : `duplicate audit: ${r.properties} served properties; ${anomalies.length} pair(s) the resolve itself would merge yet still apart; ` +
+        `${guarded.length} pair(s) one house by the pair rule but kept apart by the cluster guard ` +
+        `(mandate ${count(guarded, "mandate")}, size ${count(guarded, "size")}, text ${count(guarded, "text")}); ` +
+        `${r.welded.length} propert(ies) welded — \`npm run dedup:audit\` lists them`;
+  return { line, worst: [...anomalies.slice(0, 5).map(describeTwin), ...r.welded.slice(0, 3).map(describeWelded)] };
 }
 
 const eur = (n: number | null) => (n === null ? "—" : `${n.toLocaleString("fr-FR")} €`);
@@ -289,7 +317,7 @@ function describeTwin(t: Twin): string {
     `${t.a.communeInsee}  ${eur(t.a.priceEur)}  ${m2(t.a.areaM2)} / ${m2(t.b.areaM2)}` +
     (t.a.landM2 !== null || t.b.landM2 !== null ? `  on ${m2(t.a.landM2)} / ${m2(t.b.landM2)}` : "") +
     `  [${t.a.agencyName ?? "?"}] vs [${t.b.agencyName ?? "?"}]  by ${t.by} @${t.confidence}` +
-    (t.guarded ? "  (guard keeps apart)" : "") +
+    (t.wouldMerge === true ? "  ← THE RESOLVE WOULD MERGE THESE" : t.wouldMerge === false ? "  (the guard keeps them apart)" : "") +
     `\n      ${t.a.id}  ${(t.a.title ?? "").slice(0, 50)}\n      ${t.b.id}  ${(t.b.title ?? "").slice(0, 50)}`
   );
 }
@@ -297,31 +325,32 @@ function describeTwin(t: Twin): string {
 function describeWelded(w: Welded): string {
   return (
     `${w.property.communeInsee}  ${w.property.id}  welded on ${w.on}: ` +
-    w.listings.map((l) => `${l.source} ${eur(l.priceEur)} ${m2(l.areaM2)}`).join(" | ")
+    w.listings.map((l) => `${l.source} ${eur(l.priceEur)} ${m2(l.areaM2)}${l.landM2 !== null ? `/${l.landM2}` : ""}`).join(" | ")
   );
 }
 
 async function main(): Promise<void> {
   const only = process.argv.find((a) => a.startsWith("--communes="))?.slice("--communes=".length).split(",").map((s) => s.trim()).filter(Boolean);
   const threshold = await getNumberSetting(SETTING_KEYS.MATCH_THRESHOLD, DEFAULT_MATCH_THRESHOLD);
-  const data = await loadForAudit(only);
+  const data = await loadForAudit(threshold, only);
   const r = auditDuplicates({ ...data, threshold });
-  const misses = r.twins.filter((t) => !t.guarded);
-  const guarded = r.twins.filter((t) => t.guarded);
+  const anomalies = r.twins.filter((t) => t.wouldMerge);
+  const guarded = r.twins.filter((t) => !t.wouldMerge);
+  const limit = only ? Infinity : 25;
 
   console.log(`\n── duplicate audit ── ${r.properties} served properties, ${data.listings.length} listings, threshold ${threshold}\n`);
-  console.log(`TWINS LEFT APART — pairs the rules call one house: ${misses.length}`);
+  console.log(`THE RESOLVE ITSELF WOULD MERGE THESE, yet they are two properties — anomalies: ${anomalies.length}`);
+  for (const t of anomalies.slice(0, limit)) console.log("  " + describeTwin(t));
+
+  console.log(`\nONE HOUSE BY THE PAIR RULE, KEPT APART BY THE CLUSTER GUARD: ${guarded.length}`);
   const byCommune = new Map<string, number>();
-  for (const t of misses) byCommune.set(t.a.communeInsee ?? "?", (byCommune.get(t.a.communeInsee ?? "?") ?? 0) + 1);
+  for (const t of guarded) byCommune.set(t.a.communeInsee ?? "?", (byCommune.get(t.a.communeInsee ?? "?") ?? 0) + 1);
   if (byCommune.size > 0) console.log("  by commune: " + [...byCommune].sort((x, y) => y[1] - x[1]).map(([c, n]) => `${c} ${n}`).join(", "));
   const byKind = { mandate: 0, size: 0, text: 0 };
-  for (const t of misses) byKind[t.by] += 1;
+  for (const t of guarded) byKind[t.by] += 1;
   console.log(`  by evidence: mandate ${byKind.mandate}, size ${byKind.size}, text ${byKind.text}`);
-  for (const t of misses.slice(0, only ? misses.length : 25)) console.log("  " + describeTwin(t));
-  if (misses.length > 25 && !only) console.log(`  … ${misses.length - 25} more: run with --communes=<insee> to list a commune in full`);
-
-  console.log(`\nKEPT APART BY THE GUARD — twins in a cluster whose ends do not fit: ${guarded.length}`);
-  for (const t of guarded.slice(0, only ? guarded.length : 10)) console.log("  " + describeTwin(t));
+  for (const t of guarded.slice(0, limit)) console.log("  " + describeTwin(t));
+  if (guarded.length > limit) console.log(`  … ${guarded.length - limit} more: run with --communes=<insee> to list a commune in full`);
 
   console.log(`\nWELDED — properties whose listings disagree beyond the guard: ${r.welded.length}`);
   for (const w of r.welded.slice(0, 20)) console.log("  " + describeWelded(w));
