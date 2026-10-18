@@ -1,0 +1,99 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { auditDuplicates, type AuditListing, type AuditProperty } from "./dedupAudit";
+
+/**
+ * The audit is measured with the matcher's own rules, so every case here is a
+ * pair the rules decide one way — and the audit has to agree with them.
+ */
+
+const VILLA = `Dans le secteur prisé de La Quessine, superbe bastide provençale nichée au cœur d'un parc paysager. En position dominante, elle offre une vue imprenable sur la mer, le Cap Taillat et la campagne environnante. La maison principale comprend un vaste salon, une cuisine, une salle à manger, le tout ouvert sur de grandes terrasses panoramiques.`;
+
+function prop(over: Partial<AuditProperty> & { id: string }): AuditProperty {
+  return {
+    communeInsee: "83048",
+    priceEur: 4_490_000,
+    areaM2: 179,
+    landM2: 1423,
+    rooms: 6,
+    bedrooms: 4,
+    propertyType: "Maison",
+    agencyId: null,
+    agencyName: null,
+    agencyRef: null,
+    title: "Villa",
+    description: VILLA,
+    ...over,
+  };
+}
+
+test("the client's villa, still two cards: same price, same plot, 179 against 210 m² — a twin by size", () => {
+  const r = auditDuplicates({
+    properties: [
+      prop({ id: "ours", agencyName: "Med-Estates", description: VILLA }),
+      prop({ id: "theirs", areaM2: 210, agencyName: "John Taylor", description: "Propriété de 4 chambres, domaine privé, vue mer." }),
+    ],
+    listings: [],
+  });
+  assert.equal(r.twins.length, 1);
+  assert.equal(r.twins[0].by, "size");
+  assert.equal(r.twins[0].guarded, false);
+});
+
+test("the same agency's mandate on two properties is a twin whatever the prices say", () => {
+  const r = auditDuplicates({
+    properties: [
+      prop({ id: "a", agencyId: "swixim", agencyRef: "70880", priceEur: 1_200_000, description: "x" }),
+      prop({ id: "b", agencyId: "swixim", agencyRef: "70880", priceEur: 1_150_000, areaM2: 150, landM2: null, description: "y" }),
+    ],
+    listings: [],
+  });
+  assert.equal(r.twins.length, 1);
+  assert.equal(r.twins[0].by, "mandate");
+});
+
+test("two flats at one price five per cent apart in size are two flats, not a twin", () => {
+  const r = auditDuplicates({
+    properties: [
+      prop({ id: "a", propertyType: "Appartement", areaM2: 50, landM2: null, priceEur: 389_000, description: "x" }),
+      prop({ id: "b", propertyType: "Appartement", areaM2: 55, landM2: null, priceEur: 389_000, description: "y" }),
+    ],
+    listings: [],
+  });
+  assert.equal(r.twins.length, 0);
+});
+
+test("properties in two communes are never compared", () => {
+  const r = auditDuplicates({
+    properties: [prop({ id: "a", communeInsee: "83048" }), prop({ id: "b", communeInsee: "83119" })],
+    listings: [],
+  });
+  assert.equal(r.twins.length, 0);
+});
+
+test("a chain the guard splits is reported as kept apart, not as a miss", () => {
+  // 200 – 230 – 270 m² at one price: each neighbour within 20%, the ends 26% apart.
+  const r = auditDuplicates({
+    properties: [
+      prop({ id: "a", areaM2: 200, landM2: null, description: "x" }),
+      prop({ id: "b", areaM2: 230, landM2: null, description: "y" }),
+      prop({ id: "c", areaM2: 270, landM2: null, description: "z" }),
+    ],
+    listings: [],
+  });
+  const pairs = r.twins.map((t) => `${t.a.id}${t.b.id}:${t.guarded ? "guarded" : "miss"}`).sort();
+  assert.equal(pairs.length, 2, "a–b and b–c score; a–c does not");
+  assert.ok(pairs.some((p) => p.endsWith("guarded")), `the guard separates one end: ${pairs}`);
+  assert.ok(pairs.some((p) => p.endsWith("miss")), `and leaves the other pair as a miss: ${pairs}`);
+});
+
+test("a property whose listings disagree on price by more than the guard allows is welded", () => {
+  const listings: AuditListing[] = [
+    { propertyId: "p", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { propertyId: "p", source: "bienici", priceEur: 1_800_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { propertyId: "q", source: "vizzit", priceEur: 1_000_000, areaM2: 200, landM2: null, propertyType: "Maison" },
+    { propertyId: "q", source: "bienici", priceEur: 1_000_000, areaM2: 205, landM2: null, propertyType: "Maison" },
+  ];
+  const r = auditDuplicates({ properties: [prop({ id: "p", priceEur: 1_000_000 }), prop({ id: "q", priceEur: 1_000_000, communeInsee: "83119" })], listings });
+  assert.deepEqual(r.welded.map((w) => [w.property.id, w.on]), [["p", "price"]]);
+});

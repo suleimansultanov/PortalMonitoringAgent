@@ -9,6 +9,7 @@ import { portalListings, portalSources } from "@/lib/db/schema";
 import { collectionCommunes, communesForSource } from "./runner/run";
 import { communeSliceForDay } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
+import { auditLine } from "./dedupAudit";
 import { sweepImpossibleValues } from "./sanity";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
 import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
@@ -974,13 +975,34 @@ async function main(): Promise<void> {
     console.error(`[nightly] ${sanityLine}`);
   }
 
+  /**
+   * And whether the deduplication left duplicates — by its own rules, over
+   * what was stored. The resolve decides in memory and writes; this reads the
+   * rows back and scores the properties against each other the way listings
+   * are scored. A pair the rules call one house that is still two cards is a
+   * duplicate on the client's screen by our own definition, and the client is
+   * the one who notices (2026-10-15). Reports only; see dedupAudit.ts.
+   */
+  let dedupAuditLine = "";
+  try {
+    const audit = await auditLine();
+    dedupAuditLine = audit.line;
+    if (audit.worst.length > 0) {
+      console.warn(`[nightly] ${dedupAuditLine}`);
+      for (const w of audit.worst) console.warn(`[nightly]   ${w}`);
+    }
+  } catch (err) {
+    dedupAuditLine = `duplicate audit: FAILED — ${(err as Error).message}`;
+    console.error(`[nightly] ${dedupAuditLine}`);
+  }
+
   const finishedAt = new Date();
   const summaryText = renderSummary(
     night,
     startedAt,
     finishedAt,
     outcomes,
-    `${resolveLine}\n${sanityLine}`,
+    `${resolveLine}\n${sanityLine}\n${dedupAuditLine}`,
     logDir,
   );
   await fsp.writeFile(path.join(logDir, "summary.txt"), summaryText, "utf8");
