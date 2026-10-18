@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { portalListings, portalSources } from "@/lib/db/schema";
 import { clusterCandidates, type Candidate } from "./matching/score";
@@ -47,8 +47,25 @@ async function main(): Promise<void> {
     sourceKeys.set(s.id, s.key);
   }
 
-  const rows = await db
-    .select({
+  /**
+   * One commune at a time, as the resolve reads it. The whole market in one
+   * statement — 29 000 rows with their descriptions — passed the pooler's
+   * ten-second query timeout on 2026-10-18 and the tool died before scoring.
+   */
+  const communeRows = await db
+    .selectDistinct({ communeInsee: portalListings.communeInsee })
+    .from(portalListings)
+    .where(eq(portalListings.status, "active"));
+  const rows: {
+    id: string; sourceId: string; communeInsee: string | null; priceEur: number | null; areaM2: string | null; landM2: string | null;
+    rooms: number | null; bedrooms: number | null; propertyType: string | null; agencyId: string | null; agencyRef: string | null;
+    title: string | null; description: string | null; propertyId: string | null;
+  }[] = [];
+  for (const { communeInsee } of communeRows) {
+    if (!communeInsee || (only && !only.includes(communeInsee))) continue;
+    rows.push(
+      ...(await db
+        .select({
       id: portalListings.id,
       sourceId: portalListings.sourceId,
       communeInsee: portalListings.communeInsee,
@@ -64,8 +81,10 @@ async function main(): Promise<void> {
       description: portalListings.description,
       propertyId: portalListings.propertyId,
     })
-    .from(portalListings)
-    .where(eq(portalListings.status, "active"));
+        .from(portalListings)
+        .where(and(eq(portalListings.status, "active"), eq(portalListings.communeInsee, communeInsee)))),
+    );
+  }
 
   const byCommune = new Map<string, typeof rows>();
   for (const r of rows) {
