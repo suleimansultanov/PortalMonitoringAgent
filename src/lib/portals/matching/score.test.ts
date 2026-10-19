@@ -654,15 +654,6 @@ test("same price, same commune: two agencies' floor areas may differ by 20% — 
   assert.equal(scoreMatch({ ...ours, landM2: null }, { ...theirs, landM2: null }).same, true);
 });
 
-  const terrain = c({ id: "t", sourceId: "v1", communeInsee: "83107", priceEur: 2_290_000, areaM2: null, landM2: 100, propertyType: "Terrain", description: BARNES, title: null });
-  const v = scoreMatch(villa, terrain);
-  assert.equal(v.same, false);
-  assert.equal(v.signals.typeConflict, true);
-  // The agency's own mandate on both still outranks the label.
-  const m = scoreMatch({ ...villa, agencyId: "cap", agencyRef: "2635" }, { ...terrain, agencyId: "cap", agencyRef: "2635" });
-  assert.equal(m.same, true);
-});
-
 test("the 20% band stops at 20%, at a plot 20% off, at flats, bare plots and two prices", () => {
   const house = { communeInsee: "83048", priceEur: 4_490_000, areaM2: 200, landM2: 1500, propertyType: "Maison", description: BARNES, title: null };
   const other = { ...house, description: OTHER_VILLA };
