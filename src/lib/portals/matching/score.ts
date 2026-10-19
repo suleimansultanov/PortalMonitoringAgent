@@ -103,6 +103,16 @@ const AREA_TOLERANCE_WITH_LAND = 0.1;
  */
 const AREA_TOLERANCE_SAME_PRICE = 0.2;
 const LAND_TOLERANCE_SAME_PRICE = 0.2;
+/**
+ * TRIED AND REVERTED, 2026-10-19: a tenth instead of a fifth when the plot is
+ * unknown on either side. It would have kept two villas on two plots apart
+ * (Les Issambres, 2 290 000 €: 225 m² on 3 000 and 180 m² on 1 000, joined
+ * through LuxuryEstate's copy of the second, which states no plot — exactly
+ * 20% apart). Dry run over the market: 114 MORE properties, because
+ * LuxuryEstate and Stream.Estate V1 never state a plot and their copies of a
+ * house sit 10–20% from the other portals' figure far more often than two
+ * houses hide behind one. Five duplicates fixed, a hundred and fourteen made.
+ */
 /** Below this, no amount of corroboration makes two listings the same property. */
 const TEXT_FLOOR = 0.45;
 /**
@@ -223,6 +233,13 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
     signals.communeConflict = true;
     return { same: false, confidence: 0, signals };
   }
+  /**
+   * TRIED AND REVERTED, 2026-10-19: refusing a bare plot against a building.
+   * Stream.Estate V1 had carried a villa as "Terrain", no floor area, with the
+   * villa's own text, and the text joined it to the villa. The veto cost 32
+   * properties in a dry run — "Terrain" rows an agency files beside its house
+   * became cards of their own — and merged nothing the client would see.
+   */
 
   // ── 2a. The price is the identity ──────────────────────────────────────
   /**
@@ -363,12 +380,12 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
         : null;
 
       /**
-       * Two houses at one price: floor areas within 20%, plots within 20%
-       * where stated (AREA_TOLERANCE_SAME_PRICE). Anything else keeps the
-       * rounding band and the 5% plot.
+       * The same band the veto above applied — a fifth when both plots are
+       * stated and agree, a tenth when the plot is unknown, the rounding
+       * otherwise — and the matching plot tolerance.
        */
-      const wide = sameHouseBand(a, b);
-      const tolerance = wide ? AREA_TOLERANCE_SAME_PRICE : AREA_TOLERANCE;
+      const tolerance = areaTolerance(a, b);
+      const wide = tolerance === AREA_TOLERANCE_SAME_PRICE;
       if (a.priceEur === b.priceEur && areaDelta <= tolerance) {
         if (landDelta !== null && landDelta > (wide ? LAND_TOLERANCE_SAME_PRICE : LAND_TOLERANCE)) {
           signals.landConflict = true;

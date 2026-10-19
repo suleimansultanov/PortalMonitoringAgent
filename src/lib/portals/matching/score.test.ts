@@ -527,7 +527,8 @@ test("two agencies measuring one villa differently still merge when the plot agr
 });
 
 test("without a plot, the same price and a floor area within 20% are one house — agreed with the client 2026-10-15", () => {
-  // This split until 2026-10-15. The client's rule: an unstated plot does not block.
+  // An unstated plot does not block. A tenth instead was tried on 2026-10-19
+  // and reverted: see the note at AREA_TOLERANCE_SAME_PRICE.
   const a = candidate({ id: "a", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 430 });
   const b = candidate({ id: "b", sourceId: "s2", description: LONG_TEXT, priceEur: 19_500_000, areaM2: 400 });
   assert.equal(scoreMatch(a, b).same, true);
@@ -653,6 +654,15 @@ test("same price, same commune: two agencies' floor areas may differ by 20% — 
   assert.equal(scoreMatch({ ...ours, landM2: null }, { ...theirs, landM2: null }).same, true);
 });
 
+  const terrain = c({ id: "t", sourceId: "v1", communeInsee: "83107", priceEur: 2_290_000, areaM2: null, landM2: 100, propertyType: "Terrain", description: BARNES, title: null });
+  const v = scoreMatch(villa, terrain);
+  assert.equal(v.same, false);
+  assert.equal(v.signals.typeConflict, true);
+  // The agency's own mandate on both still outranks the label.
+  const m = scoreMatch({ ...villa, agencyId: "cap", agencyRef: "2635" }, { ...terrain, agencyId: "cap", agencyRef: "2635" });
+  assert.equal(m.same, true);
+});
+
 test("the 20% band stops at 20%, at a plot 20% off, at flats, bare plots and two prices", () => {
   const house = { communeInsee: "83048", priceEur: 4_490_000, areaM2: 200, landM2: 1500, propertyType: "Maison", description: BARNES, title: null };
   const other = { ...house, description: OTHER_VILLA };
@@ -708,11 +718,11 @@ test("a chain within a fifth of its median is one house; past thirty per cent en
 
 test("a minority of rows typed as a flat does not hold a house to the Carrez band; a majority does", () => {
   const rows = [
-    { id: "a", areaM2: 148, propertyType: "Maison" },
-    { id: "b", areaM2: 160, propertyType: "Immobilier" },
-    { id: "c", areaM2: 165, propertyType: "Appartement" },
-    { id: "d", areaM2: 167, propertyType: "Maison" },
-    { id: "e", areaM2: 167, propertyType: "Appartement" },
+    { id: "a", areaM2: 148, landM2: 650, propertyType: "Maison" },
+    { id: "b", areaM2: 160, landM2: 625, propertyType: "Immobilier" },
+    { id: "c", areaM2: 165, landM2: null, propertyType: "Appartement" },
+    { id: "d", areaM2: 167, landM2: 625, propertyType: "Maison" },
+    { id: "e", areaM2: 167, landM2: null, propertyType: "Appartement" },
   ];
   assert.deepEqual(incoherentAreas(rows), [], "three of five say house: 148 to 167 is one house");
   const flats = rows.map((r) => ({ ...r, propertyType: "Appartement" }));
