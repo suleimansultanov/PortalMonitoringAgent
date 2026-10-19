@@ -58,6 +58,18 @@ centroid). Two better signals were found instead:
 Every merge stores `match_confidence` and `match_signals` so it can be
 questioned and reversed.
 
+**The rule the client agreed to (2026-10-15):** same price to the euro, same
+commune, floor areas within 20%, plots within 20% where both state one — houses
+only; flats keep the Carrez band. The cluster guard (`splitIncoherent`) judges
+from the median and by majority of rows, not by one row's plot or type: on
+2026-10-18, 126 of 149 remaining duplicates were one odd row deciding for a
+whole cluster. Measure any rule change dry first (`npm run dedup:check`), then
+`npm run dedup:audit` — it replays the resolve over what is stored and lists
+pairs the rules call one house that are still two. The same line is in every
+nightly summary; its first number (anomalies) should stay near zero. Two
+narrower rules were tried and reverted with numbers on 2026-10-19; the notes
+are beside the constants in `score.ts`.
+
 ## Portal traps — these each cost real money to learn
 - **Never use `sku` as a listing key.** Maisons et Appartements puts the
   *agency* id there. Keys come from the URL.
@@ -189,7 +201,8 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 
 ## Commands
 `npm run dev` · `build` · `typecheck` (run after edits) · `db:migrate` ·
-`db:studio` · `test` · `user:create`
+`db:studio` · `test` · `user:create` · `dedup:check` (dry run of the resolve)
+· `dedup:audit` (duplicates left after it) · `resolve -- --communes=<insee>`
 
 ## Gotchas
 - **`ENCRYPTION_KEY` must be identical across local, preview and production.**
