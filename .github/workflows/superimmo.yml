@@ -18,7 +18,7 @@ name: Superimmo
 # code. This file only stops one portal's problem from being everyone's.
 
 on:
-  schedule:
+  # schedule:
     # 15:00 UTC — 17:00 in Paris in summer, 16:00 in winter. BEFORE the main
     # night, not after it.
     #
@@ -48,6 +48,10 @@ on:
     # adverts now arrive through Stream.Estate V1 (`stream-estate-v1`), and the
     # source is disabled in the database — which `--sources=superimmo` would
     # override, so the schedule itself goes. Hand runs stay possible below.
+    #
+    # The `schedule:` key has to go with its cron line. Left behind empty it
+    # parses as null, GitHub rejects the whole file, and every push to main
+    # was answered with a failed run of it — 14 to 19 October.
     # - cron: "0 15 * * *"
   workflow_dispatch:
     inputs:
