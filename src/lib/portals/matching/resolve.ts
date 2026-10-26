@@ -163,7 +163,9 @@ export async function resolveCommuneIdentities(communeInsee: string): Promise<Re
    * chained through dozens of accidental text matches.
    */
   const rowById = new Map(rows.map((r) => [r.id, r]));
-  const clustered = clusterCandidates(candidates, threshold);
+  const clustered = clusterCandidates(candidates, threshold, {
+    staleSourceIds: new Set(rows.map((r) => r.sourceId).filter((id) => !enabledSources.has(id))),
+  });
   const bestSignals = clustered.bestSignals;
   const groups = new Map<string, typeof rows>();
   for (const [key, ids] of clustered.groups) groups.set(key, ids.map((id) => rowById.get(id)!));

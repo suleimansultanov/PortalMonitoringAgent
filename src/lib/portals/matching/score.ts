@@ -995,10 +995,22 @@ export function splitIncoherent<
  * `bestSignals` keeps the strongest evidence per listing, not the last: a
  * listing that matched three others should carry the reason easiest to
  * defend, which is almost always the exact mandate reference if one fired.
+ *
+ * `staleSourceIds`: collectors switched off. Their rows stay active forever —
+ * nobody reads those portals again — so their price is the one they had when
+ * the collector stopped (Figaro 16 September, Superimmo 14 October). They may
+ * still join by the agency's own mandate number, which a price does not
+ * outrank; by size or by text they may not, because both of those require the
+ * price to agree, and theirs is a price nobody is asking any more. Measured
+ * 2026-10-26: one Sainte-Maxime property held 53 listings of about a dozen
+ * homes, because a villa now at 1 695 000 € was still 1 790 000 € on Figaro's
+ * August row, and that row matched every other home at 1 790 000 by size.
+ * A property Med-Estates sells was one of them, so the client saw one card.
  */
 export function clusterCandidates(
   candidates: Candidate[],
   threshold: number,
+  opts: { staleSourceIds?: ReadonlySet<string> } = {},
 ): {
   /** Group key → member ids. Keys are opaque; a split-out group's key is minted. */
   groups: Map<string, string[]>;
@@ -1009,9 +1021,11 @@ export function clusterCandidates(
 } {
   const edges: { a: Candidate; b: Candidate; verdict: MatchVerdict }[] = [];
   const bestSignals = new Map<string, { confidence: number; signals: MatchSignals }>();
+  const stale = opts.staleSourceIds;
   for (const [a, b] of candidatePairs(candidates)) {
     const verdict = scoreMatch(a, b);
     if (!verdict.same || verdict.confidence < threshold) continue;
+    if (stale && (stale.has(a.sourceId) || stale.has(b.sourceId)) && !verdict.signals.agencyRefExact) continue;
     edges.push({ a, b, verdict });
     for (const id of [a.id, b.id]) {
       const prev = bestSignals.get(id);

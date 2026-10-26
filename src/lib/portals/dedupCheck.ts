@@ -41,10 +41,13 @@ const only = process.argv
   .filter(Boolean);
 
 const sourceKeys = new Map<string, string>();
+/** Switched-off collectors, as the resolve treats them — see clusterCandidates. */
+const staleSourceIds = new Set<string>();
 
 async function main(): Promise<void> {
-  for (const s of await db.select({ id: portalSources.id, key: portalSources.key }).from(portalSources)) {
+  for (const s of await db.select({ id: portalSources.id, key: portalSources.key, enabled: portalSources.enabled }).from(portalSources)) {
     sourceKeys.set(s.id, s.key);
+    if (!s.enabled) staleSourceIds.add(s.id);
   }
 
   /**
@@ -133,7 +136,7 @@ async function main(): Promise<void> {
       description: r.description,
     }));
     const byId = new Map(candidates.map((c) => [c.id, c]));
-    const clustered = clusterCandidates(candidates, THRESHOLD);
+    const clustered = clusterCandidates(candidates, THRESHOLD, { staleSourceIds });
     for (const { a, b, verdict: v } of clustered.edges) {
       if (v.signals.structuralOnly) {
         structuralEdges++;

@@ -738,3 +738,20 @@ test("clusterCandidates groups what matched and keeps the strongest evidence per
   assert.equal(r.bestSignals.get("a")?.signals.agencyRefExact, true);
   assert.equal(r.evicted, 0);
 });
+
+test("a switched-off collector's row joins by its mandate, never by size at the price it had when it stopped", () => {
+  // Sainte-Maxime, 2026-10-26: M0268vm is 1 695 000 € today; Figaro's August
+  // row still says 1 790 000 €, and at that price it matched a different home.
+  const shape = { communeInsee: "83115", title: null, description: null, propertyType: "Maison" };
+  const now = c({ id: "now", sourceId: "live", agencyId: "janssens", agencyRef: "M0268vm", priceEur: 1_695_000, areaM2: 127, landM2: 815, ...shape });
+  const august = c({ id: "aug", sourceId: "figaro", agencyId: "janssens", agencyRef: "M0268vm", priceEur: 1_790_000, areaM2: 127, landM2: 815, ...shape });
+  const other = c({ id: "other", sourceId: "live2", agencyId: "barnes", agencyRef: "85300505", priceEur: 1_790_000, areaM2: 133, landM2: null, ...shape });
+  const groups = (r: ReturnType<typeof clusterCandidates>) =>
+    [...r.groups.values()].map((ids) => ids.sort().join(",")).sort();
+
+  assert.deepEqual(groups(clusterCandidates([now, august, other], 0.8)), ["aug,now,other"], "without the veto: one card for two homes");
+  assert.deepEqual(
+    groups(clusterCandidates([now, august, other], 0.8, { staleSourceIds: new Set(["figaro"]) })),
+    ["aug,now", "other"],
+  );
+});

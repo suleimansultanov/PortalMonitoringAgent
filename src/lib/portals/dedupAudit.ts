@@ -274,7 +274,9 @@ export async function loadForAudit(
       title: r.title,
       description: r.description,
     }));
-    const { groups } = clusterCandidates(candidates, threshold);
+    const { groups } = clusterCandidates(candidates, threshold, {
+      staleSourceIds: new Set(all.filter((r) => !r.enabled).map((r) => r.sourceId)),
+    });
     for (const [key, ids] of groups) for (const id of ids) groupOf.set(id, `${commune}:${key}`);
     for (const r of all) {
       if (!r.enabled || !r.propertyId || !served.has(r.propertyId)) continue;
