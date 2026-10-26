@@ -70,6 +70,13 @@ nightly summary; its first number (anomalies) should stay near zero. Two
 narrower rules were tried and reverted with numbers on 2026-10-19; the notes
 are beside the constants in `score.ts`.
 
+**Switched-off collectors join by mandate only** (`staleSourceIds` in
+`clusterCandidates`, 2026-10-26). Their rows stay active forever at the price
+they had when the collector stopped; by size or text that stale price glued
+homes now at different prices into one card — 53 listings of about a dozen
+homes in one Sainte-Maxime property, Med-Estates' own among them. Measured dry
+before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
+
 ## Portal traps — these each cost real money to learn
 - **Never use `sku` as a listing key.** Maisons et Appartements puts the
   *agency* id there. Keys come from the URL.
@@ -84,6 +91,10 @@ are beside the constants in `score.ts`.
   store the headline unless the page says EUR: read `offers` in the JSON-LD,
   else their "Prix en euros" line. Convert imperial by the unit printed beside
   the figure. 535 listings went without a price for three weeks over this.
+  **Its icons are `<svg>` since 2026-10-16** (they were `<em>`): sizes are read
+  off the icon CLASS on any tag. A tag-specific selector nulled floor area, plot
+  and rooms on every new Green-Acres and Vizzit page for ten nights (1 592
+  listings) while the parse reported only "partial".
 - **Figaro Immobilier's results carry Propriétés Le Figaro listings** (`isPlf`,
   `recordLink` on proprietes.lefigaro.fr) — about a third of every commune.
   They belong to the `figaro` source; filing them under both counts one
@@ -203,6 +214,9 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 `npm run dev` · `build` · `typecheck` (run after edits) · `db:migrate` ·
 `db:studio` · `test` · `user:create` · `dedup:check` (dry run of the resolve)
 · `dedup:audit` (duplicates left after it) · `resolve -- --communes=<insee>`
+· `reparse -- --source=<key> --since=<YYYY-MM-DD> --active --no-resolve`
+(re-derive fields from stored pages after a parser fix; pages come down from
+S3, ~500 kB each — narrow it, and warn before running it on mobile data)
 
 ## Gotchas
 - **`ENCRYPTION_KEY` must be identical across local, preview and production.**

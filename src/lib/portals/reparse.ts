@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte } from "drizzle-orm";
 import { db, withDbRetry } from "@/lib/db/client";
 import { dbErrorMessage } from "@/lib/db/errors";
 import { portalListingEvents, portalListings, portalSnapshots, portalSources } from "@/lib/db/schema";
@@ -19,6 +19,14 @@ import { computeEvents } from "./runner/events";
  *   npm run reparse
  *   npm run reparse -- --source=green-acres
  *   npm run reparse -- --dry
+ *   npm run reparse -- --source=vizzit --since=2026-10-16 --active --no-resolve
+ *
+ * `--since` (first seen on or after that day) and `--active` narrow it to the
+ * pages a parser bug actually touched. The pages still come down from the
+ * bucket one by one — Vizzit and Green-Acres are ~500 kB each — so on a
+ * metered link "only the 1 500 broken ones" is the difference between 800 MB
+ * and 5 GB. `--no-resolve` leaves the deduplication to the nightly pass, or to
+ * a `resolve` run after `dedup:check` has measured it dry.
  *
  * WHY THIS EXISTS
  *
@@ -39,7 +47,16 @@ import { computeEvents } from "./runner/events";
  * a listing that was never fetched. It re-derives; it does not discover.
  */
 
-type Args = { source?: string; dry: boolean; explain?: string; save?: string };
+type Args = {
+  source?: string;
+  dry: boolean;
+  explain?: string;
+  save?: string;
+  /** First seen on or after this day (YYYY-MM-DD). */
+  since?: string;
+  active: boolean;
+  noResolve: boolean;
+};
 
 /**
  * Listings read per query. A Bien'ici row with its gallery is ~2 kB on the
@@ -64,6 +81,9 @@ function parseArgs(): Args {
     dry: process.argv.includes("--dry"),
     explain: get("explain"),
     save: get("save"),
+    since: get("since"),
+    active: process.argv.includes("--active"),
+    noResolve: process.argv.includes("--no-resolve"),
   };
 }
 
@@ -307,7 +327,16 @@ export async function reparse(args: Args): Promise<void> {
     return;
   }
 
+  const since = args.since ? new Date(`${args.since}T00:00:00Z`) : null;
+  if (since && Number.isNaN(since.getTime())) {
+    console.error(`--since=${args.since} is not a date (YYYY-MM-DD)`);
+    process.exit(1);
+  }
+
   console.log(`\nRe-parsing from ${storageDescription()} — no network, no traffic.`);
+  if (since || args.active) {
+    console.log(`only listings${since ? ` first seen since ${args.since}` : ""}${args.active ? ", active" : ""}`);
+  }
   if (args.dry) console.log(`dry run: nothing will be written\n`);
 
   const touchedCommunes = new Set<string>();
@@ -358,9 +387,12 @@ export async function reparse(args: Args): Promise<void> {
           })
           .from(portalListings)
           .where(
-            after
-              ? and(eq(portalListings.sourceId, source.id), gt(portalListings.id, after))
-              : eq(portalListings.sourceId, source.id),
+            and(
+              eq(portalListings.sourceId, source.id),
+              after ? gt(portalListings.id, after) : undefined,
+              since ? gte(portalListings.firstSeenAt, since) : undefined,
+              args.active ? eq(portalListings.status, "active") : undefined,
+            ),
           )
           .orderBy(asc(portalListings.id))
           .limit(ROW_PAGE),
@@ -729,7 +761,12 @@ export async function reparse(args: Args): Promise<void> {
    * previously could not be connected — so leaving properties untouched would
    * report a fix that had not fully landed.
    */
-  if (!args.dry && totalUpdated > 0) {
+  if (!args.dry && totalUpdated > 0 && args.noResolve) {
+    console.log(
+      `\n── deduplication NOT re-run (--no-resolve): ${touchedCommunes.size} commune(s) touched. ` +
+        `Measure with \`npm run dedup:check\`; the nightly pass resolves every commune.`,
+    );
+  } else if (!args.dry && totalUpdated > 0) {
     console.log(`\n── re-running deduplication ──`);
     for (const insee of touchedCommunes) {
       const r = await resolveCommuneIdentities(insee);
