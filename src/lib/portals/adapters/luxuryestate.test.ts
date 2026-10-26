@@ -117,3 +117,22 @@ test("a listing with no gallery markup still gets its cover from og:image", () =
   assert.deepEqual(res.listing.imageUrls, []);
   assert.ok(res.listing.imageUrl === null || res.listing.imageUrl.startsWith("http"));
 });
+
+test("with no description in the markup, the page's meta description is the text", () => {
+  // From 2026-10-20 a third of new pages left `description` out of mainEntity;
+  // the agency's text was still in the meta tag, identical where both appear.
+  const html = fs
+    .readFileSync(FIXTURE, "utf8")
+    .replace(/"description":"[^"]*",/, "")
+    .replace("</head>", `<meta name="description" content="Villa d&#x27;architecte, vue mer, 600 m² sur 3 400 m² de jardin." /></head>`);
+  const res = luxuryEstateAdapter.parse(html, URL_);
+  assert.ok("listing" in res);
+  assert.equal(res.listing.description, "Villa d'architecte, vue mer, 600 m² sur 3 400 m² de jardin.");
+});
+
+test("the markup's own description still wins over the meta tag", () => {
+  const html = fs.readFileSync(FIXTURE, "utf8").replace("</head>", `<meta name="description" content="something else" /></head>`);
+  const l = luxuryEstateAdapter.parse(html, URL_);
+  assert.ok("listing" in l);
+  assert.match(l.listing.description ?? "", /^Just five minutes from the legendary Place des Lices/);
+});

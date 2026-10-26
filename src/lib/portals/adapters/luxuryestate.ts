@@ -122,7 +122,16 @@ export const luxuryEstateAdapter: PortalAdapter = {
     listing.raw = { listing: listingNode, main };
 
     listing.title = str(main.name) ?? str(listingNode.name);
-    listing.description = str(main.description);
+    /**
+     * The page's own meta description when the markup leaves it out. From
+     * 2026-10-20 about a third of new pages carry a `mainEntity` with no
+     * `description`; the same text, the agency's, is in `<meta name=
+     * "description">` — character for character where both are present. A
+     * LuxuryEstate row has no agency, no mandate and no plot, so its prose is
+     * the only thing that can tie it to the right house rather than to any
+     * house of its size and price.
+     */
+    listing.description = str(main.description) ?? metaDescription(html);
     listing.propertyType = [...typeNames(main)][0] ?? null;
 
     // ── Price ─────────────────────────────────────────────────────────────
@@ -224,6 +233,11 @@ function agencyFromHtml(html: string): string | null {
   const text = $("body").text().replace(/\s+/g, " ");
   const m = text.match(/presented by\s+([^\n|·]{2,80}?)(?:\s{2,}|\s*(?:Contact|Elite|Prestige)\b|$)/i);
   return m ? m[1].trim() : null;
+}
+
+function metaDescription(html: string): string | null {
+  const text = cheerio.load(html)('meta[name="description"]').attr("content")?.trim();
+  return text ? text : null;
 }
 
 function communeFromBreadcrumb(nodes: JsonLdNode[]): string | null {
