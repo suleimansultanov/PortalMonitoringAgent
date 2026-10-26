@@ -593,10 +593,18 @@ function firstText($: cheerio.CheerioAPI, selector: string): string | null {
  * `<body>` and return the whole page, and `num()` would pull some unrelated
  * figure out of it — a wrong number that looks entirely plausible, which is the
  * failure mode that survives review longest.
+ *
+ * ANY ELEMENT, not only `<em>`. Around 2026-10-16 both Green-Acres and Vizzit
+ * redrew their icons as `<svg class="icons icon-habitablesurface">` — same
+ * class names, same blocks, a different tag. Matched on `em` alone, floor
+ * area, plot, rooms and bedrooms came back null on every page read after it:
+ * 1 592 new listings in ten nights, which then could not be matched on size
+ * and reached the client as cards with no surface. The class is the contract;
+ * the tag never was.
  */
 function byIcon($: cheerio.CheerioAPI, icons: string[]): string | null {
   for (const icon of icons) {
-    const matches = $(`em[class*="icon-${icon}"]`);
+    const matches = $(`[class*="icon-${icon}"]`);
     for (let i = 0; i < matches.length; i++) {
       let node = matches.eq(i).parent();
       for (let depth = 0; depth < 4 && node.length > 0; depth++) {

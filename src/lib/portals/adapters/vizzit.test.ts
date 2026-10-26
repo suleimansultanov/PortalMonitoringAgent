@@ -154,3 +154,15 @@ test("an advert syndicated from another portal is yielded marked, counted, and n
   // The portal's own total still reconciles against every card, syndicated or not.
   assert.ok(incomplete.some(([, r]) => /read 23 of the 578/.test(r)), JSON.stringify(incomplete));
 });
+
+test("a listing drawn with <svg> icons keeps its size — Vizzit redrew with Green-Acres on 2026-10-16", () => {
+  // Saved by the nightly runner on 2026-10-25; anti-forgery tokens blanked.
+  const svg = fs.readFileSync(path.join(FIXTURES, "vizzit-listing-svg.html"), "utf8");
+  const r = vizzitAdapter.parse(svg, "https://www.vizzit.fr/fr/property/maison/grimaud/A1lxf1m8p3phqu1z");
+  if (r.status === "failed") return assert.fail(r.error);
+  assert.equal(r.status, "ok", r.status === "partial" ? `missing: ${r.missing.join(", ")}` : "");
+  assert.equal(r.listing.priceEur, 1_768_000);
+  assert.equal(r.listing.areaM2, 185); // "1 991 sq ft"
+  assert.equal(r.listing.rooms, 5);
+  assert.equal(r.listing.bedrooms, 4);
+});

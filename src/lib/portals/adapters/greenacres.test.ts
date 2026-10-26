@@ -656,3 +656,26 @@ test("a thousands separator is still not a range", () => {
   if (res.status === "failed") return assert.fail(res.error);
   assert.equal(res.listing.landM2, 2730); // "2 730 m²"
 });
+
+/**
+ * A page the nightly runner saved on 2026-10-23, after Green-Acres redrew its
+ * icons as `<svg class="icons icon-…">` — they had been `<em>`. Every page
+ * read from 2026-10-16 came back with no floor area, plot, rooms or bedrooms,
+ * while the fixtures above, captured before the change, kept passing. Square
+ * feet, as the US runner is served. Anti-forgery tokens blanked.
+ */
+const SVG_URL =
+  "https://www.green-acres.fr/fr/properties/maison/cavalaire-sur-mer/Assrn7be4ol7kv06.htm";
+
+test("icons drawn as <svg> still label their values: floor area, plot, rooms", () => {
+  const res = greenAcresAdapter.parse(fixture("green-acres-detail-svg.html"), SVG_URL);
+  if (res.status === "failed") return assert.fail(res.error);
+  assert.equal(res.status, "ok", res.status === "partial" ? `missing: ${res.missing.join(", ")}` : "");
+  const l = res.listing;
+  assert.equal(l.priceEur, 1_600_000);
+  assert.equal(l.areaM2, 279); // "3 003 sq ft"
+  assert.equal(l.landM2, 2_821); // "30 365 sq ft de terrain"
+  assert.equal(l.rooms, 13);
+  assert.equal(l.bedrooms, 9);
+  assert.equal(l.agencyRef, "p8s9-xto-2da");
+});
