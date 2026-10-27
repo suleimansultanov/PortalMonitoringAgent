@@ -36,6 +36,7 @@ after(async () => {
 async function cleanup() {
   await m.db.execute(m.sql`delete from portal_sources where key in ('dbtest-on', 'dbtest-off')`);
   await m.db.execute(m.sql`delete from properties where commune_insee = ${COMMUNE}`);
+  await m.db.execute(m.sql`delete from portal_agencies where name_normalized = 'dbtest agency'`);
 }
 
 test("a property speaks with the voice of a source still collected, not a switched-off one", { skip }, async () => {
@@ -45,11 +46,21 @@ test("a property speaks with the voice of a source still collected, not a switch
       .returning({ id: m.schema.portalSources.id }))[0].id;
   const on = await src("dbtest-on", true);
   const off = await src("dbtest-off", false);
+  /**
+   * One agency, one mandate on both rows. A switched-off source's row may join
+   * only that way since 2026-10-26 (`staleSourceIds` in clusterCandidates):
+   * matched by size, at the price it had when its collector stopped, it glued
+   * homes now at other prices into one card.
+   */
+  const [agency] = await m.db
+    .insert(m.schema.portalAgencies)
+    .values({ name: "DB test agency", nameNormalized: "dbtest agency" })
+    .returning({ id: m.schema.portalAgencies.id });
 
   const listing = (sourceId: string, externalId: string, title: string, description: string) => ({
     sourceId, externalId, url: `https://example.test/${externalId}`, status: "active", parseStatus: "ok",
     communeInsee: COMMUNE, priceEur: 3_000_000, areaM2: "250", landM2: "2000", propertyType: "Maison",
-    agencyRef: null, title, description,
+    agencyId: agency.id, agencyRef: "70880", title, description,
   });
   // The switched-off row is the fuller one, so it would win on completeness alone.
   await m.db.insert(m.schema.portalListings).values([

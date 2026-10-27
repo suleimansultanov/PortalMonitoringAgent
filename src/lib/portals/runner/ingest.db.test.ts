@@ -172,3 +172,30 @@ test("the same bytes coming back after a delisting are a `relisted`, not a silen
   assert.equal(row.status, "active");
   assert.equal(row.delisted_at, null);
 });
+
+async function placeOf(externalId: string) {
+  const r = await m.db.execute<{ commune_insee: string | null; property_id: string | null; abroad: string | null; status: string }>(m.sql`
+    select commune_insee, property_id, raw->>'abroad' as abroad, status from portal_listings
+    where source_id = ${sourceId}::uuid and external_id = ${externalId}`);
+  return r.rows[0];
+}
+
+test("an advert for a home abroad is kept, but in no commune and on no property", { skip }, async () => {
+  // Immocenter's Phuket villas, filed by the portals under Le Plan-de-la-Tour (2026-10-27).
+  const t = { externalId: "abroad-new", url: "https://example.test/vente/-phuket/1328-kamala/abroad-new" };
+  await m.ingest.ingestListing(deps(), { ...t, document: JSON.stringify({ price: 625_000 }) });
+  assert.deepEqual(await placeOf("abroad-new"), { commune_insee: null, property_id: null, abroad: "phuket", status: "active" });
+});
+
+test("a stored advert recognised as abroad leaves its commune and its card", { skip }, async () => {
+  const t = { externalId: "abroad-old", url: "https://example.test/abroad-old" };
+  await m.ingest.ingestListing(deps(), { ...t, document: JSON.stringify({ price: 677_000, title: "Penthouse" }) });
+  const [card] = await m.db.insert(m.schema.properties).values({ communeInsee: "83065" }).returning({ id: m.schema.properties.id });
+  await m.db.execute(m.sql`update portal_listings set property_id = ${card.id}::uuid where source_id = ${sourceId}::uuid and external_id = 'abroad-old'`);
+  assert.equal((await placeOf("abroad-old")).commune_insee, "83065");
+
+  await m.ingest.ingestListing(deps(), { ...t, document: JSON.stringify({ price: 677_000, title: "Penthouse de luxe à Kamala – Phuket" }) });
+  assert.deepEqual(await placeOf("abroad-old"), { commune_insee: null, property_id: null, abroad: "phuket", status: "active" });
+  // Nothing for the client's feed: no delisting, no relisting — it simply is not in the market.
+  assert.deepEqual(await eventsOf("abroad-old"), ["listed"]);
+});

@@ -7,6 +7,7 @@ import { contentHash } from "@/lib/utils/crypto";
 import { pageKey, putPage } from "@/lib/s3/pages";
 import { resolveAgency } from "../agencies";
 import { resolveCommune } from "../communes";
+import { placedAbroad } from "../abroad";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
 
@@ -153,11 +154,22 @@ export async function ingestListing(
       )
     : null;
 
-  const commune = resolveCommune(
-    parsed.communeRaw,
-    parsed.postalCode,
-    `${parsed.title ?? ""} ${parsed.description ?? ""}`,
-  );
+  /**
+   * A home abroad, sold from an office in the gulf and filed by the portal
+   * under the agency's town — see abroad.ts. Stored, so discovery keeps
+   * knowing it, but in no commune and on no property: nothing clusters it and
+   * nothing serves it. A row stored before the advert was recognised loses
+   * both below, in `reconcile`, and the resolve delists the card it leaves.
+   */
+  const abroad = placedAbroad(url, parsed.title, parsed.description);
+
+  const commune = abroad
+    ? null
+    : resolveCommune(
+        parsed.communeRaw,
+        parsed.postalCode,
+        `${parsed.title ?? ""} ${parsed.description ?? ""}`,
+      );
 
   /**
    * The floor under every adapter, including the ones not written yet.
@@ -213,13 +225,14 @@ export async function ingestListing(
     availability: parsed.availability,
     publishedAt: parsed.publishedAt,
     sourceUpdatedAt: parsed.sourceUpdatedAt,
-    raw: parsed.raw,
+    raw: abroad ? { ...(parsed.raw ?? {}), abroad } : parsed.raw,
   };
 
   // ── 6. Reconcile and record history ─────────────────────────────────────
   const written = await reconcile(deps, externalId, incoming, parseStatus, existing, {
     areaM2: parsed.areaM2,
     availability: parsed.availability,
+    abroad,
   });
 
   return { externalId, status: "ingested", listingId: written.listingId, events: written.events };
@@ -256,7 +269,7 @@ async function reconcile(
   incoming: Incoming,
   parseStatus: "ok" | "partial",
   first: StoredListing | null,
-  parsed: { areaM2: number | null; availability: string | null },
+  parsed: { areaM2: number | null; availability: string | null; abroad: string | null },
 ): Promise<{ listingId: string; events: string[] }> {
   let existing = first;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -284,7 +297,7 @@ async function writeOnce(
   incoming: Incoming,
   parseStatus: "ok" | "partial",
   existing: StoredListing | null,
-  parsed: { areaM2: number | null; availability: string | null },
+  parsed: { areaM2: number | null; availability: string | null; abroad: string | null },
 ): Promise<{ listingId: string; events: string[] } | null> {
   const before = existing ? stateOf(existing) : null;
 
@@ -320,6 +333,9 @@ async function writeOnce(
         .update(portalListings)
         .set({
           ...patch,
+          // mergeParsed never writes a null, so the commune a row was filed
+          // under before it was recognised as abroad has to be taken off here.
+          ...(parsed.abroad ? { communeInsee: null, propertyId: null } : {}),
           status: "active",
           delistedAt: null,
           parseStatus,

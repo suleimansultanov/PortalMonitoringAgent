@@ -125,6 +125,12 @@ before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
   (`changesOnly`): no full sweep, ever — four of them would be the month.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
+- **A gulf agency's homes abroad arrive filed under its own town.** Immocenter
+  (Le Plan-de-la-Tour) sells Phuket; Vizzit and Stream.Estate V1 both placed
+  its villas in 83094, V1 with the agency's coordinates. The client saw them
+  (2026-10-27). `abroad.ts` reads the advert's own URL and text; ingest keeps
+  such a row in no commune and on no property. Grow its list only after
+  running the marker over the whole table — "pierre de Bali" is a pool stone.
 
 ## Events — there is no `sold`
 A portal shows a listing *disappearing*. That happens when it sells, when the
