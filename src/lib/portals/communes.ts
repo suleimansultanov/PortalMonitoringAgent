@@ -129,47 +129,93 @@ for (const [alias, label] of [
   ["plan de la tour", "Le Plan-de-la-Tour"],
   ["croix valmer", "La Croix-Valmer"],
   ["garde freinet", "La Garde-Freinet"],
+  ["ramatuel", "Ramatuelle"],
 ] as const) {
   const entry = GULF_OF_SAINT_TROPEZ.find((c) => c.label === label);
   if (entry) BY_NORMALISED.set(alias, entry);
 }
 
+/** Every name that points at an entry: its label, the spellings above, its locality fragments. */
+const NAMES: { name: string; entry: CommuneEntry }[] = [
+  ...[...BY_NORMALISED].map(([name, entry]) => ({ name, entry })),
+  ...GULF_OF_SAINT_TROPEZ.flatMap((entry) => (entry.localityMatch ?? []).map((frag) => ({ name: normaliseCommuneName(frag), entry }))),
+];
+
+/** The entry named first in a normalised text, as whole words; the longer name on a tie, so "port grimaud" beats "grimaud". */
+function firstNamed(text: string, keep: (e: CommuneEntry) => boolean = () => true): CommuneEntry | null {
+  const hay = ` ${text} `;
+  let best: { at: number; length: number; entry: CommuneEntry } | null = null;
+  for (const { name, entry } of NAMES) {
+    if (!keep(entry)) continue;
+    const at = hay.indexOf(` ${name} `);
+    if (at < 0) continue;
+    if (!best || at < best.at || (at === best.at && name.length > best.length)) best = { at, length: name.length, entry };
+  }
+  return best?.entry ?? null;
+}
+
+/** A district of the commune already settled on, if the text names one: "Grimaud" and "appartement Port Grimaud". */
+function districtOf(commune: CommuneEntry, text: string): CommuneEntry {
+  if (commune.localityOf) return commune;
+  return firstNamed(text, (e) => e.insee === commune.insee && !!e.localityOf) ?? commune;
+}
+
 /**
- * Best-effort resolution of a listing's stated location.
+ * Where a listing is, from what it states.
  *
- * Checks locality fragments first: a listing that says "Port Grimaud" should
- * resolve to the district, not to Grimaud, even though both share an INSEE
- * code. Falls back to postcode, which is coarse but never wrong.
+ * THE PORTAL'S STATEMENT OF PLACE OUTRANKS ANYTHING THE ADVERT SAYS ABOUT ITSELF.
+ * Adverts name their neighbours: "à 15 minutes de Saint-Tropez", "proche de Port
+ * Grimaud". This used to look for a commune in the place and the text together,
+ * taking the first of its own list, and Saint-Tropez comes before Sainte-Maxime.
+ * Any stated place that was not a commune's bare name fell into that search, and
+ * Bien'ici's all are not: "Sainte-Maxime - Sémaphore - Nartelle". 362 of its 3 032
+ * live rows were filed under a commune they do not state, 229 of them under
+ * Saint-Tropez, and the client found them by clicking through (2026-11-05). A row
+ * in the wrong commune also never merges with the same house in the right one.
+ *
+ * So: the first commune the stated place names; then the postcode, which is coarse
+ * but cannot be flattery. A place we do not watch is an answer, not a gap ("Vidauban",
+ * or "Roquebrune-sur-Argens - Village" at 83520): it stays unfiled, whatever its text
+ * mentions. The text is read only for a district of the commune already settled on,
+ * to choose among communes sharing a postcode, and when nothing at all was stated.
+ *
+ * Roquebrune-sur-Argens is watched in part: Les Issambres. Its name alone does not
+ * put a listing there, and neither does postcode 83380, which Bien'ici also prints on
+ * "Roquebrune-sur-Argens - Village". It takes the district named, and never at 83520.
  */
 export function resolveCommune(
   communeRaw: string | null,
   postalCode: string | null,
   freeText?: string | null,
 ): CommuneEntry | null {
-  const haystack = normaliseCommuneName(`${communeRaw ?? ""} ${freeText ?? ""}`);
+  const stated = normaliseCommuneName(communeRaw ?? "");
+  const text = normaliseCommuneName(freeText ?? "");
+  const postal = postalCode?.trim() || null;
 
-  for (const entry of GULF_OF_SAINT_TROPEZ) {
-    if (!entry.localityMatch) continue;
-    if (entry.localityMatch.some((frag) => haystack.includes(normaliseCommuneName(frag)))) {
-      return entry;
-    }
+  const named = firstNamed(stated);
+  if (named) return districtOf(named, text);
+
+  if (stated.includes("roquebrune")) {
+    return !postal || postal === "83380" ? firstNamed(text, (e) => e.insee === "83107") : null;
   }
 
-  if (communeRaw) {
-    const direct = BY_NORMALISED.get(normaliseCommuneName(communeRaw));
-    if (direct) return direct;
-    for (const [key, entry] of BY_NORMALISED) {
-      if (haystack.includes(key)) return entry;
-    }
+  const byPost = postal ? POSTCODE_TO_INSEE[postal] : undefined;
+  if (byPost && postal) {
+    const shared = SHARED_POSTCODES[postal];
+    const chosen = shared ? firstNamed(text, (e) => !e.localityOf && shared.includes(e.insee)) : null;
+    const commune = chosen ?? GULF_OF_SAINT_TROPEZ.find((c) => c.insee === byPost && !c.localityOf) ?? null;
+    return commune && districtOf(commune, text);
   }
 
-  if (postalCode) {
-    const byPost = POSTCODE_TO_INSEE[postalCode.trim()];
-    if (byPost) return GULF_OF_SAINT_TROPEZ.find((c) => c.insee === byPost && !c.localityOf) ?? null;
-  }
-
-  return null;
+  // A place we do not watch stays unfiled. Nothing stated at all: only a district is specific enough to mean itself.
+  return stated ? null : firstNamed(text, (e) => !!e.localityOf);
 }
+
+/** Communes sharing a postcode, where the first is what the postcode alone resolves to. */
+const SHARED_POSTCODES: Record<string, string[]> = {
+  "83310": ["83068", "83042", "83079"], // Grimaud, Cogolin, La Môle
+  "83120": ["83115", "83094"], // Sainte-Maxime, Le Plan-de-la-Tour
+};
 
 /** Postcodes are not one-to-one with communes — Grimaud and Cogolin share 83310. */
 const POSTCODE_TO_INSEE: Record<string, string> = {

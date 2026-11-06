@@ -109,6 +109,15 @@ before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
   because a failed page is never stored. They are marked `syndicatedFrom` and
   left unfetched; a 404/410 on a listing never held is `unserved`, not a
   failure. Agencies' own sites are NOT marked — some of those are served.
+- **An advert names its neighbours.** "À 15 minutes de Saint-Tropez" sent a home
+  in Sainte-Maxime to Saint-Tropez, because `resolveCommune` searched the text too:
+  Bien'ici states every place as "Sainte-Maxime - Sémaphore - Nartelle", never a
+  bare name, so 362 of its 3 032 live rows were filed under the wrong commune, and
+  the client found them (2026-11-05). The stated place decides; the text is only
+  for a district of that commune. A wrong commune also blocks every merge. A
+  stored row is not re-filed by a better rule until its page changes:
+  `npx tsx src/lib/portals/recommune.ts` replays the rule over what is stored (dry
+  unless `--apply`), moving a property whole so it keeps its id.
 - **Zoopla Overseas leads with sterling and has no agencies.** Store only the
   listing's own EUR figure (`currencyCode`), never the pound. Every listing is
   syndicated by Properstar in English: do not store it as the agency, and
