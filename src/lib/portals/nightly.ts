@@ -10,6 +10,7 @@ import { collectionCommunes, communesForSource } from "./runner/run";
 import { communeSliceForDay } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { auditLine } from "./dedupAudit";
+import { healthLine } from "@/lib/health/run";
 import { sweepImpossibleValues } from "./sanity";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
 import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
@@ -58,6 +59,8 @@ import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
 const LOGS_ROOT = path.resolve(process.cwd(), "logs");
 /** Nights kept on disk. Text, so this costs almost nothing; the ceiling is for tidiness. */
 const KEEP_NIGHTS = 30;
+/** The most the data health step may take before the summary is written without it. */
+const HEALTH_CAP_MIN = 15;
 
 function arg(name: string): string | undefined {
   return process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=").slice(1).join("=");
@@ -996,13 +999,38 @@ async function main(): Promise<void> {
     console.error(`[nightly] ${dedupAuditLine}`);
   }
 
+  /**
+   * And what the client's app will conclude about all of it when it reads the
+   * feed a few hours from now, with what we conclude beside it. Reads the feed
+   * the client is served and stores the run. Reports only; see lib/health/.
+   *
+   * Capped, because it runs before the summary is written: a read that hung here
+   * would cost the night its summary, which matters more than this line. About
+   * 90 s from a laptop; past the cap the line says so and the nightly goes on
+   * (`process.exit` at the end ends the abandoned read).
+   */
+  let dataHealthLine = "";
+  try {
+    const health = await Promise.race([
+      healthLine(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`gave up after ${HEALTH_CAP_MIN} min`)), HEALTH_CAP_MIN * 60_000).unref(),
+      ),
+    ]);
+    dataHealthLine = health.line;
+    for (const w of health.worst) console.warn(`[nightly]   ${w}`);
+  } catch (err) {
+    dataHealthLine = `data health: FAILED — ${(err as Error).message}`;
+    console.error(`[nightly] ${dataHealthLine}`);
+  }
+
   const finishedAt = new Date();
   const summaryText = renderSummary(
     night,
     startedAt,
     finishedAt,
     outcomes,
-    `${resolveLine}\n${sanityLine}\n${dedupAuditLine}`,
+    `${resolveLine}\n${sanityLine}\n${dedupAuditLine}\n${dataHealthLine}`,
     logDir,
   );
   await fsp.writeFile(path.join(logDir, "summary.txt"), summaryText, "utf8");

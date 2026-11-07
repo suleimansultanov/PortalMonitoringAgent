@@ -141,6 +141,40 @@ before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
   such a row in no commune and on no property. Grow its list only after
   running the marker over the whole table — "pierre de Bali" is a pool stone.
 
+## Data health — what the client will conclude, on our side first
+The client's app (vault, written by Tomaz, `src/lib/ops/data-health*.ts`) judges
+our feed every night on Settings → Data health. `src/lib/health/` runs the same
+rules here, as of vault commit eaed31c: `npm run health` reads only, and the
+nightly stores a run and adds one line to the summary (`data_health_checks`,
+drizzle/0012, kept 60 days). It reports only: in the nightly it runs after the
+collectors, the resolve and the audit, and a failure or a run past 15 minutes
+turns the line into `FAILED` while the night carries on to its summary.
+
+Every row has **two verdicts**. `vault` is the client's rule at the client's
+threshold, copied warts and all so it can be checked against their screen.
+`ours` differs only where we measured the rule misreading the collector, and
+`note` says how. Do not "fix" a `vault` verdict: if their rule changes, update it
+and the commit named in `rules.ts`.
+
+The feed is read through `snapshot()`, the function behind /api/v1/properties, so
+it judges what the client is sent. The ten-second limit on every query is why the
+history reads one commune at a time. About 40 MB and 90 s; `--feed=<file>`
+re-judges a saved feed for nothing.
+
+Only the portal block is copied (17 kinds of check, 157 of the client's 196 rows
+on 2026-11-03). Not reproducible: "kept the last good value" and the ×5 price
+hold, which need the last read the client stored.
+
+Calibrated 2026-11-04 against the client's screen of the same evening, on the same
+night's data. Exact: all 24 "not re-checked" rows, all 26 "new listings" rows,
+6 556 properties, 26 portals, the 5 red portals. Within a row: bedrooms. Close:
+values dropped 774 / 779 theirs first, price per m² 96 of 4 344 / 93 of 4 312,
+duplicates hidden 1 573 of 6 663 / 1 494 of 6 556 (their count includes the agency's
+own 107 Apimo cards, which never reach our feed). Known gaps: 48 "kept" rows, and
+four portals of one or three contract rows, because two aggregators' rows tie on
+`lastSeenAt` and the winner is whichever the read returned first. If a change moves
+these apart with nothing changed on the client's side, suspect the copy.
+
 ## Events — there is no `sold`
 A portal shows a listing *disappearing*. That happens when it sells, when the
 owner withdraws it, when the agency's subscription lapses, and when it moves to
@@ -227,7 +261,8 @@ Deploying the app for a client: `docs/DEPLOY.md`.
 
 ## Commands
 `npm run dev` · `build` · `typecheck` (run after edits) · `db:migrate` ·
-`db:studio` · `test` · `user:create` · `dedup:check` (dry run of the resolve)
+`db:studio` · `test` · `user:create` · `health` (what the client's Data health
+will say, and what we say) · `dedup:check` (dry run of the resolve)
 · `dedup:audit` (duplicates left after it) · `resolve -- --communes=<insee>`
 · `reparse -- --source=<key> --since=<YYYY-MM-DD> --active --no-resolve`
 (re-derive fields from stored pages after a parser fix; pages come down from

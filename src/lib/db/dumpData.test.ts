@@ -38,6 +38,8 @@ const SCRIPT = path.resolve(HERE, "../../../scripts/dump-data.sh");
  * `some_cache: "derived from portal_listings every night; rebuilt, never restored"`.
  */
 const NOT_BACKED_UP: Record<string, string> = {
+  data_health_checks:
+    "derived from the market every night and kept 60 days; a restore loses a week of comparison, which the next week rebuilds",
   rate_limits:
     "fixed-window counters a minute to fifteen minutes long; a restored count is a stale one, and an empty table is the correct state after a restore",
   api_request_log:

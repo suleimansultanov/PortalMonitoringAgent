@@ -191,6 +191,26 @@ export function carriedPortals(source: string, url: string, carried: unknown): P
 }
 
 /**
+ * What is sent for one property, once its aggregator rows are split into portals.
+ *
+ * A portal we collect directly is our own reading of it, so the same portal seen
+ * via an aggregator is dropped, and so is the same portal seen via two aggregators
+ * (V2 and V1 both carry SeLoger). Here because the feed and the data health
+ * checks have to agree on it: a check that counted differently would be judging a
+ * feed nobody is served.
+ */
+export function servedListings<T extends { source: string; via: string | null }>(list: T[]): T[] {
+  const direct = new Set(list.filter((l) => !l.via).map((l) => l.source));
+  const sent = new Set<string>();
+  return list.filter((l) => {
+    if (!l.via) return true;
+    if (direct.has(l.source) || sent.has(l.source)) return false;
+    sent.add(l.source);
+    return true;
+  });
+}
+
+/**
  * The portals carrying a property, one entry per portal.
  *
  * A portal we collect directly wins over the same portal seen through an

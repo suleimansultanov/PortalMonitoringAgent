@@ -7,6 +7,7 @@ import {
   boolean,
   integer,
   bigint,
+  doublePrecision,
   numeric,
   timestamp,
   jsonb,
@@ -824,5 +825,36 @@ export const sourceCommuneState = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.sourceKey, t.communeInsee] }),
+  }),
+);
+
+/**
+ * One row per data health check per run, for one client's feed. `vaultStatus`
+ * is what the client's app concludes, `ourStatus` what we do; either can be
+ * null. Derived and rebuilt nightly, so not in the backup. See src/lib/health/.
+ */
+export const dataHealthChecks = pgTable(
+  "data_health_checks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    ranAt: timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+    checkKey: text("check_key").notNull(),
+    /** The portal it concerns; empty for a check of the whole feed. */
+    source: text("source").notNull().default(""),
+    vaultStatus: text("vault_status"),
+    ourStatus: text("our_status"),
+    value: doublePrecision("value"),
+    expected: text("expected").notNull(),
+    message: text("message").notNull(),
+    note: text("note"),
+    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => ({
+    clientRanIdx: index("data_health_checks_client_ran_idx").on(t.clientId, t.ranAt),
+    vaultStatusCheck: check("data_health_checks_vault_status_check", sql`${t.vaultStatus} IN ('green', 'amber', 'red', 'unknown')`),
+    ourStatusCheck: check("data_health_checks_our_status_check", sql`${t.ourStatus} IN ('green', 'amber', 'red', 'unknown')`),
   }),
 );

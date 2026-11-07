@@ -16,9 +16,10 @@ const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.met
 const literals = (text: string, quote: "'" | '"') =>
   [...text.matchAll(quote === "'" ? /'([^']*)'/g : /"([^"]*)"/g)].map((m) => m[1]).sort();
 
-const MIGRATION = read("../../../drizzle/0011_status_checks.sql");
+// 0012 adds the constraints of a table that did not exist when 0011 was written.
+const MIGRATION = read("../../../drizzle/0011_status_checks.sql") + read("../../../drizzle/0012_data_health.sql");
 
-/** The values a constraint in 0011 allows. */
+/** The values a constraint in the migrations allows. */
 function migrationAllows(name: string): string[] {
   const m = new RegExp(`ADD CONSTRAINT "${name}"\\s+CHECK \\(([^;]*)\\);`).exec(MIGRATION);
   assert.ok(m, `0011 has no constraint ${name}`);
@@ -86,9 +87,15 @@ test("roles, discovery modes, ledger kinds and match statuses: each from its own
   );
 });
 
+test("data health verdicts: what rules.ts can conclude, on both sides", () => {
+  const statuses = codeUnion("../health/rules.ts", /export type Status = ([^;]*);/);
+  assert.deepEqual(migrationAllows("data_health_checks_vault_status_check"), statuses);
+  assert.deepEqual(migrationAllows("data_health_checks_our_status_check"), statuses);
+});
+
 test("each constraint is added only when pg_constraint does not have it — 0011 can run twice", () => {
   const added = [...MIGRATION.matchAll(/ADD CONSTRAINT "([a-z_]+)"/g)].map((m) => m[1]);
   const guarded = [...MIGRATION.matchAll(/WHERE conname = '([a-z_]+)'/g)].map((m) => m[1]);
-  assert.equal(added.length, 12);
+  assert.equal(added.length, 14);
   assert.deepEqual(guarded, added);
 });

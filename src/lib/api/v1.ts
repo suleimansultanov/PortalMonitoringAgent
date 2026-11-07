@@ -11,7 +11,7 @@ import {
   portalSources,
   properties,
 } from "@/lib/db/schema";
-import { AGGREGATORS, carriedPortals, shownAs } from "@/lib/portals/portalOf";
+import { AGGREGATORS, carriedPortals, servedListings, shownAs } from "@/lib/portals/portalOf";
 import type { KeyScope } from "./keys";
 import { servedProperty } from "./served";
 
@@ -175,7 +175,7 @@ export function decodeCursor(raw: string): { occurredAt: Date; id: string } | nu
  * normalised name, because one agency is a row per portal spelling.
  */
 const ownCache = new WeakMap<KeyScope, Promise<string[]>>();
-function ownAgencies(scope: KeyScope): Promise<string[]> {
+export function ownAgencies(scope: KeyScope): Promise<string[]> {
   let p = ownCache.get(scope);
   if (!p) {
     p = db
@@ -193,7 +193,7 @@ function ownAgencies(scope: KeyScope): Promise<string[]> {
  * The listing in `portal_listings` (as joined in the query) is the client's
  * own, or sits on a property the client is not selling.
  */
-function notADuplicateOfOwn(own: string[]) {
+export function notADuplicateOfOwn(own: string[]) {
   if (own.length === 0) return sql`true`;
   const ids = sql.join(own.map((id) => sql`${id}::uuid`), sql`, `);
   return sql`(
@@ -311,19 +311,7 @@ async function withListings(rows: PropertyPayload[], scope: KeyScope): Promise<P
     }
     byProperty.set(l.propertyId, list);
   }
-  for (const r of rows) {
-    const list = byProperty.get(r.id) ?? [];
-    // A portal we collect directly is our own reading of it; the same portal seen via an aggregator is
-    // dropped — and so is the same portal seen via two aggregators (V2 and V1 both carry SeLoger).
-    const direct = new Set(list.filter((l) => !l.via).map((l) => l.source));
-    const sent = new Set<string>();
-    r.listings = list.filter((l) => {
-      if (!l.via) return true;
-      if (direct.has(l.source) || sent.has(l.source)) return false;
-      sent.add(l.source);
-      return true;
-    });
-  }
+  for (const r of rows) r.listings = servedListings(byProperty.get(r.id) ?? []);
 
   /**
    * Counted from what is sent, after the split. `properties.source_count` is
