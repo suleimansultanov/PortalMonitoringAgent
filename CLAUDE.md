@@ -132,6 +132,12 @@ before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
   paid page, no retries); nothing may call `api.stream.estate` around it. The
   `stream-estate-v1` source reads the stock once and then changes only
   (`changesOnly`): no full sweep, ever — four of them would be the month.
+- **Etreproprio's "similar listings" widget is not the gallery.** Its pictures
+  sit under the same `/classified/image/` path, as `<img data-nuxt-img
+  src="/_ipx/…">`: other homes, in Clamart or Istres. Taken as photos, they reached
+  751 of the client's cards and were the cover of 13, and the client's contract
+  refused all 764 under whichever portal led the card, SeLoger first (fixed
+  2026-11-07). Keep only absolute `https://` photos; never make `/_ipx/` absolute.
 - **Superimmo serves an intermittent CAPTCHA.** Do not build around it; the
   route is a partner agreement. Med-Estates already advertises there.
 - **A gulf agency's homes abroad arrive filed under its own town.** Immocenter

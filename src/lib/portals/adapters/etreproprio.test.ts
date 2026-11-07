@@ -140,6 +140,32 @@ test("the agency's logo is not one of the property's photographs", () => {
   assert.ok(l.imageUrls.every((u) => !u.includes("/realtor/")));
 });
 
+/** The "similar listings" widget as served on 2026-11-07: another home, through Nuxt's image proxy. */
+const WIDGET_IMG = (town: string, path: string) =>
+  `<img onerror="this.setAttribute('data-error', 1)" width="800" height="600" alt="Photo Maison à ${town} au prix de 500 000€" loading="lazy" data-nuxt-img="" ` +
+  `srcset="/_ipx/f_webp&amp;s_800x600/https://storage.etreproprio.com/classified/image/thumb/${path}_ptw0.webp 1x" class="h-full w-full object-cover" ` +
+  `src="/_ipx/f_webp&amp;s_800x600/https://storage.etreproprio.com/classified/image/thumb/${path}_ptw0.webp">`;
+
+test("the similar-listings widget's photos of other homes are not this listing's gallery", () => {
+  const widget = WIDGET_IMG("Clamart", "g/n/w/aaaaaaaa-0000-0000-0000-000000000001") + WIDGET_IMG("Bolbec", "t/z/w/aaaaaaaa-0000-0000-0000-000000000002");
+  const html = fs.readFileSync(FIXTURE, "utf8").replace("</body>", `<section>${widget}</section></body>`);
+  const res = etreproprioAdapter.parse(html, URL_);
+  assert.ok("listing" in res);
+  assert.deepEqual(res.listing.imageUrls, parseFixture().imageUrls);
+  assert.ok(res.listing.imageUrls.every((u) => u.startsWith("https://")));
+});
+
+test("a page whose only pictures are the widget's gets no cover, rather than a stranger's house", () => {
+  const html = fs
+    .readFileSync(FIXTURE, "utf8")
+    .replace(/<img[^>]*classified[^>]*>/g, "")
+    .replace("</body>", `${WIDGET_IMG("Istres", "t/t/o/aaaaaaaa-0000-0000-0000-000000000003")}</body>`);
+  const res = etreproprioAdapter.parse(html, URL_);
+  assert.ok("listing" in res);
+  assert.deepEqual(res.listing.imageUrls, []);
+  assert.equal(res.listing.imageUrl, null);
+});
+
 test("a listing with no photographs is left without one rather than given a placeholder", () => {
   // Forty-eight of the 1437 pages we hold are like this — nearly all bare land.
   // Their JSON-LD still advertises an `image`, but it is a redirect that serves

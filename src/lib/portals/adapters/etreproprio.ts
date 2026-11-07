@@ -361,12 +361,24 @@ function applyDomFields(html: string, listing: RawListing): void {
  *
  * Only the `_ptw0` size is served here; the detail page publishes no srcset and
  * no full-size variant, so there is nothing larger to prefer.
+ *
+ * THE "SIMILAR LISTINGS" WIDGET IS NOT THE GALLERY. It sits on the same page,
+ * its pictures live under the same `/classified/image/` path, and the selector
+ * alone took them: three per page, of homes in Clamart, Bolbec, Istres
+ * ("Photo Maison à Clamart au prix de 500 000€"). They come through Nuxt's image
+ * proxy, `<img data-nuxt-img src="/_ipx/f_webp&s_800x600/https://storage…">`,
+ * a path relative to Etreproprio. On 2026-11-07 they were on 1 324 of 1 461 live
+ * listings and on 751 of the client's cards; on 22 listings they were the only
+ * pictures, so a stranger's house was the cover. The client's data contract
+ * refused all 764 as "not https" and filed them under SeLoger, Vizzit and
+ * whichever portal led the card. Do not make them absolute: that shows the
+ * wrong home. The listing's own photos are plain absolute <img src>.
  */
 function galleryFrom($: cheerio.CheerioAPI): string[] {
   const order = new Map<string, number>();
   $('img[src*="/classified/image/"]').each((_, el) => {
     const src = $(el).attr("src");
-    if (!src) return;
+    if (!src || !src.startsWith("https://") || $(el).is("[data-nuxt-img]")) return;
     const captioned = $(el).attr("alt")?.match(/photo\s+(\d+)\s*$/i)?.[1];
     const n = captioned ? Number(captioned) : 9999;
     const seen = order.get(src);
