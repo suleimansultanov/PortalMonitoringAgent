@@ -65,7 +65,10 @@ from the median and by majority of rows, not by one row's plot or type: on
 2026-10-18, 126 of 149 remaining duplicates were one odd row deciding for a
 whole cluster. Measure any rule change dry first (`npm run dedup:check`), then
 `npm run dedup:audit` — it replays the resolve over what is stored and lists
-pairs the rules call one house that are still two. The same line is in every
+pairs the rules call one house that are still two. Flats keep the Carrez band,
+but a gap of one square metre or less never vetoes a text-backed pair (portals
+round 51,97 to 51; 89 cards the client hid as duplicates on 2026-11-08 were
+this), and never helps a measurements-only one. The same line is in every
 nightly summary; its first number (anomalies) should stay near zero. Two
 narrower rules were tried and reverted with numbers on 2026-10-19; the notes
 are beside the constants in `score.ts`.

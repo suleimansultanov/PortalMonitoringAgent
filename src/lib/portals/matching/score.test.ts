@@ -755,3 +755,36 @@ test("a switched-off collector's row joins by its mandate, never by size at the 
     ["aug,now", "other"],
   );
 });
+
+// Cavalaire-sur-Mer, 2026-11-08: one T2 on Bien'ici and Vizzit, 51,97 m² read as 51 by one of them.
+const T2 = `Vente appartement T2 de 51,97m2 avec balcon à Cavalaire sur Mer, au calme dans une résidence avec piscine, proche des plages et des commerces, séjour lumineux ouvrant sur un balcon, cuisine équipée, une chambre avec placards, salle d'eau, cave et place de parking privative.`;
+const t2 = (over: Partial<Candidate> & { id: string }): Candidate =>
+  c({ communeInsee: "83036", priceEur: 236_250, areaM2: 51.97, landM2: null, rooms: 2, bedrooms: 1, propertyType: "Appartement", title: "T2 balcon", description: T2, ...over });
+
+test("a flat rounded to the square metre by one portal is still one flat, when its text agrees", () => {
+  const v = scoreMatch(t2({ id: "a", sourceId: "bienici", agencyId: "ag1" }), t2({ id: "b", sourceId: "vizzit", agencyId: "ag2", areaM2: 51 }));
+  assert.equal(v.same, true);
+  assert.notEqual(v.signals.areaConflict, true);
+});
+
+test("one square metre is rounding, two are not: the Carrez band still vetoes", () => {
+  const v = scoreMatch(t2({ id: "a", sourceId: "bienici" }), t2({ id: "b", sourceId: "vizzit", areaM2: 49.5 }));
+  assert.equal(v.same, false);
+  assert.equal(v.signals.areaConflict, true);
+});
+
+test("without the text, the rounding allowance does not merge two lots of a development", () => {
+  const v = scoreMatch(
+    t2({ id: "a", sourceId: "bienici", agencyId: "ag1", description: null, title: null }),
+    t2({ id: "b", sourceId: "vizzit", agencyId: "ag2", areaM2: 51, description: null, title: null }),
+  );
+  assert.equal(v.same, false);
+});
+
+test("two mandates of one agency stay two flats, a square metre apart or not", () => {
+  const v = scoreMatch(
+    t2({ id: "a", sourceId: "bienici", agencyId: "acv", agencyRef: "ag1078-acv-lyc" }),
+    t2({ id: "b", sourceId: "vizzit", agencyId: "acv", agencyRef: "ag1078-acv-blg", areaM2: 51 }),
+  );
+  assert.equal(v.same, false);
+});

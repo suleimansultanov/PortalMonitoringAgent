@@ -69,6 +69,18 @@ const AREA_TOLERANCE = 0.03;
 /** A flat's area is measured under the Carrez law, so it needs less room. */
 const FLAT_AREA_TOLERANCE = 0.015;
 /**
+ * And portals round it to the square metre: 41,5 m² is 41 on one and 42 on the
+ * next, 51,97 is 51. On a studio that is 2–3 %, past the Carrez band, and the
+ * band vetoed the pair before its text was read. On 2026-11-08 the client hid
+ * 89 cards our resolve kept apart for exactly this: two flats at one price to
+ * the euro, the same agency text (containment ≥ 0.5, most of them 0.9–1.0), and
+ * floor areas one square metre or less apart. So a gap within one square metre
+ * never VETOES; the text still has to carry the pair. Not for the measurements-
+ * only rule (`structuralMatch`), where two identical lots of one development are
+ * the risk, and not against two mandates of one agency (`agencyRefConflict`).
+ */
+const AREA_ROUNDING_M2 = 1;
+/**
  * And what a house's floor area is allowed to differ by once the plot under it
  * has already agreed. Two agencies measure a villa differently — habitable,
  * with the annexes, with the covered terrace — and the difference is a few per
@@ -321,7 +333,8 @@ export function scoreMatch(a: Candidate, b: Candidate): MatchVerdict {
      * 480 m² away from 355 m² at the same price.
      */
     const tolerance = areaTolerance(a, b);
-    if (delta > tolerance) {
+    const rounding = Math.abs(a.areaM2 - b.areaM2) <= AREA_ROUNDING_M2;
+    if (delta > tolerance && !rounding) {
       signals.areaClose = false;
       signals.areaConflict = true;
       return { same: false, confidence: 0, signals };
