@@ -8,6 +8,7 @@ import { pageKey, putPage } from "@/lib/s3/pages";
 import { resolveAgency } from "../agencies";
 import { resolveCommune } from "../communes";
 import { placedAbroad } from "../abroad";
+import { repairedText } from "../mojibake";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
 
@@ -137,7 +138,13 @@ export async function ingestListing(
     return { externalId, status: "parse_failed", error: result.error };
   }
 
-  const parsed = result.listing;
+  /**
+   * Text the advert itself garbled upstream ("cÅ“ur", "mÂ²") is repaired here,
+   * once, with the function the client's data contract uses, so what we store is
+   * what it would have stored — see mojibake.ts. Before the commune, because the
+   * commune reads the text.
+   */
+  const parsed = { ...result.listing, title: repairedText(result.listing.title), description: repairedText(result.listing.description) };
   const parseStatus = result.status === "partial" ? "partial" : "ok";
 
   // ── 5. Normalise ────────────────────────────────────────────────────────

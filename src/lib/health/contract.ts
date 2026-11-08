@@ -50,39 +50,10 @@ const goodPrice = (n: number) => Number.isFinite(n) && n >= PRICE_MIN && n <= PR
 const goodArea = (n: number) => Number.isFinite(n) && n >= AREA_MIN && n <= AREA_MAX;
 const isHttps = (u: string) => u.startsWith("https://");
 
-/** One pattern for JavaScript and for Postgres `~`, so the feed check and the origin query agree. */
-export const MOJIBAKE_PATTERN = String.raw`Ã[\u0080-¿€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]|â€|Å[’“”Ž]|Â[ -¿]`;
-const MOJIBAKE_RE = new RegExp(MOJIBAKE_PATTERN);
-export const hasMojibake = (s: string | null | undefined): boolean => !!s && MOJIBAKE_RE.test(s);
-
-// The Windows-1252 characters for bytes 0x80–0x9F: what a UTF-8 continuation byte becomes when misread.
-const CP1252: Record<string, number> = {
-  "€": 0x80, "‚": 0x82, "ƒ": 0x83, "„": 0x84, "…": 0x85, "†": 0x86, "‡": 0x87, "ˆ": 0x88, "‰": 0x89, "Š": 0x8a, "‹": 0x8b,
-  "Œ": 0x8c, "Ž": 0x8e, "‘": 0x91, "’": 0x92, "“": 0x93, "”": 0x94, "•": 0x95, "–": 0x96, "—": 0x97, "˜": 0x98, "™": 0x99,
-  "š": 0x9a, "›": 0x9b, "œ": 0x9c, "ž": 0x9e, "Ÿ": 0x9f,
-};
-const byteOf = (ch: string): number | null => CP1252[ch] ?? (ch.charCodeAt(0) <= 0xff ? ch.charCodeAt(0) : null);
-const CONT = "[\\u0080-\\u00BF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]";
-// Only the lead bytes French text produces, so a legitimate "É’" is never touched.
-const SEQ = new RegExp(`[\\u00C2\\u00C3\\u00C5]${CONT}|\\u00E2${CONT}{2}|\\u00F0${CONT}{3}`, "g");
-
-/** Undo UTF-8 read as Latin-1, one character at a time, so a partly garbled text keeps the rest. */
-export function repairMojibake(s: string): string {
-  // "à" is C3 A0: misread, it is Ã and a no-break space, often normalised to a plain space on the way.
-  return s.replace(/Ã /g, "Ã ").replace(SEQ, (m) => {
-    const bytes = [...m].map(byteOf);
-    if (bytes.some((b) => b === null)) return m;
-    try {
-      const out = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes as number[]));
-      return out.length === 1 || (out.length === 2 && /[\uD800-\uDFFF]/.test(out)) ? out : m;
-    } catch {
-      return m;
-    }
-  });
-}
-
-/** Garbled, and still garbled after the repair: what vault's own count of garbled text is left with. */
-export const unrepairable = (s: string | null | undefined): boolean => hasMojibake(s) && hasMojibake(repairMojibake(s ?? ""));
+// Shared with ingest, which repairs the text before it is stored (2026-11-08): the
+// check and the collector have to agree on what "garbled" is.
+export { MOJIBAKE_PATTERN, hasMojibake, repairMojibake, unrepairable } from "@/lib/portals/mojibake";
+import { hasMojibake, repairMojibake, unrepairable } from "@/lib/portals/mojibake";
 
 /** A listing whose page says "1 324 sq ft" and whose area is stored as 1324 m² (Green-Acres, late September). */
 export function sqftAsM2(area: number | null, characteristics: { label: string; value: string }[]): boolean {
