@@ -62,6 +62,12 @@ export const vizzitAdapter: PortalAdapter = {
   discoveryMode: "index",
   /** Their robots.txt, the same file as Green-Acres': `Crawl-delay: 1`. */
   defaultCrawlDelayMs: 1_000,
+  /**
+   * The index is a window (479 of the 1 470 Sainte-Maxime states, 2026-11-08),
+   * so 1 585 held rows had gone unseen for 14 days. 300 a night is five minutes
+   * at their delay and clears that backlog in about a week.
+   */
+  verifyUnseenPerNight: 300,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const host = (ctx.config.host as string) ?? "https://www.vizzit.fr";

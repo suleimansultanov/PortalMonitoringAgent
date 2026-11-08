@@ -6,7 +6,7 @@ import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { contentHash } from "@/lib/utils/crypto";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing, PoliteFetch } from "../types";
-import { changedInHand, diffListings, needsRefresh, planFetch, shouldAbort } from "./diff";
+import { changedInHand, diffListings, needsRefresh, planFetch, shouldAbort, trustGone, unseenToVerify } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
 
@@ -192,6 +192,12 @@ export type RunSummary = {
    */
   notServed?: number;
   notServedSamples?: { externalId: string; url: string; error: string }[];
+  /**
+   * Held listings the index no longer showed, re-read by their stored URL
+   * (`unseenToVerify`): how many were still there, how many answered 404/410,
+   * and whether those were believed and delisted.
+   */
+  verifiedUnseen?: { alive: number; gone: number; delisted: boolean };
 };
 
 export async function runSource(opts: RunOptions): Promise<RunSummary> {
@@ -1012,13 +1018,49 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       }
     }
 
+    // ── 4c. Held listings the index stopped showing ──────────────────────
+    /**
+     * Asked about by the URL we hold, a few a night — see `unseenToVerify` in
+     * diff.ts for the 1 585 Vizzit rows that were otherwise never looked at
+     * again. Not on a changes-only source: its listings are metered records,
+     * not pages. Queued after the new and the due, so they only spend what is
+     * left of the fetch budget.
+     */
+    const verifyLimit = Number(cfg.verifyUnseenPerNight ?? adapter.verifyUnseenPerNight ?? 0);
+    const verifyTargets = new Map<string, DiscoveredListing>();
+    if (verifyLimit > 0 && !changesOnly && diff.suppressedRemovals.length > 0) {
+      const candidates = await db
+        .select({ externalId: portalListings.externalId, url: portalListings.url, lastSeenAt: portalListings.lastSeenAt })
+        .from(portalListings)
+        .where(staleWhere);
+      for (const t of unseenToVerify({
+        candidates,
+        discovered,
+        shielded: diff.suppressedRemovals,
+        staleBefore: staleCutoff,
+        limit: verifyLimit,
+      })) {
+        verifyTargets.set(t.externalId, t);
+      }
+      if (verifyTargets.size > 0) {
+        console.log(
+          `[run:${source.key}] ${verifyTargets.size} held listings the index no longer shows ` +
+            `will be re-read by their own URL (up to ${verifyLimit} a night, oldest first); ` +
+            `a 404/410 on one of them delists it`,
+        );
+      }
+    }
+    let verifiedAlive = 0;
+    const verifiedGone: string[] = [];
+
     // ── 5. Ingest ─────────────────────────────────────────────────────────
     const plan = planFetch({
       added: diff.added,
       refresh: diff.refresh,
       syndicatedFrom: (id) => discovered.get(id)?.syndicatedFrom,
     });
-    const toFetch = plan.toFetch;
+    const planned = new Set(plan.toFetch);
+    const toFetch = [...plan.toFetch, ...[...verifyTargets.keys()].filter((id) => !planned.has(id))];
     const syndicated = Object.values(plan.syndicated).reduce((a, b) => a + b, 0);
     if (syndicated > 0) {
       console.log(
@@ -1043,7 +1085,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       const pages = toFetch.length - inHand;
       console.log(
         `[run:${source.key}] fetching ${toFetch.length} listings ` +
-          `(${diff.added.length - syndicated} new, ${diff.refresh.length} due a refresh) — ` +
+          `(${diff.added.length - syndicated} new, ${diff.refresh.length} due a refresh` +
+          `${verifyTargets.size > 0 ? `, ${verifyTargets.size} unseen to verify` : ""}) — ` +
           (pages === 0
             ? `records already in hand from discovery: no requests, storing only`
             : `${inHand > 0 ? `${inHand} in hand, ` : ""}at least ` +
@@ -1134,7 +1177,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
         }
 
         const externalId = toFetch[cursor];
-        const target = discovered.get(externalId);
+        const target = discovered.get(externalId) ?? verifyTargets.get(externalId);
         if (!target) continue;
         attempted += 1;
 
@@ -1153,6 +1196,14 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
           ingested += 1;
           servedThisSession += 1;
           refusalStreak = 0;
+          if (verifyTargets.has(externalId)) verifiedAlive += 1;
+        } else if (
+          outcome.status === "fetch_failed" &&
+          /not found \((404|410)\)/.test(outcome.error ?? "") &&
+          verifyTargets.has(externalId)
+        ) {
+          // The page we hold is gone: the portal's own word, delisted by name in step 6 if the night's answers hold up.
+          verifiedGone.push(externalId);
         } else if (
           outcome.status === "fetch_failed" &&
           /not found \((404|410)\)/.test(outcome.error ?? "") &&
@@ -1312,7 +1363,16 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
     }
 
     // ── 6. Delist ─────────────────────────────────────────────────────────
-    const delisted = await delistListings(source.id, diff.removed, runId);
+    const verifiedChecked = verifiedAlive + verifiedGone.length;
+    const goneBelieved = trustGone(verifiedChecked, verifiedGone.length);
+    if (verifiedChecked > 0) {
+      console.log(
+        `[run:${source.key}] unseen held listings re-read: ${verifiedAlive} still there, ` +
+          `${verifiedGone.length} gone (404/410)` +
+          (goneBelieved ? "" : ` — NOT delisted: nearly every answer was "gone", which reads as the portal answering this address differently, not as the market`),
+      );
+    }
+    const delisted = await delistListings(source.id, [...diff.removed, ...(goneBelieved ? verifiedGone : [])], runId);
 
     // ── 7. Close ──────────────────────────────────────────────────────────
     /**
@@ -1370,6 +1430,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       failureSamples: failureSamples.length > 0 ? failureSamples : undefined,
       syndicated: syndicated > 0 ? syndicated : undefined,
       notServed: notServed > 0 ? notServed : undefined,
+      verifiedUnseen: verifiedChecked > 0 ? { alive: verifiedAlive, gone: verifiedGone.length, delisted: goneBelieved } : undefined,
       notServedSamples: notServedSamples.length > 0 ? notServedSamples : undefined,
     };
   } catch (err) {

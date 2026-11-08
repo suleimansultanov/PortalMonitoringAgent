@@ -37,6 +37,8 @@ export const etreproprioAdapter: PortalAdapter = {
   hosts: ["etreproprio.com", "www.etreproprio.com"],
   discoveryMode: "index",
   defaultCrawlDelayMs: 1000,
+  /** Its index shows a window of about 60 links a commune: 130 held rows unseen for 30 days on 2026-11-08, 7 of 10 sampled answering 410. */
+  verifyUnseenPerNight: 150,
 
   async *discover(ctx: DiscoverContext): AsyncIterable<DiscoveredListing> {
     const host = (ctx.config.host as string) ?? "https://www.etreproprio.com";

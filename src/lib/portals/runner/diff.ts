@@ -263,3 +263,53 @@ export function planFetch(input: {
   toFetch.push(...input.refresh);
   return { toFetch, syndicated };
 }
+
+/**
+ * HELD LISTINGS THE INDEX STOPPED SHOWING, TO BE ASKED ABOUT BY THEIR OWN URL.
+ *
+ * Some portals' indexes show a window, not the market: Vizzit's Sainte-Maxime
+ * index stated 1 470 listings on 2026-11-08 and served 479 before its pages ran
+ * empty. The adapter rightly marks such a commune incomplete, so nothing in it
+ * is delisted for being unseen — and nothing else ever asks about those rows
+ * either: the refresh queue only takes listings discovery saw tonight. A row
+ * outside the window was never re-read, never delisted, and kept its last price
+ * on the client's cards indefinitely: 1 585 Vizzit rows unseen for 14 days, 485
+ * for 30, and of 20 sampled 10 answered 410. Etreproprio had 130, Bien'ici 755.
+ *
+ * So the runner fetches a few of them each night by the URL we hold, oldest
+ * first. Only those the diff SHIELDED (known, unseen, in an incomplete commune
+ * or an incomplete pass): a complete pass already delists the unseen, and a
+ * listing seen tonight is the refresh queue's. Only past the refresh window,
+ * so a row the index merely skipped tonight is left for tomorrow's index.
+ */
+export function unseenToVerify(input: {
+  candidates: { externalId: string; url: string; lastSeenAt: Date }[];
+  discovered: { has(id: string): boolean };
+  shielded: Iterable<string>;
+  staleBefore: Date;
+  limit: number;
+}): { externalId: string; url: string }[] {
+  if (input.limit <= 0) return [];
+  const shielded = new Set(input.shielded);
+  return input.candidates
+    .filter((c) => shielded.has(c.externalId) && !input.discovered.has(c.externalId) && c.lastSeenAt < input.staleBefore)
+    .sort((a, b) => a.lastSeenAt.getTime() - b.lastSeenAt.getTime())
+    .slice(0, input.limit)
+    .map(({ externalId, url }) => ({ externalId, url }));
+}
+
+/**
+ * Whether a night's "gone" answers can be believed.
+ *
+ * A 404 or 410 on the page we hold is the portal saying the advert is gone, and
+ * it is delisted by name. Unless nearly everything answers that way: then the
+ * likelier story is the one the abort guard exists for — the portal answering
+ * this address differently tonight (Vizzit answers the GitHub runner 410 for
+ * other portals' adverts) — and none of it is delisted.
+ */
+export const VERIFY_GONE_DISTRUST = { minChecked: 20, maxGoneShare: 0.9 };
+
+export function trustGone(checked: number, gone: number): boolean {
+  if (checked < VERIFY_GONE_DISTRUST.minChecked) return true;
+  return gone / checked <= VERIFY_GONE_DISTRUST.maxGoneShare;
+}

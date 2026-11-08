@@ -206,6 +206,18 @@ change that narrows what a run looks at — a commune subset, a price band, a
 single agency — has to narrow the baseline the same way, or it will delist
 everything outside its own window while the guard reports success.
 
+**The opposite failure: a row the index never shows again.** Where a portal's
+index is itself a window (Vizzit Sainte-Maxime: 479 of the 1 470 it states), the
+commune is marked incomplete every night, so nothing in it is delisted for being
+unseen, and the refresh queue only takes what the index showed. A row outside
+the window was never looked at again: 1 585 Vizzit rows unseen for 14 days on
+2026-11-08, half of them gone from the portal. Adapters that parse their own
+listing pages set `verifyUnseenPerNight` (Vizzit 300, Etreproprio 150): that
+many shielded rows past the refresh window are re-read by their stored URL each
+night, oldest first; 200 refreshes them, 404/410 delists them by name, unless
+nearly every answer is "gone" (`trustGone`). Never for a source whose records
+come from discovery or a meter (Bien'ici, Stream.Estate, V1).
+
 ## Auth — closed by default
 Every page and every API route is behind a login. The rule lives in
 `src/middleware.ts`, not in the individual files: a check that must be

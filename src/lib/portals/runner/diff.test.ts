@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedInHand, diffListings, planFetch, shouldAbort, needsRefresh } from "./diff";
+import { changedInHand, diffListings, planFetch, shouldAbort, needsRefresh, trustGone, unseenToVerify } from "./diff";
 
 test("splits discovered ids into added and present", () => {
   const r = diffListings({ known: ["a", "b"], discovered: ["b", "c"], complete: true });
@@ -257,4 +257,51 @@ test("a new advert syndicated from another portal is not fetched; a known one ke
   const plan = planFetch({ added: ["a", "b", "c"], refresh: ["k"], syndicatedFrom: (id) => from[id] });
   assert.deepEqual(plan.toFetch, ["a", "k"]);
   assert.deepEqual(plan.syndicated, { SeLoger: 1, Idealista: 1 });
+});
+
+const day = (n: number) => new Date(Date.UTC(2026, 10, 8) - n * 86_400_000);
+
+test("a held listing the index stopped showing is asked about by its URL, oldest first", () => {
+  const picked = unseenToVerify({
+    candidates: [
+      { externalId: "a", url: "https://x/a", lastSeenAt: day(20) },
+      { externalId: "b", url: "https://x/b", lastSeenAt: day(40) },
+      { externalId: "c", url: "https://x/c", lastSeenAt: day(10) },
+    ],
+    discovered: new Set<string>(),
+    shielded: ["a", "b", "c"],
+    staleBefore: day(7),
+    limit: 2,
+  });
+  assert.deepEqual(picked, [{ externalId: "b", url: "https://x/b" }, { externalId: "a", url: "https://x/a" }]);
+});
+
+test("only shielded, unseen and past the refresh window: the rest belongs to the index or the refresh queue", () => {
+  const picked = unseenToVerify({
+    candidates: [
+      { externalId: "seen", url: "u", lastSeenAt: day(30) },
+      { externalId: "not-shielded", url: "u", lastSeenAt: day(30) },
+      { externalId: "recent", url: "u", lastSeenAt: day(2) },
+      { externalId: "due", url: "u", lastSeenAt: day(30) },
+    ],
+    discovered: new Set(["seen"]),
+    shielded: ["seen", "recent", "due"],
+    staleBefore: day(7),
+    limit: 10,
+  });
+  assert.deepEqual(picked.map((p) => p.externalId), ["due"]);
+});
+
+test("switched off by a limit of zero", () => {
+  assert.deepEqual(
+    unseenToVerify({ candidates: [{ externalId: "a", url: "u", lastSeenAt: day(30) }], discovered: new Set(), shielded: ["a"], staleBefore: day(7), limit: 0 }),
+    [],
+  );
+});
+
+test("gone answers are believed unless nearly everything says gone", () => {
+  assert.equal(trustGone(20, 10), true); // the 2026-11-08 sample: half of them
+  assert.equal(trustGone(5, 5), true); // too few to call a pattern
+  assert.equal(trustGone(100, 95), false); // the portal answering this address differently tonight
+  assert.equal(trustGone(100, 90), true);
 });

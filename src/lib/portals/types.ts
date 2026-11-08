@@ -253,6 +253,15 @@ export type PortalAdapter = {
   defaultCrawlDelayMs: number;
 
   /**
+   * How many held listings the index no longer shows to re-read each night by
+   * their stored URL (see `unseenToVerify` in runner/diff.ts). For an adapter
+   * whose `parse` reads the listing's own page; never for one that parses a
+   * record discovery hands over (Bien'ici, Stream.Estate). Absent is off. The
+   * source row's `verifyUnseenPerNight` overrides it, 0 included.
+   */
+  verifyUnseenPerNight?: number;
+
+  /**
    * Enumerate what is live right now. Async iterable rather than an array so a
    * paginated crawl streams instead of buffering thousands of URLs, and so the
    * runner can stop early when a source is clearly misbehaving.
