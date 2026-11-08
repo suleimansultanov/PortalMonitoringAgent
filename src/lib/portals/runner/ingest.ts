@@ -9,6 +9,7 @@ import { resolveAgency } from "../agencies";
 import { resolveCommune } from "../communes";
 import { placedAbroad } from "../abroad";
 import { repairedText } from "../mojibake";
+import { canonicalPropertyType } from "../propertyType";
 import { REPOST_WINDOW_DAYS, repostIdentity } from "./repost";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
@@ -228,7 +229,8 @@ export async function ingestListing(
     rooms: sane(parsed.rooms, MAX_ROOMS, "rooms", url),
     bedrooms: sane(parsed.bedrooms, MAX_ROOMS, "bedrooms", url),
     bathrooms: sane(parsed.bathrooms, MAX_ROOMS, "bathrooms", url),
-    propertyType: parsed.propertyType,
+    /** The client's word for it, the portal's own kept in `raw.propertyTypeRaw` — see propertyType.ts. */
+    propertyType: canonicalPropertyType(parsed.propertyType, parsed.title),
     communeInsee: commune?.insee ?? null,
     communeRaw: parsed.communeRaw,
     postalCode: parsed.postalCode,
@@ -239,7 +241,11 @@ export async function ingestListing(
     availability: parsed.availability,
     publishedAt: parsed.publishedAt,
     sourceUpdatedAt: parsed.sourceUpdatedAt,
-    raw: abroad ? { ...(parsed.raw ?? {}), abroad } : parsed.raw,
+    raw: {
+      ...(parsed.raw ?? {}),
+      ...(abroad ? { abroad } : {}),
+      ...(parsed.propertyType ? { propertyTypeRaw: parsed.propertyType } : {}),
+    },
   };
 
   /**
@@ -270,9 +276,16 @@ export async function ingestListing(
    * row under the old id to delist.
    */
   const repostOf = existing ? null : await withDbRetry(() => findRepostOf(deps.sourceId, incoming, deps.departing));
-  const toWrite: Incoming = repostOf
-    ? { ...incoming, raw: { ...((incoming.raw as Record<string, unknown> | null) ?? {}), previousExternalIds: [...previousIdsOf(repostOf), repostOf.externalId] } }
-    : incoming;
+  /**
+   * The ids a row answered to before, carried forward: `raw` is replaced whole
+   * on every write (mergeParsed), so without this the list would vanish at the
+   * row's next refresh.
+   */
+  const previousIds = repostOf ? [...previousIdsOf(repostOf), repostOf.externalId] : existing ? previousIdsOf(existing) : [];
+  const toWrite: Incoming =
+    previousIds.length > 0
+      ? { ...incoming, raw: { ...((incoming.raw as Record<string, unknown> | null) ?? {}), previousExternalIds: previousIds } }
+      : incoming;
 
   // ── 6. Reconcile and record history ─────────────────────────────────────
   const written = await reconcile(deps, externalId, toWrite, parseStatus, existing ?? repostOf, {

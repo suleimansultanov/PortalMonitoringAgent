@@ -102,9 +102,14 @@ const NOT_PORTALS = new Set(["apimo", "stream-estate", "stream-estate-v1"]);
 /** Vault's list, exact and case-sensitive: copied as it stands, for the `vault` verdict. */
 const VAULT_NO_BEDROOMS = new Set(["Terrain", "Parking", "Commerce", "Local", "Land", "Garage", "Bureau"]);
 /**
- * What actually has no bedroom count to miss. `Programme neuf` is the one that
- * matters: 54 of 54 lacked one on 2026-11-03 and made Bien'ici red by itself,
+ * What actually has no bedroom count to miss. `Programme neuf` was the one that
+ * mattered: 54 of 54 lacked one on 2026-11-03 and made Bien'ici red by itself,
  * because a programme states rooms ("T4") and never bedrooms.
+ *
+ * Since 2026-11-08 ingest stores the client's word (portals/propertyType.ts), so
+ * a programme lot is a "Maison" or an "Appartement" read from its title and is
+ * counted here: a T4 house has bedrooms, the portal just does not state them.
+ * The raw labels stay in the pattern for rows stored before.
  */
 const NO_BEDROOM_COUNT = /^(programme|terrain|land|parking|garage|box|commerc|local|bureau|office|shop|cave)/i;
 /** The same, plus what a price per m² means nothing for. `Landform` and `Local-commercial` are raw labels, 18 of 19 and 10 of 49 "too cheap". */

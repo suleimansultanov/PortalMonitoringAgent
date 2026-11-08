@@ -256,3 +256,18 @@ test("a swap inside one night takes over the advert this pass is about to delist
     select external_id, status, raw->>'previousExternalIds' as prev from portal_listings where id = ${older.listingId}::uuid`).then((r) => r.rows);
   assert.deepEqual(row, { external_id: "bp-3", status: "active", prev: '["bp-1", "bp-2"]' });
 });
+
+test("the ids a row answered to before survive its next refresh", { skip }, async () => {
+  const page = (v: number) => JSON.stringify({ price: 640_000, title: "T3 terrasse, programme neuf", agency: "Bonaparte Promotion Toulon", v });
+  const first = await m.ingest.ingestListing(deps(), { externalId: "keep-1", url: "https://example.test/keep-1", document: page(1) });
+  await m.ingest.delistListings(sourceId, ["keep-1"], null);
+  await m.ingest.ingestListing(deps(), { externalId: "keep-2", url: "https://example.test/keep-2", document: page(2) });
+  // A later refresh of the same row, different bytes so it is parsed and written again.
+  await m.ingest.ingestListing(deps(), { externalId: "keep-2", url: "https://example.test/keep-2", document: page(3) });
+  const [row] = await m.db.execute<{ prev: string; type_raw: string | null; type: string | null }>(m.sql`
+    select raw->>'previousExternalIds' as prev, raw->>'propertyTypeRaw' as type_raw, property_type as type from portal_listings where id = ${first.listingId}::uuid`).then((r) => r.rows);
+  assert.equal(row.prev, '["keep-1"]');
+  // The test adapter says "house": stored as the client's word, the portal's kept beside it.
+  assert.equal(row.type, "Maison");
+  assert.equal(row.type_raw, "house");
+});

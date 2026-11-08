@@ -319,6 +319,13 @@ S3, ~500 kB each — narrow it, and warn before running it on mobile data)
 - `portal_sources.permission_note` records *why* we are allowed to collect from
   a source. Fill it in. The day someone asks, the answer needs to be next to the
   thing doing the collecting.
+- **`property_type` is one of the client's words** (`portals/propertyType.ts`:
+  Maison, Appartement, Terrain, Commerce, Bureau, Parking, Immeuble, or null).
+  The client's matching compares a buyer's type to ours by exact word, and a
+  mismatch disqualifies: until 2026-11-08 a "Maison" search never saw a "Villa",
+  "House" or "Immobilier" card. A generic label is read from the title; nothing
+  named stays null, because "not published" does not disqualify. The portal's
+  own label is `raw.propertyTypeRaw`. Never store a portal's word as the type.
 - **A null `priceEur` is not "on request".** Only `raw.priceOnRequest = true`
   is — four adapters set it (Green-Acres, Figaro, Figaro Immobilier, SMC). The
   rest of the nulls are prices the parser did not read, and the screens and
