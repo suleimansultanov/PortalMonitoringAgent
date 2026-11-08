@@ -191,6 +191,16 @@ Partial fix available: **DVF** (data.gouv.fr) publishes real French transaction
 prices, geolocated, back to 2014. Asking price next to what actually sold is
 stronger than anything a portal can give.
 
+**A repost is not a new listing.** Some feeds re-issue one advert under a new id
+every few days (Bien'ici's `mgc-` ids for BONAPARTE PROMOTION TOULON: one lot,
+eight ids from 1 Oct to 8 Nov). Ingest therefore lets a listing seen for the
+first time take over the row of the same source's advert it repeats (same
+agency, title, price to the euro, floor area, commune): first one this pass is
+about to delist (`IngestDeps.departing`, the swap inside one night), else one
+delisted in the last 14 days (`relisted`, `payload.repostOf`). The row keeps
+its id, history and card; old ids go to `raw.previousExternalIds`. Rows stored
+before 2026-11-08 were left as they are.
+
 ## The abort guard — do not remove
 If a source returns far fewer listings than yesterday, the run **aborts and
 emits no `delisted` events** (`portal_runs.aborted_reason`). A blocked crawl

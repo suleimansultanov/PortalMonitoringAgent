@@ -62,7 +62,7 @@ after(async () => {
 const adapter = {
   key: SOURCE_KEY,
   parse: (html: string) => {
-    const l = JSON.parse(html) as { price: number; title?: string };
+    const l = JSON.parse(html) as { price: number; title?: string; agency?: string };
     return {
       status: "ok" as const,
       listing: {
@@ -81,7 +81,7 @@ const adapter = {
         postalCode: "83580",
         lat: null,
         lon: null,
-        agencyName: null,
+        agencyName: l.agency ?? null,
         agencyAddress: null,
         agencyPostalCode: null,
         agencyCity: null,
@@ -98,8 +98,9 @@ const adapter = {
   },
 } as unknown as Parameters<typeof import("./ingest").ingestListing>[0]["adapter"];
 
-function deps() {
+function deps(departing?: ReadonlySet<string>) {
   return {
+    departing,
     fetch: async () => {
       throw new Error("no fetching in this test — every page is handed over as `document`");
     },
@@ -198,4 +199,60 @@ test("a stored advert recognised as abroad leaves its commune and its card", { s
   assert.deepEqual(await placeOf("abroad-old"), { commune_insee: null, property_id: null, abroad: "phuket", status: "active" });
   // Nothing for the client's feed: no delisting, no relisting — it simply is not in the market.
   assert.deepEqual(await eventsOf("abroad-old"), ["listed"]);
+});
+
+async function rowsOf(externalIds: string[]) {
+  const r = await m.db.execute<{ id: string; external_id: string; status: string; prev: string | null }>(m.sql`
+    select id, external_id, status, raw->'previousExternalIds'->>0 as prev from portal_listings
+    where source_id = ${sourceId}::uuid order by external_id`);
+  return r.rows.filter((x) => externalIds.includes(x.external_id));
+}
+
+test("an advert re-issued under a new id takes over the row it repeats, as a `relisted`", { skip }, async () => {
+  // BONAPARTE PROMOTION TOULON on Bien'ici: one lot, eight ids between 1 Oct and 8 Nov 2026.
+  const page = JSON.stringify({ price: 2_450_000, title: "L’ART DE VIVRE TROPEZIEN", agency: "Bonaparte Promotion Toulon" });
+  const first = await m.ingest.ingestListing(deps(), { externalId: "mgc-1", url: "https://example.test/mgc-1", document: page });
+  await m.ingest.delistListings(sourceId, ["mgc-1"], null);
+  const again = await m.ingest.ingestListing(deps(), { externalId: "mgc-2", url: "https://example.test/mgc-2", document: page });
+
+  assert.equal(again.listingId, first.listingId);
+  assert.deepEqual(again.events, ["relisted"]);
+  assert.deepEqual(await rowsOf(["mgc-1", "mgc-2"]), [{ id: first.listingId!, external_id: "mgc-2", status: "active", prev: "mgc-1" }]);
+  const ev = await m.db.execute<{ repost_of: string | null }>(m.sql`
+    select payload->>'repostOf' as repost_of from portal_listing_events where listing_id = ${first.listingId}::uuid and type = 'relisted'`);
+  assert.equal(ev.rows[0].repost_of, "mgc-1");
+});
+
+test("a new advert at another price is a new listing, whoever the agency", { skip }, async () => {
+  const at = (price: number) => JSON.stringify({ price, title: "Appartement T2", agency: "Bonaparte Promotion Toulon" });
+  const first = await m.ingest.ingestListing(deps(), { externalId: "lot-a", url: "https://example.test/lot-a", document: at(300_000) });
+  await m.ingest.delistListings(sourceId, ["lot-a"], null);
+  const other = await m.ingest.ingestListing(deps(), { externalId: "lot-b", url: "https://example.test/lot-b", document: at(310_000) });
+  assert.notEqual(other.listingId, first.listingId);
+  assert.deepEqual(other.events, ["listed"]);
+});
+
+test("a listing still active is not taken over: a swap inside one night stays a delisting and a listing", { skip }, async () => {
+  const page = JSON.stringify({ price: 990_000, title: "Villa vue mer", agency: "Agence du Golfe" });
+  const first = await m.ingest.ingestListing(deps(), { externalId: "swap-1", url: "https://example.test/swap-1", document: page });
+  const second = await m.ingest.ingestListing(deps(), { externalId: "swap-2", url: "https://example.test/swap-2", document: page });
+  assert.notEqual(second.listingId, first.listingId);
+  assert.deepEqual(second.events, ["listed"]);
+});
+
+test("a swap inside one night takes over the advert this pass is about to delist, and nothing is delisted", { skip }, async () => {
+  // Bonaparte drops yesterday's ids in the same pass that brings today's.
+  const page = JSON.stringify({ price: 1_250_000, title: "T4 vue mer, programme neuf", agency: "Bonaparte Promotion Toulon" });
+  const older = await m.ingest.ingestListing(deps(), { externalId: "bp-1", url: "https://example.test/bp-1", document: page });
+  await m.ingest.delistListings(sourceId, ["bp-1"], null);
+  const yesterday = await m.ingest.ingestListing(deps(), { externalId: "bp-2", url: "https://example.test/bp-2", document: JSON.stringify({ price: 1_250_000, title: "T4 vue mer, programme neuf", agency: "Bonaparte Promotion Toulon", v: 2 }) });
+  assert.equal(yesterday.listingId, older.listingId, "bp-2 took over bp-1, delisted the day before");
+
+  const tonight = await m.ingest.ingestListing(deps(new Set(["bp-2"])), { externalId: "bp-3", url: "https://example.test/bp-3", document: JSON.stringify({ price: 1_250_000, title: "T4 vue mer, programme neuf", agency: "Bonaparte Promotion Toulon", v: 3 }) });
+  assert.equal(tonight.listingId, older.listingId);
+  assert.deepEqual(tonight.events, []);
+  assert.equal(await m.ingest.delistListings(sourceId, ["bp-2"], null), 0, "nothing left under the old id to delist");
+  const [row] = await m.db.execute<{ external_id: string; status: string; prev: string }>(m.sql`
+    select external_id, status, raw->>'previousExternalIds' as prev from portal_listings where id = ${older.listingId}::uuid`).then((r) => r.rows);
+  assert.deepEqual(row, { external_id: "bp-3", status: "active", prev: '["bp-1", "bp-2"]' });
 });

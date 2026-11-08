@@ -1059,6 +1059,8 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
       refresh: diff.refresh,
       syndicatedFrom: (id) => discovered.get(id)?.syndicatedFrom,
     });
+    /** Held listings this pass will delist in step 6: a repost swapped in tonight takes over one of them (ingest.ts). */
+    const departing: ReadonlySet<string> = new Set(diff.removed);
     const planned = new Set(plan.toFetch);
     const toFetch = [...plan.toFetch, ...[...verifyTargets.keys()].filter((id) => !planned.has(id))];
     const syndicated = Object.values(plan.syndicated).reduce((a, b) => a + b, 0);
@@ -1188,6 +1190,7 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
             sourceId: source.id,
             sourceKey: source.key,
             runId,
+            departing,
           },
           target,
         );

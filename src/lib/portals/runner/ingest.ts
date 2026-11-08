@@ -1,6 +1,6 @@
 import "server-only";
 import { coverFromGallery } from "../images";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { db, withDbRetry } from "@/lib/db/client";
 import { portalListingEvents, portalListings, portalSnapshots } from "@/lib/db/schema";
 import { contentHash } from "@/lib/utils/crypto";
@@ -9,6 +9,7 @@ import { resolveAgency } from "../agencies";
 import { resolveCommune } from "../communes";
 import { placedAbroad } from "../abroad";
 import { repairedText } from "../mojibake";
+import { REPOST_WINDOW_DAYS, repostIdentity } from "./repost";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
 
@@ -34,6 +35,12 @@ export type IngestDeps = {
   sourceId: string;
   sourceKey: string;
   runId: string | null;
+  /**
+   * What this pass is about to delist: held, active, and absent from tonight's
+   * index. A repost swapped in the same night finds its predecessor here — see
+   * `findRepostOf`. Absent outside a pass that finished its discovery.
+   */
+  departing?: ReadonlySet<string>;
 };
 
 export type IngestOutcome = {
@@ -235,8 +242,40 @@ export async function ingestListing(
     raw: abroad ? { ...(parsed.raw ?? {}), abroad } : parsed.raw,
   };
 
+  /**
+   * A REPOST OF AN ADVERT WE JUST LOST is that advert again, not a new one.
+   *
+   * Some feeds re-issue the same advert under a new id every few days: Bien'ici's
+   * `mgc-` ids for BONAPARTE PROMOTION TOULON gave one lot eight ids between 1 Oct
+   * and 8 Nov, and on 2026-11-08 all 40 of its "new" rows had a twin with the
+   * same title, price and area delisted days before. Each reissue was a
+   * `delisted` and a `listed` — a sale and a new listing to the client, a buyer
+   * matched again to a home already sent. Across sources, 867 rows first seen in
+   * the 30 days to 2026-11-08 had such a twin (Bien'ici 297, V1 238, Stream.Estate
+   * 152, Etreproprio 114).
+   *
+   * So a listing seen for the first time takes over the row of the same
+   * source's advert it repeats — same agency, same title, the same price to the
+   * euro, same floor area and commune — if that row was delisted in the last
+   * REPOST_WINDOW_DAYS. The row keeps its id, its history and its card; the
+   * event is `relisted`, with the id it had in `payload.repostOf`; the old ids
+   * stay in `raw.previousExternalIds`.
+   *
+   * THE SWAP INSIDE ONE NIGHT COMES FIRST. Bonaparte drops yesterday's ids in the
+   * same pass that brings today's, so the advert it repeats is usually still
+   * active, about to be delisted by this very pass (`deps.departing`). Taking an
+   * older, already delisted twin instead would relist that one and still delist
+   * yesterday's: a card gone and a card back on every cycle. Taking the departing
+   * one changes nothing the client can see but the id, and step 6 then finds no
+   * row under the old id to delist.
+   */
+  const repostOf = existing ? null : await withDbRetry(() => findRepostOf(deps.sourceId, incoming, deps.departing));
+  const toWrite: Incoming = repostOf
+    ? { ...incoming, raw: { ...((incoming.raw as Record<string, unknown> | null) ?? {}), previousExternalIds: [...previousIdsOf(repostOf), repostOf.externalId] } }
+    : incoming;
+
   // ── 6. Reconcile and record history ─────────────────────────────────────
-  const written = await reconcile(deps, externalId, incoming, parseStatus, existing, {
+  const written = await reconcile(deps, externalId, toWrite, parseStatus, existing ?? repostOf, {
     areaM2: parsed.areaM2,
     availability: parsed.availability,
     abroad,
@@ -247,6 +286,44 @@ export async function ingestListing(
 
 type Incoming = Omit<typeof portalListings.$inferInsert, "sourceId" | "externalId">;
 type StoredListing = typeof portalListings.$inferSelect;
+
+function previousIdsOf(row: StoredListing): string[] {
+  const prev = (row.raw as Record<string, unknown> | null)?.previousExternalIds;
+  return Array.isArray(prev) ? prev.filter((x): x is string => typeof x === "string") : [];
+}
+
+/**
+ * The same source's advert this one repeats: one this pass is about to delist
+ * first, else one delisted within the window, the most recently delisted.
+ */
+async function findRepostOf(sourceId: string, incoming: Incoming, departing?: ReadonlySet<string>): Promise<StoredListing | null> {
+  const key = repostIdentity(incoming);
+  if (!key) return null;
+  const since = new Date(Date.now() - REPOST_WINDOW_DAYS * 86_400_000);
+  const delistedRecently = and(eq(portalListings.status, "delisted"), gt(portalListings.delistedAt, since));
+  const leavingTonight =
+    departing && departing.size > 0
+      ? and(eq(portalListings.status, "active"), inArray(portalListings.externalId, [...departing]))
+      : undefined;
+  const [row] = await db
+    .select()
+    .from(portalListings)
+    .where(
+      and(
+        eq(portalListings.sourceId, sourceId),
+        leavingTonight ? or(leavingTonight, delistedRecently) : delistedRecently,
+        eq(portalListings.agencyId, key.agencyId),
+        eq(portalListings.title, key.title),
+        eq(portalListings.priceEur, key.priceEur),
+        sql`${portalListings.areaM2} is not distinct from ${key.areaM2}::numeric`,
+        sql`${portalListings.communeInsee} is not distinct from ${key.communeInsee}::text`,
+      ),
+    )
+    // Active (leaving tonight) before delisted, then the most recently delisted.
+    .orderBy(sql`(${portalListings.status} = 'active') desc`, desc(portalListings.delistedAt))
+    .limit(1);
+  return row ?? null;
+}
 
 /**
  * Write the row and the events it implies, as one unit, and only over the
@@ -343,6 +420,8 @@ async function writeOnce(
           // mergeParsed never writes a null, so the commune a row was filed
           // under before it was recognised as abroad has to be taken off here.
           ...(parsed.abroad ? { communeInsee: null, propertyId: null } : {}),
+          // A repost taking over the advert it repeats: the row answers to the new id from now on.
+          ...(existing.externalId !== externalId ? { externalId } : {}),
           status: "active",
           delistedAt: null,
           parseStatus,
@@ -410,7 +489,10 @@ async function writeOnce(
           type: e.type,
           priceFrom: e.priceFrom ?? null,
           priceTo: e.priceTo ?? null,
-          payload: e.payload ?? null,
+          payload:
+            existing && existing.externalId !== externalId && e.type === "relisted"
+              ? { ...((e.payload as Record<string, unknown> | undefined) ?? {}), repostOf: existing.externalId }
+              : (e.payload ?? null),
           occurredAt: now,
         })),
       );
