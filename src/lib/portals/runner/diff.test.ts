@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { changedInHand, diffListings, planFetch, shouldAbort, needsRefresh, trustGone, unseenToVerify } from "./diff";
+import { changedInHand, diffListings, planFetch, planRefresh, shouldAbort, needsRefresh, trustGone, unseenToVerify } from "./diff";
 
 test("splits discovered ids into added and present", () => {
   const r = diffListings({ known: ["a", "b"], discovered: ["b", "c"], complete: true });
@@ -304,4 +304,43 @@ test("gone answers are believed unless nearly everything says gone", () => {
   assert.equal(trustGone(5, 5), true); // too few to call a pattern
   assert.equal(trustGone(100, 95), false); // the portal answering this address differently tonight
   assert.equal(trustGone(100, 90), true);
+});
+
+test("a record discovery already holds is re-read for nothing: never skipped as unchanged, never rationed", () => {
+  // Bien'ici, 2026-11-08: all 40 Saint-Tropez rows "not seen for 14 days" were in that night's index, unchanged.
+  const stated = day(30);
+  const plan = planRefresh({
+    candidates: [
+      { externalId: "page-old", sourceUpdatedAt: stated, lastSeenAt: day(20) },
+      { externalId: "in-hand-1", sourceUpdatedAt: stated, lastSeenAt: day(19) },
+      { externalId: "page-new", sourceUpdatedAt: stated, lastSeenAt: day(10) },
+      { externalId: "in-hand-2", sourceUpdatedAt: stated, lastSeenAt: day(9) },
+      { externalId: "page-unchanged", sourceUpdatedAt: stated, lastSeenAt: day(8) },
+    ],
+    discovered: new Map<string, { sourceUpdatedAt?: Date | null; document?: string }>([
+      ["in-hand-1", { sourceUpdatedAt: stated, document: "{}" }],
+      ["in-hand-2", { sourceUpdatedAt: stated, document: "{}" }],
+      ["page-unchanged", { sourceUpdatedAt: stated }],
+    ]),
+    hardCeiling: day(30),
+    limit: 1,
+  });
+  assert.deepEqual(plan.take, ["in-hand-1", "in-hand-2", "page-old"]);
+  assert.equal(plan.inHand, 2);
+  assert.equal(plan.skippedUnchanged, 1);
+  assert.equal(plan.due, 4);
+});
+
+test("without records in hand the queue is what it was: the portal's answer, then the budget", () => {
+  const plan = planRefresh({
+    candidates: [
+      { externalId: "a", sourceUpdatedAt: null, lastSeenAt: day(20) },
+      { externalId: "b", sourceUpdatedAt: null, lastSeenAt: day(10) },
+    ],
+    discovered: new Map(),
+    hardCeiling: day(30),
+    limit: 5,
+  });
+  assert.deepEqual(plan.take, ["a", "b"]);
+  assert.equal(plan.inHand, 0);
 });

@@ -6,7 +6,7 @@ import { getNumberSetting, SETTING_KEYS } from "@/lib/settings/store";
 import { contentHash } from "@/lib/utils/crypto";
 import { getAdapter } from "../registry";
 import type { DiscoveredListing, PoliteFetch } from "../types";
-import { changedInHand, diffListings, needsRefresh, planFetch, shouldAbort, trustGone, unseenToVerify } from "./diff";
+import { changedInHand, diffListings, planFetch, planRefresh, shouldAbort, trustGone, unseenToVerify } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
 
@@ -850,24 +850,17 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
      *     read again whatever the portal claims.
      */
     const hardCeiling = new Date(Date.now() - REFRESH_HARD_CEILING_DAYS * 86_400_000);
-    let skippedUnchanged = 0;
-
-    const staleQueue = staleCandidates.filter((row) => {
-      const keep = needsRefresh(
-        {
-          externalId: row.externalId,
-          fetchedAt: row.lastSeenAt,
-          storedSourceUpdatedAt: row.sourceUpdatedAt,
-        },
-        discovered.get(row.externalId)?.sourceUpdatedAt,
-        hardCeiling,
+    // Records discovery holds go first and outside the budget: see `planRefresh` in diff.ts.
+    const refreshPlan = planRefresh({ candidates: staleCandidates, discovered, hardCeiling, limit: refreshLimit });
+    const skippedUnchanged = refreshPlan.skippedUnchanged;
+    const refreshDue = refreshPlan.due;
+    const staleRows = refreshPlan.take.map((externalId) => ({ externalId }));
+    if (refreshPlan.inHand > 0) {
+      console.log(
+        `[run:${source.key}] ${refreshPlan.inHand} listings past the refresh window are records ` +
+          `discovery already holds — re-read without a request, outside the budget`,
       );
-      if (!keep) skippedUnchanged++;
-      return keep;
-    });
-
-    const refreshDue = staleQueue.length;
-    const staleRows = staleQueue.slice(0, refreshLimit);
+    }
 
     if (skippedUnchanged > 0) {
       console.log(

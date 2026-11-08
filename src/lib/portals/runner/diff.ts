@@ -190,6 +190,53 @@ export function needsRefresh(
   return stated.getTime() > row.storedSourceUpdatedAt.getTime();
 }
 
+/**
+ * The refresh queue for one pass: who is re-read, in what order, within what budget.
+ *
+ * A RECORD DISCOVERY ALREADY HOLDS IS RE-READ FOR NOTHING. Bien'ici hands over
+ * every listing whole, and the queue treated those like pages to download: the
+ * index's "not changed since" skipped them and the request budget rationed them.
+ * So a listing in every night's index went up to REFRESH_HARD_CEILING_DAYS with
+ * its `last_seen_at` untouched — 755 Bien'ici rows "not seen for 14 days" on
+ * 2026-11-08, every one of the 40 in Saint-Tropez in that night's index — and
+ * the client's "not re-checked for 14 days" counted them. Re-reading a record
+ * in hand costs no request: it is always taken, outside the budget, first.
+ * Rows that need a request keep the portal's answer and the budget, oldest first.
+ */
+export function planRefresh(input: {
+  /** Past the refresh window, oldest first. */
+  candidates: { externalId: string; sourceUpdatedAt: Date | null; lastSeenAt: Date | null }[];
+  /** What tonight's discovery found, with the record when it holds one. */
+  discovered: { get(id: string): { sourceUpdatedAt?: Date | null; document?: string } | undefined };
+  hardCeiling: Date;
+  /** How many pages the night can afford to download. */
+  limit: number;
+}): { take: string[]; due: number; skippedUnchanged: number; inHand: number } {
+  const inHand: string[] = [];
+  const needRequest: string[] = [];
+  let skippedUnchanged = 0;
+  for (const row of input.candidates) {
+    const seen = input.discovered.get(row.externalId);
+    if (seen?.document !== undefined) {
+      inHand.push(row.externalId);
+      continue;
+    }
+    const keep = needsRefresh(
+      { externalId: row.externalId, fetchedAt: row.lastSeenAt, storedSourceUpdatedAt: row.sourceUpdatedAt },
+      seen?.sourceUpdatedAt,
+      input.hardCeiling,
+    );
+    if (keep) needRequest.push(row.externalId);
+    else skippedUnchanged++;
+  }
+  return {
+    take: [...inHand, ...needRequest.slice(0, Math.max(0, input.limit))],
+    due: inHand.length + needRequest.length,
+    skippedUnchanged,
+    inHand: inHand.length,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**

@@ -228,6 +228,13 @@ night, oldest first; 200 refreshes them, 404/410 delists them by name, unless
 nearly every answer is "gone" (`trustGone`). Never for a source whose records
 come from discovery or a meter (Bien'ici, Stream.Estate, V1).
 
+Those had the mirror-image gap: a record in every night's index, skipped by
+the refresh queue because the index said "unchanged" and rationed like a page
+to download, so `last_seen_at` lagged up to 30 days (755 Bien'ici rows "not seen
+for 14 days", all in that night's index). `planRefresh` re-reads a record
+discovery holds as soon as it is past the refresh window: no request, outside
+the budget, first.
+
 ## Auth — closed by default
 Every page and every API route is behind a login. The rule lives in
 `src/middleware.ts`, not in the individual files: a check that must be
