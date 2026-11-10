@@ -92,9 +92,9 @@ export type FillSummary = {
 export async function fillFromText(opts: { maxUsd: number; limit?: number; since?: Date; concurrency?: number; logFile?: string }): Promise<FillSummary> {
   const filled: Record<keyof Accepted, number> = { bedrooms: 0, areaM2: 0, landM2: 0, rooms: 0, propertyType: 0 };
   const empty = (line: string): FillSummary => ({ line, read: 0, filled, spentUsd: 0, stoppedAtCap: false, failures: 0 });
-  if (!process.env.ANTHROPIC_API_KEY) return empty("AI facts: skipped — no ANTHROPIC_API_KEY");
-
+  // The database first: its client is what loads .env.local, where a local run keeps the key.
   const todo = await candidates({ since: opts.since, limit: opts.limit });
+  if (!process.env.ANTHROPIC_API_KEY) return empty("AI facts: skipped — no ANTHROPIC_API_KEY");
   if (todo.length === 0) return empty("AI facts: nothing to read");
 
   const client = new Anthropic({ maxRetries: 6 });
