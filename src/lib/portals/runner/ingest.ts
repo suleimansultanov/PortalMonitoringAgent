@@ -10,6 +10,7 @@ import { resolveCommune } from "../communes";
 import { placedAbroad } from "../abroad";
 import { repairedText } from "../mojibake";
 import { canonicalPropertyType } from "../propertyType";
+import { licenceOnly, livingAreaFromText } from "../textFacts";
 import { REPOST_WINDOW_DAYS, repostIdentity } from "./repost";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
@@ -152,7 +153,13 @@ export async function ingestListing(
    * what it would have stored — see mojibake.ts. Before the commune, because the
    * commune reads the text.
    */
-  const parsed = { ...result.listing, title: repairedText(result.listing.title), description: repairedText(result.listing.description) };
+  const repaired = { ...result.listing, title: repairedText(result.listing.title), description: repairedText(result.listing.description) };
+  /**
+   * A living area the page leaves out and the prose states as such ("160M²
+   * habitables") — see textFacts.ts. Only into an empty field, and marked.
+   */
+  const areaFromText = repaired.areaM2 === null ? livingAreaFromText(repaired.title, repaired.description) : null;
+  const parsed = areaFromText === null ? repaired : { ...repaired, areaM2: areaFromText };
   const parseStatus = result.status === "partial" ? "partial" : "ok";
 
   // ── 5. Normalise ────────────────────────────────────────────────────────
@@ -177,8 +184,11 @@ export async function ingestListing(
    * both below, in `reconcile`, and the resolve delists the card it leaves.
    */
   const abroad = placedAbroad(url, parsed.title, parsed.description);
+  /** An advert for a liquor licence alone is not a property: kept like a home abroad, in no commune and on no card. */
+  const licence = licenceOnly(parsed.title, parsed.areaM2);
+  const outsideTheMarket = abroad ?? (licence ? "licence" : null);
 
-  const commune = abroad
+  const commune = outsideTheMarket
     ? null
     : resolveCommune(
         parsed.communeRaw,
@@ -244,6 +254,8 @@ export async function ingestListing(
     raw: {
       ...(parsed.raw ?? {}),
       ...(abroad ? { abroad } : {}),
+      ...(licence ? { notRealEstate: "licence" } : {}),
+      ...(areaFromText !== null ? { areaFromText: true } : {}),
       ...(parsed.propertyType ? { propertyTypeRaw: parsed.propertyType } : {}),
     },
   };
@@ -291,7 +303,7 @@ export async function ingestListing(
   const written = await reconcile(deps, externalId, toWrite, parseStatus, existing ?? repostOf, {
     areaM2: parsed.areaM2,
     availability: parsed.availability,
-    abroad,
+    abroad: outsideTheMarket,
   });
 
   return { externalId, status: "ingested", listingId: written.listingId, events: written.events };

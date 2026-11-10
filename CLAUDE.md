@@ -333,6 +333,10 @@ S3, ~500 kB each — narrow it, and warn before running it on mobile data)
   "House" or "Immobilier" card. A generic label is read from the title; nothing
   named stays null, because "not published" does not disqualify. The portal's
   own label is `raw.propertyTypeRaw`. Never store a portal's word as the type.
+- **Facts from the prose fill empty fields only** (`portals/textFacts.ts`): a
+  living area stated as "N m² habitables" (`raw.areaFromText`), never "villa de
+  250 m²", which is as often the plot. An advert for a liquor licence alone is
+  kept like a home abroad, in no commune and on no card (`raw.notRealEstate`).
 - **A null `priceEur` is not "on request".** Only `raw.priceOnRequest = true`
   is — four adapters set it (Green-Acres, Figaro, Figaro Immobilier, SMC). The
   rest of the nulls are prices the parser did not read, and the screens and
