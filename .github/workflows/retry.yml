@@ -1,0 +1,95 @@
+name: Retry an aborted night
+
+# ONE MORE TRY FOR A SOURCE THAT FAILED LAST NIGHT, ONCE.
+#
+# On 2026-11-10 Vizzit's discovery returned 0 listings against 5 280 at 03:10
+# UTC. The abort guard did its job — no false delistings — and Vizzit stayed red
+# on the client's Data health all day, until a hand dispatch of collect.yml with
+# `sources=vizzit` at 16:32 put it right in twenty minutes. That dispatch is
+# what this does, at 06:30 UTC, for the sources src/lib/portals/retryRule.ts
+# picks: enabled, last night's scheduled run aborted or errored, the run before
+# it good. Not a portal that has failed twice running (it may be refusing us),
+# not LuxuryEstate outside its 01:00-05:00 Paris, not the client's paid V1 feed,
+# not Superimmo. The rule and its reasons are in that file; its tests are the
+# incidents.
+#
+# 06:30 UTC: the night starts 00:00-03:30 UTC and is over by about 04:00 (runs
+# of 7-10 November). If it is still going, the dispatched run waits for it in
+# collect.yml's concurrency group; it never runs beside it.
+#
+# A hand run of this workflow only prints what it would retry, unless `dispatch`
+# is ticked.
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dispatch:
+        description: "Start collect.yml for what is picked. Unticked: only print the choice."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retry-aborted
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # `gh workflow run`. A workflow_dispatch is the one event the job's own
+      # token may start another workflow with.
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # No browser: playwright has no install script, so this downloads only the packages.
+      - run: npm ci
+
+      - name: Pick the sources
+        id: pick
+        run: |
+          WHY="$RUNNER_TEMP/why.txt"
+          LIST="$(npx tsx src/lib/portals/retryAborted.ts 2> "$WHY")" || { cat "$WHY"; exit 1; }
+          cat "$WHY"
+          # Source keys only: the list goes on to a command line. A bash match,
+          # not grep — grep on an empty list, the usual morning, finds no line and fails.
+          if [[ ! "$LIST" =~ ^[a-z0-9,-]*$ ]]; then
+            echo "::error::unexpected source list: $LIST"
+            exit 1
+          fi
+          echo "sources=$LIST" >> "$GITHUB_OUTPUT"
+          {
+            echo '```'
+            cat "$WHY"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Collect them again
+        if: ${{ steps.pick.outputs.sources != '' && (github.event_name == 'schedule' || inputs.dispatch) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCES: ${{ steps.pick.outputs.sources }}
+        run: |
+          # Sunday's night is the full sweep (collect.yml), the one that writes
+          # delistings. Monday morning repeats it the way it was meant to run.
+          FULL=false
+          if [ "$(date -u +%u)" = "1" ]; then FULL=true; fi
+          gh workflow run collect.yml --ref main -f sources="$SOURCES" -f full="$FULL"
+          echo "Started collect.yml: sources=$SOURCES, full=$FULL." | tee -a "$GITHUB_STEP_SUMMARY"

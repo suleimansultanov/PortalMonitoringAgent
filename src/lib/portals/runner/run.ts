@@ -9,6 +9,7 @@ import type { DiscoveredListing, PoliteFetch } from "../types";
 import { changedInHand, diffListings, planFetch, planRefresh, shouldAbort, trustGone, unseenToVerify } from "./diff";
 import { createFetcher, BlockedError, USER_AGENT } from "./fetcher";
 import { parseProxyUrl, proxyHost, createBrowserSession, type BrowserSession } from "./browser";
+import { collectWindowOf, hourIn, insideCollectWindow } from "./collectWindow";
 
 /**
  * A refusal, as opposed to a rate limit.
@@ -328,23 +329,13 @@ export async function runSource(opts: RunOptions): Promise<RunSummary> {
    * daytime pass is a decision worth making on purpose rather than by not
    * knowing.
    */
-  const window = cfg.collectWindow as { from: number; to: number; tz: string } | undefined;
+  const window = collectWindowOf(cfg);
   if (window) {
-    const hour = Number(
-      new Intl.DateTimeFormat("en-GB", {
-        hour: "numeric",
-        hour12: false,
-        timeZone: window.tz,
-      }).format(new Date()),
-    );
-    const inside =
-      window.from <= window.to
-        ? hour >= window.from && hour < window.to
-        : hour >= window.from || hour < window.to;
-    if (!inside) {
+    const now = new Date();
+    if (!insideCollectWindow(window, now)) {
       console.warn(
         `[run:${source.key}] outside the hours they asked for ` +
-          `(${window.from}:00-${window.to}:00 ${window.tz}, it is ${hour}:00 there) — ` +
+          `(${window.from}:00-${window.to}:00 ${window.tz}, it is ${hourIn(window, now)}:00 there) — ` +
           `collecting anyway`,
       );
     }
