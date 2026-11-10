@@ -335,8 +335,11 @@ S3, ~500 kB each — narrow it, and warn before running it on mobile data)
   own label is `raw.propertyTypeRaw`. Never store a portal's word as the type.
 - **Facts from the prose fill empty fields only** (`portals/textFacts.ts`): a
   living area stated as "N m² habitables" (`raw.areaFromText`), never "villa de
-  250 m²", which is as often the plot. An advert for a liquor licence alone is
-  kept like a home abroad, in no commune and on no card (`raw.notRealEstate`).
+  250 m²", which is as often the plot. An advert for a liquor licence alone, and
+  a developer's page for a whole programme (`/programmes/` in its path: the
+  cheapest lot's price, the smallest lot's area, the same programme on three
+  resellers' sites), are kept like a home abroad, in no commune and on no card
+  (`raw.notAProperty`).
 - **A model reads what adverts state only in their prose** (`portals/aiFacts.ts`,
   `aiFactsRun.ts`, Claude Haiku 5.5): bedrooms, living area, plot, rooms, and the
   type behind a generic title ("Achat : Parking" over a 73 m² flat). Written only

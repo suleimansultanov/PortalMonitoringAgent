@@ -10,7 +10,7 @@ import { resolveCommune } from "../communes";
 import { placedAbroad } from "../abroad";
 import { repairedText } from "../mojibake";
 import { canonicalPropertyType } from "../propertyType";
-import { licenceOnly, livingAreaFromText } from "../textFacts";
+import { licenceOnly, livingAreaFromText, programmePage } from "../textFacts";
 import { GENERIC_TITLE } from "../aiFacts";
 import { CANONICAL_TYPES, type CanonicalType } from "../propertyType";
 import { REPOST_WINDOW_DAYS, repostIdentity } from "./repost";
@@ -186,9 +186,12 @@ export async function ingestListing(
    * both below, in `reconcile`, and the resolve delists the card it leaves.
    */
   const abroad = placedAbroad(url, parsed.title, parsed.description);
-  /** An advert for a liquor licence alone is not a property: kept like a home abroad, in no commune and on no card. */
+  /** An advert for a liquor licence alone is not a property: kept like a home abroad, in no commune and on no card (`raw.notAProperty`). */
   const licence = licenceOnly(parsed.title, parsed.areaM2);
-  const outsideTheMarket = abroad ?? (licence ? "licence" : null);
+  /** A developer's page for a whole programme is not one property either — see textFacts.ts. */
+  const programme = programmePage(url);
+  const notAProperty = licence ? "licence" : programme ? "programme" : null;
+  const outsideTheMarket = abroad ?? notAProperty;
 
   const commune = outsideTheMarket
     ? null
@@ -256,7 +259,7 @@ export async function ingestListing(
     raw: {
       ...(parsed.raw ?? {}),
       ...(abroad ? { abroad } : {}),
-      ...(licence ? { notRealEstate: "licence" } : {}),
+      ...(notAProperty ? { notAProperty } : {}),
       ...(areaFromText !== null ? { areaFromText: true } : {}),
       ...(parsed.propertyType ? { propertyTypeRaw: parsed.propertyType } : {}),
     },

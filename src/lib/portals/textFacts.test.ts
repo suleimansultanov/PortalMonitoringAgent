@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { licenceOnly, livingAreaFromText } from "./textFacts";
+import { licenceOnly, livingAreaFromText, programmePage } from "./textFacts";
 
 test("a living area stated in words is read when the page has none", () => {
   // Green-Acres, La Garde-Freinet, 2026-11-10: no area field, this in the description.
@@ -32,3 +32,15 @@ test("an advert for a licence alone is not a property; a bar with its licence is
   assert.equal(licenceOnly("Licence IV et murs commerciaux", 120), false);
   assert.equal(licenceOnly("Restaurant–Bar Licence IV à Port-Grimaud", null), false);
 });
+
+test("a developer's programme page is not one property; a lot inside a programme is", () => {
+  // The resellers Stream.Estate carried on 2026-11-10.
+  assert.equal(programmePage("https://utopiaimmobilier.com/programmes/les-hauts-du-golfe-cogolin-0855a5"), true);
+  assert.equal(programmePage("https://www.quoideneufimmo.fr/programmes/programme?0855a537ff11"), true);
+  assert.equal(programmePage("https://acimmobilierneuf06.fr/programmes/programme?0e9db2690b01"), true);
+  // Bien'ici sells programme lots one by one, under its ordinary advert path.
+  assert.equal(programmePage("https://www.bienici.com/annonce/mgc-BPTLNJEGO281474977552126"), false);
+  assert.equal(programmePage("https://www.seloger.com/annonces/achat/appartement/sainte-maxime-83/programme-neuf/123.htm"), false);
+  assert.equal(programmePage("not a url"), false);
+});
+

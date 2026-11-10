@@ -48,3 +48,24 @@ export function licenceOnly(title: string | null | undefined, areaM2: number | n
   if (!title || areaM2 !== null) return false;
   return /^\s*licen[cs]e\s+(?:iv|4|iii|3|grande)\b/.test(plain(title));
 }
+
+/**
+ * A developer's programme page, not one property: "Les Hauts du Golfe", Cogolin,
+ * at utopiaimmobilier.com/programmes/…, quoideneufimmo.fr/programmes/programme?…
+ * and two more resellers of new builds, all through Stream.Estate (2026-11-10,
+ * 18 live rows). Its price is the cheapest lot's or the whole development's, its
+ * area the smallest lot's, and the same programme sits on three sites; when the
+ * page changed from one to the other it read as a ×5 price jump on the client's
+ * Data health. Kept like a home abroad, in no commune and on no card. Recognised
+ * by a path segment named for it, never by a word in the advert: a lot inside a
+ * programme ("Programme neuf", Bien'ici) is one property and stays.
+ */
+export function programmePage(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    return new URL(url).pathname.split("/").some((seg) => /^programmes?$/i.test(seg));
+  } catch {
+    return false;
+  }
+}
+
