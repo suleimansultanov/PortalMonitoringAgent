@@ -247,3 +247,20 @@ test("each tally counts only the rows its side judged", () => {
   const ours = tally(rs, "ours");
   assert.equal(ours.checks, vault.checks + 1);
 });
+
+test("new listings are judged against the same nights of earlier weeks once two are known", () => {
+  // Green-Acres, five weeks to 2026-11-10: quiet on the nights after Saturday and Sunday, busy midweek.
+  const week = [6, 5, 7, 30, 35, 28, 25]; // ages 0..6: tonight Tuesday's, then Monday's, Sunday's, ...
+  const quietStart = [...week, ...week, ...week, ...week];
+  const judge = (nights: number[]) =>
+    find(runPortalChecks(input({ history: nights.flatMap((n, age) => Array.from({ length: n }, () => history("green-acres", age))), status: reports("green-acres") })), "market.new_listings", "green-acres");
+  const ordinary = judge(quietStart);
+  assert.equal(ordinary?.vault, "red", "the client's rule sees 6 against a weekly median of 25");
+  assert.equal(ordinary?.ours, "green", "the same three nights were 18 the weeks before too");
+  assert.match(ordinary?.note ?? "", /same nights/);
+  // The same start of the week, but the collector brought nothing on a week that used to bring plenty.
+  const busyWeek = [30, 28, 32, 30, 35, 28, 25];
+  const fell = judge([0, 1, 0, 30, 35, 28, 25, ...busyWeek, ...busyWeek, ...busyWeek]);
+  assert.equal(fell?.ours, "red");
+});
+

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { and, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { dataHealthChecks } from "@/lib/db/schema";
@@ -8,6 +8,7 @@ import type { FeedProperty } from "./contract";
 import { loadHealthInput, scopeFor } from "./load";
 import { runPortalChecks, tally, type CheckResult, type Tally } from "./portalChecks";
 import type { Status } from "./rules";
+import { triage, triageLines, type PreviousRow } from "./triage";
 
 /**
  * Data health: what the client's app would conclude about tonight's feed, and
@@ -65,18 +66,40 @@ export async function runHealth(opts: { client?: string; now?: Date; write?: boo
 
 const counts = (t: Tally) => `${t.red} red, ${t.amber} amber, ${t.green} green${t.unknown ? `, ${t.unknown} too little data` : ""} (${t.checks} checks)`;
 
-/** The line in the nightly summary, and what to print under it. Stores the run. */
-export async function healthLine(): Promise<{ line: string; worst: string[] }> {
-  const results = await runHealth({ write: true });
-  const vault = tally(results, "vault");
-  const ours = tally(results, "ours");
-  return {
-    line: `data health: ${ours.red} red, ${ours.amber} amber by our reading; ${vault.red} red, ${vault.amber} amber by the client's rules — \`npm run health\` lists them`,
-    worst: results.filter((r) => r.ours === "red").map(describe),
-  };
+/** The rows of the last run stored before `now`, for the triage. Empty before the first. */
+async function previousRun(now: Date): Promise<PreviousRow[]> {
+  const scope = await scopeFor(CLIENT);
+  const [last] = await db
+    .select({ ranAt: dataHealthChecks.ranAt })
+    .from(dataHealthChecks)
+    .where(and(eq(dataHealthChecks.clientId, scope.clientId), lt(dataHealthChecks.ranAt, now)))
+    .orderBy(desc(dataHealthChecks.ranAt))
+    .limit(1);
+  if (!last) return [];
+  return db
+    .select({ checkKey: dataHealthChecks.checkKey, source: dataHealthChecks.source, vaultStatus: dataHealthChecks.vaultStatus, ourStatus: dataHealthChecks.ourStatus })
+    .from(dataHealthChecks)
+    .where(and(eq(dataHealthChecks.clientId, scope.clientId), eq(dataHealthChecks.ranAt, last.ranAt)));
 }
 
-const describe = (r: CheckResult) => `${r.label}${r.source ? ` [${r.source}]` : ""}: ${r.message}`;
+/**
+ * The lines in the nightly summary, and what to print under them. Stores the run.
+ * `triage` says what needs a look, what is new since the run before, and how many
+ * of the client's flags are explained — see triage.ts.
+ */
+export async function healthLine(): Promise<{ line: string; triage: string; worst: string[] }> {
+  const now = new Date();
+  const previous = await previousRun(now);
+  const results = await runHealth({ write: true, now });
+  const vault = tally(results, "vault");
+  const ours = tally(results, "ours");
+  const t = triageLines(triage(results, previous));
+  return {
+    line: `data health: ${ours.red} red, ${ours.amber} amber by our reading; ${vault.red} red, ${vault.amber} amber by the client's rules — \`npm run health\` lists them`,
+    triage: t.line,
+    worst: t.details,
+  };
+}
 
 function printRows(title: string, rows: CheckResult[], side: "vault" | "ours"): void {
   console.log(`\n${title}: ${rows.length}`);
@@ -107,11 +130,15 @@ async function main(): Promise<void> {
   const feedFile = arg("feed");
   const feed = feedFile ? z.object({ rows: z.array(z.custom<FeedProperty>()) }).parse(JSON.parse(await fs.readFile(feedFile, "utf8"))).rows : undefined;
 
+  const previous = await previousRun(now);
   const results = await runHealth({ now, write, feed });
+  const tr = triageLines(triage(results, previous));
 
   console.log(`\nDATA HEALTH, ${CLIENT}, as of ${now.toISOString()}${write ? " (stored)" : " (read only)"}`);
   console.log(`  By the client's rules (vault eaed31c): ${counts(tally(results, "vault"))}`);
   console.log(`  By our reading:                        ${counts(tally(results, "ours"))}`);
+  console.log(`  ${tr.line}`);
+  for (const d of tr.details) console.log(`    ${d}`);
 
   const shown: Status[] = all ? ["red", "amber", "unknown", "green"] : ["red", "amber"];
   printRows("AS THE CLIENT'S SCREEN SHOWS IT", results.filter((r) => r.vault !== null && shown.includes(r.vault)).sort(bySeverity("vault")), "vault");

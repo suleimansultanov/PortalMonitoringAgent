@@ -256,6 +256,31 @@ function threeNights(by: Map<number, number>, first: number, now: Date): { statu
   return { status: drop > 0.4 ? "amber" : "green", note };
 }
 
+/**
+ * The same three nights of the week, in the weeks before: Monday's nights against
+ * Mondays'. Volume follows the week — on 2026-11-10 Green-Acres' median by night
+ * of the week was 5 on Mondays and 7 on Sundays against 38 on Thursdays, and
+ * LuxuryEstate's 2 on Tuesdays against 21.5 on Fridays — so a quiet start of the
+ * week read as a broken collector, to the client's rule and to three-night medians
+ * alike. Null until two earlier weeks are known; the caller falls back to three
+ * nights against the nights before.
+ */
+function sameNightsOfWeek(by: Map<number, number>, first: number, now: Date): { status: Status; note: string } | null {
+  const recent = (by.get(0) ?? 0) + (by.get(1) ?? 0) + (by.get(2) ?? 0);
+  const weeks = [1, 2, 3, 4]
+    .map((w) => [7 * w, 7 * w + 1, 7 * w + 2])
+    .filter((ages) => nightsKnown(first, now, ages).length === ages.length)
+    .map((ages) => ages.reduce((n, a) => n + (by.get(a) ?? 0), 0));
+  if (weeks.length < 2) return null;
+  const usual = median(weeks)!;
+  const perNight = usual / 3;
+  const note = `last 3 nights ${fmt(recent)}, the same nights of the ${weeks.length} weeks before about ${fmt(usual)}`;
+  if (perNight < 5) return { status: recent === 0 && perNight >= 3 ? "amber" : "green", note };
+  const drop = 1 - recent / usual;
+  if (recent === 0 || (perNight >= 10 && drop > 0.6)) return { status: "red", note };
+  return { status: drop > 0.4 ? "amber" : "green", note };
+}
+
 function portalChecks(input: HealthInput, totals: Map<string, PortalTotals>): CheckResult[] {
   const { now, status } = input;
   const statusKeys = new Set(status.map((s) => s.key));
@@ -276,7 +301,7 @@ function portalChecks(input: HealthInput, totals: Map<string, PortalTotals>): Ch
     const hist = nightsKnown(t.first, now, [1, 2, 3, 4, 5, 6, 7]).map((a) => byAge.get(a) ?? 0);
     const today = byAge.get(0) ?? 0;
     const v = volume(today, hist);
-    const three = threeNights(byAll, t.first, now);
+    const three = sameNightsOfWeek(byAll, t.first, now) ?? threeNights(byAll, t.first, now);
     out.push(row("market.new_listings", portal, v, three.status, today, { note: three.status !== v.status ? three.note : undefined, detail: { history: hist } }));
 
     if (t.active >= 20) {

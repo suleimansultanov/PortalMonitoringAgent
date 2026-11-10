@@ -1049,7 +1049,8 @@ async function main(): Promise<void> {
         setTimeout(() => reject(new Error(`gave up after ${HEALTH_CAP_MIN} min`)), HEALTH_CAP_MIN * 60_000).unref(),
       ),
     ]);
-    dataHealthLine = health.line;
+    dataHealthLine = `${health.line}\n${health.triage}${health.worst.length ? `\n${health.worst.map((w) => `  ${w}`).join("\n")}` : ""}`;
+    console.log(`[nightly] ${health.triage}`);
     for (const w of health.worst) console.warn(`[nightly]   ${w}`);
   } catch (err) {
     dataHealthLine = `data health: FAILED — ${(err as Error).message}`;
