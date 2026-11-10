@@ -11,6 +11,8 @@ import { placedAbroad } from "../abroad";
 import { repairedText } from "../mojibake";
 import { canonicalPropertyType } from "../propertyType";
 import { licenceOnly, livingAreaFromText } from "../textFacts";
+import { GENERIC_TITLE } from "../aiFacts";
+import { CANONICAL_TYPES, type CanonicalType } from "../propertyType";
 import { REPOST_WINDOW_DAYS, repostIdentity } from "./repost";
 import type { PoliteFetch, PortalAdapter, RawListing } from "../types";
 import { computeEvents, mergeParsed, type ListingState } from "./events";
@@ -294,9 +296,25 @@ export async function ingestListing(
    * row's next refresh.
    */
   const previousIds = repostOf ? [...previousIdsOf(repostOf), repostOf.externalId] : existing ? previousIdsOf(existing) : [];
+  /**
+   * And what a model read from the advert (aiFacts.ts), for the same reason. Its
+   * numbers survive a refresh on their own — mergeParsed never writes a null over
+   * them — but its type would not: a generic title ("Achat : Maison") parses to a
+   * type again on every refresh, over the "Commerce" the advert's text states.
+   */
+  const ai = aiOf(existing ?? repostOf);
+  const aiType = ai && GENERIC_TITLE.test(parsed.title ?? "") ? aiTypeOf(ai) : null;
+  const carriedRaw = {
+    ...(previousIds.length > 0 ? { previousExternalIds: previousIds } : {}),
+    ...(ai ? { ai } : {}),
+  };
   const toWrite: Incoming =
-    previousIds.length > 0
-      ? { ...incoming, raw: { ...((incoming.raw as Record<string, unknown> | null) ?? {}), previousExternalIds: previousIds } }
+    Object.keys(carriedRaw).length > 0 || aiType
+      ? {
+          ...incoming,
+          ...(aiType ? { propertyType: aiType } : {}),
+          raw: { ...((incoming.raw as Record<string, unknown> | null) ?? {}), ...carriedRaw },
+        }
       : incoming;
 
   // ── 6. Reconcile and record history ─────────────────────────────────────
@@ -311,6 +329,17 @@ export async function ingestListing(
 
 type Incoming = Omit<typeof portalListings.$inferInsert, "sourceId" | "externalId">;
 type StoredListing = typeof portalListings.$inferSelect;
+
+/** What a model read from this advert before (`raw.ai`, aiFactsRun.ts), if anything. */
+function aiOf(row: StoredListing | null): Record<string, unknown> | null {
+  const ai = (row?.raw as Record<string, unknown> | null)?.ai;
+  return ai && typeof ai === "object" && !Array.isArray(ai) ? (ai as Record<string, unknown>) : null;
+}
+
+function aiTypeOf(ai: Record<string, unknown>): CanonicalType | null {
+  const t = (ai.accepted as Record<string, unknown> | undefined)?.propertyType;
+  return typeof t === "string" && (CANONICAL_TYPES as readonly string[]).includes(t) ? (t as CanonicalType) : null;
+}
 
 function previousIdsOf(row: StoredListing): string[] {
   const prev = (row.raw as Record<string, unknown> | null)?.previousExternalIds;

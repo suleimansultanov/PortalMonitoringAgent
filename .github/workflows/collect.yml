@@ -213,6 +213,9 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          # Reads what adverts state only in their prose (portals/aiFactsRun.ts),
+          # capped at AI_FACTS_CAP_USD a night. Absent, the step is skipped.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Residential egress for the sources whose config names it (Figaro,
           # JamesEdition). Empty until the secret exists; a source configured
           # for it then refuses to run rather than going out direct.

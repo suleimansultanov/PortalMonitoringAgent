@@ -11,6 +11,7 @@ import { communeSliceForDay } from "./communes";
 import { resolveCommuneIdentities } from "./matching/resolve";
 import { auditLine } from "./dedupAudit";
 import { healthLine } from "@/lib/health/run";
+import { fillFromText } from "./aiFactsRun";
 import { sweepImpossibleValues } from "./sanity";
 import { deletePage, getPage, putPage, storageDescription } from "@/lib/s3/pages";
 import { SUMMARY_MARKER, type Grade, type SourceOutcome } from "./nightlyOne";
@@ -61,6 +62,15 @@ const LOGS_ROOT = path.resolve(process.cwd(), "logs");
 const KEEP_NIGHTS = 30;
 /** The most the data health step may take before the summary is written without it. */
 const HEALTH_CAP_MIN = 15;
+/**
+ * Reading what tonight's adverts state only in their prose (aiFacts.ts): at most
+ * this many dollars and minutes a night. ~$0.0002 an advert with the instructions
+ * cached (2026-11-10), so the cap is several hundred adverts, against a balance
+ * of a few dollars.
+ */
+const AI_FACTS_CAP_USD = 0.05;
+const AI_FACTS_CAP_MIN = 15;
+const AI_FACTS_LIMIT = 500;
 
 function arg(name: string): string | undefined {
   return process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=").slice(1).join("=");
@@ -854,6 +864,28 @@ async function main(): Promise<void> {
    * `--communes` narrows it, because a pass told to look at one commune cannot
    * have changed another.
    */
+  /**
+   * What tonight's adverts state only in their prose — aiFacts.ts. Before the
+   * resolve, so a filled area or a corrected type reaches the cards tonight: its
+   * writes bump `updated_at`, which is what picks the communes re-clustered below.
+   * Capped in dollars and in minutes; without ANTHROPIC_API_KEY it says so and
+   * nothing else changes.
+   */
+  let aiFactsLine = "";
+  try {
+    const r = await Promise.race([
+      fillFromText({ maxUsd: AI_FACTS_CAP_USD, limit: AI_FACTS_LIMIT, since: startedAt }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`gave up after ${AI_FACTS_CAP_MIN} min`)), AI_FACTS_CAP_MIN * 60_000).unref(),
+      ),
+    ]);
+    aiFactsLine = r.line;
+    console.log(`[nightly] ${aiFactsLine}`);
+  } catch (err) {
+    aiFactsLine = `AI facts: FAILED — ${(err as Error).message}`;
+    console.error(`[nightly] ${aiFactsLine}`);
+  }
+
   const scoped = communes?.split(",").map((c) => c.trim()).filter(Boolean);
   const watched = certainlyNothingStored ? [] : await collectionCommunes();
   const narrowed = scoped?.length
@@ -1030,7 +1062,7 @@ async function main(): Promise<void> {
     startedAt,
     finishedAt,
     outcomes,
-    `${resolveLine}\n${sanityLine}\n${dedupAuditLine}\n${dataHealthLine}`,
+    `${aiFactsLine}\n${resolveLine}\n${sanityLine}\n${dedupAuditLine}\n${dataHealthLine}`,
     logDir,
   );
   await fsp.writeFile(path.join(logDir, "summary.txt"), summaryText, "utf8");

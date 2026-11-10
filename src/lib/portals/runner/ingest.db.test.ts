@@ -271,3 +271,16 @@ test("the ids a row answered to before survive its next refresh", { skip }, asyn
   assert.equal(row.type, "Maison");
   assert.equal(row.type_raw, "house");
 });
+
+test("what a model read survives the next refresh, and its type is not overwritten by a generic title", { skip }, async () => {
+  const page = (v: number) => JSON.stringify({ price: 900_000, title: "Achat : Maison (83120)", v });
+  const first = await m.ingest.ingestListing(deps(), { externalId: "ai-1", url: "https://example.test/ai-1", document: page(1) });
+  // What aiFactsRun writes for a beach restaurant behind V1's generic title.
+  await m.db.execute(m.sql`update portal_listings set property_type = 'Commerce',
+    raw = raw || '{"ai": {"model": "claude-haiku-5-5", "accepted": {"propertyType": "Commerce"}, "quotes": {"propertyType": "ce restaurant de plage"}}}'::jsonb
+    where id = ${first.listingId}::uuid`);
+  await m.ingest.ingestListing(deps(), { externalId: "ai-1", url: "https://example.test/ai-1", document: page(2) });
+  const [row] = await m.db.execute<{ type: string; ai_type: string | null }>(m.sql`
+    select property_type as type, raw->'ai'->'accepted'->>'propertyType' as ai_type from portal_listings where id = ${first.listingId}::uuid`).then((r) => r.rows);
+  assert.deepEqual(row, { type: "Commerce", ai_type: "Commerce" });
+});

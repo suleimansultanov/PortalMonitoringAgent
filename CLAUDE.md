@@ -337,6 +337,14 @@ S3, ~500 kB each — narrow it, and warn before running it on mobile data)
   living area stated as "N m² habitables" (`raw.areaFromText`), never "villa de
   250 m²", which is as often the plot. An advert for a liquor licence alone is
   kept like a home abroad, in no commune and on no card (`raw.notRealEstate`).
+- **A model reads what adverts state only in their prose** (`portals/aiFacts.ts`,
+  `aiFactsRun.ts`, Claude Haiku 5.5): bedrooms, living area, plot, rooms, and the
+  type behind a generic title ("Achat : Parking" over a 73 m² flat). Written only
+  into empty fields, only when the quote is in the advert and the number in the
+  quote, marked in `raw.ai`; a listing is read once. Backfill 2026-11-10: 5 569
+  adverts for $0.80. The nightly reads what it touched, capped at
+  `AI_FACTS_CAP_USD`; it needs the `ANTHROPIC_API_KEY` secret, and skips without.
+  `npm run ai:facts -- --estimate` costs nothing; a paid run needs `--max-usd`.
 - **A null `priceEur` is not "on request".** Only `raw.priceOnRequest = true`
   is — four adapters set it (Green-Acres, Figaro, Figaro Immobilier, SMC). The
   rest of the nulls are prices the parser did not read, and the screens and
