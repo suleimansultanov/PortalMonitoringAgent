@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { carriedPortals, portalKey, portalLinks, portalNamed, portalOf } from "./portalOf";
+import { carriedPortals, portalKey, portalLinks, portalNamed, portalOf, servedListings } from "./portalOf";
 
 test("the portal is the label before the public suffix", () => {
   assert.equal(portalKey("https://www.bellesdemeures.com/annonces/vente/123"), "bellesdemeures");
@@ -108,4 +108,45 @@ test("a card's agency line that names a portal is recognised; an agency, a perso
   assert.equal(portalNamed("Orpi"), null, "an agency network, not a listing portal");
   assert.equal(portalNamed(""), null);
   assert.equal(portalNamed(null), null);
+});
+
+// One SeLoger advert on one card, 2026-11-10: V1 read it on 15 Oct and reports only changes; V2 read it last night.
+const row = (source: string, via: string | null, lastSeenAt: string | Date | null) => ({ source, via, lastSeenAt });
+
+test("of two aggregators carrying one portal, the copy seen most recently is sent, in whatever order they come", () => {
+  const v1 = row("seloger", "stream-estate-v1", "2026-10-15T01:00:00.000Z");
+  const v2 = row("seloger", "stream-estate", "2026-11-10T03:40:00.000Z");
+  assert.deepEqual(servedListings([v1, v2]), [v2]);
+  assert.deepEqual(servedListings([v2, v1]), [v2]);
+});
+
+test("dates as Date objects compare the same as ISO strings (the health history passes Dates)", () => {
+  const v1 = row("leboncoin", "stream-estate-v1", new Date("2026-10-15T01:00:00Z"));
+  const v2 = row("leboncoin", "stream-estate", new Date("2026-11-10T03:40:00Z"));
+  assert.deepEqual(servedListings([v1, v2]), [v2]);
+});
+
+test("a portal we read ourselves still wins over both, however fresh the aggregator's copy", () => {
+  const direct = row("bienici", null, "2026-11-01T00:00:00.000Z");
+  const v2 = row("bienici", "stream-estate", "2026-11-10T03:40:00.000Z");
+  assert.deepEqual(servedListings([v2, direct]), [direct]);
+});
+
+test("a tie, or no date on either, keeps the first as before", () => {
+  const a = row("pap", "stream-estate-v1", null);
+  const b = row("pap", "stream-estate", null);
+  assert.deepEqual(servedListings([a, b]), [a]);
+  const c = row("pap", "stream-estate-v1", "2026-11-10T00:00:00.000Z");
+  const d = row("pap", "stream-estate", "2026-11-10T00:00:00.000Z");
+  assert.deepEqual(servedListings([c, d]), [c]);
+});
+
+test("one copy per portal, other portals untouched", () => {
+  const out = servedListings([
+    row("seloger", "stream-estate-v1", "2026-10-15T00:00:00Z"),
+    row("leboncoin", "stream-estate-v1", "2026-10-15T00:00:00Z"),
+    row("seloger", "stream-estate", "2026-11-10T00:00:00Z"),
+    row("vizzit", null, "2026-11-09T00:00:00Z"),
+  ]);
+  assert.deepEqual(out.map((l) => `${l.source}/${l.via}`), ["leboncoin/stream-estate-v1", "seloger/stream-estate", "vizzit/null"]);
 });

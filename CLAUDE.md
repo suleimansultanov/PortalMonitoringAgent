@@ -135,6 +135,10 @@ before it went in: +135 cards back, ~13 new duplicates, welded 18 → 5.
   paid page, no retries); nothing may call `api.stream.estate` around it. The
   `stream-estate-v1` source reads the stock once and then changes only
   (`changesOnly`): no full sweep, ever — four of them would be the month.
+  So V1's copy of an unchanged advert keeps the date it was first read. Where
+  V2 carries the same portal on the same card, the feed sends the copy seen most
+  recently (`servedListings`); until 2026-11-10 it sent whichever came first, and
+  37 % of SeLoger read as "not re-checked for 14 days" from rows read last night.
 - **Etreproprio's "similar listings" widget is not the gallery.** Its pictures
   sit under the same `/classified/image/` path, as `<img data-nuxt-img
   src="/_ipx/…">`: other homes, in Clamart or Istres. Taken as photos, they reached

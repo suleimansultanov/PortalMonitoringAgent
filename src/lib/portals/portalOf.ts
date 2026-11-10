@@ -198,16 +198,29 @@ export function carriedPortals(source: string, url: string, carried: unknown): P
  * (V2 and V1 both carry SeLoger). Here because the feed and the data health
  * checks have to agree on it: a check that counted differently would be judging a
  * feed nobody is served.
+ *
+ * OF TWO AGGREGATORS, THE ONE SEEN MOST RECENTLY. Until 2026-11-10 it was
+ * whichever row the query returned first, and the query has no order. V2 is read
+ * every night; V1 only reports changes, so its copy of an unchanged advert keeps
+ * the date it was first read. On 1 430 of the 1 758 cards SeLoger reached through
+ * both, V1's copy was 14 days old or more while V2's was from last night, and the
+ * client was sent either at random: 37.5 % of SeLoger "not re-checked for 14
+ * days" on its Data health, 40 % of Leboncoin, from rows we had read the night
+ * before. A tie keeps the first, as before.
  */
-export function servedListings<T extends { source: string; via: string | null }>(list: T[]): T[] {
+export function servedListings<T extends { source: string; via: string | null; lastSeenAt?: string | Date | null }>(list: T[]): T[] {
   const direct = new Set(list.filter((l) => !l.via).map((l) => l.source));
-  const sent = new Set<string>();
-  return list.filter((l) => {
-    if (!l.via) return true;
-    if (direct.has(l.source) || sent.has(l.source)) return false;
-    sent.add(l.source);
-    return true;
-  });
+  const seen = (l: T) => {
+    const t = l.lastSeenAt ? new Date(l.lastSeenAt).getTime() : NaN;
+    return Number.isFinite(t) ? t : -Infinity;
+  };
+  const freshest = new Map<string, T>();
+  for (const l of list) {
+    if (!l.via || direct.has(l.source)) continue;
+    const kept = freshest.get(l.source);
+    if (!kept || seen(l) > seen(kept)) freshest.set(l.source, l);
+  }
+  return list.filter((l) => !l.via || freshest.get(l.source) === l);
 }
 
 /**
