@@ -56,12 +56,23 @@ export type CheckResult = {
   detail: Record<string, unknown>;
 };
 
+/**
+ * Why a listing has no price, where its page says so. `on_request`: the page
+ * prints "prix sur demande" (`raw.priceOnRequest`), the agency withholds it.
+ * `foreign_currency`: the page states a price only in another currency
+ * (`raw.foreignPrice`) and no EUR figure — an advert priced in zlotys, or the
+ * visitor's currency because we did not find the EUR line.
+ */
+export type PriceMissing = "on_request" | "foreign_currency";
+
 /** One served listing, in history or live: an aggregator row already split into its portals. */
 export type HistoryRow = {
   portal: string;
   propertyId: string;
   firstSeenAt: Date;
   hasPrice: boolean;
+  /** Set only when `hasPrice` is false and the page said why. */
+  priceMissing?: PriceMissing;
   hasArea: boolean;
   hasBedrooms: boolean;
   propertyHasBedrooms: boolean;
@@ -266,15 +277,40 @@ function threeNights(by: Map<number, number>, first: number, now: Date): { statu
  * nights against the nights before.
  */
 function sameNightsOfWeek(by: Map<number, number>, first: number, now: Date): { status: Status; note: string } | null {
-  const recent = (by.get(0) ?? 0) + (by.get(1) ?? 0) + (by.get(2) ?? 0);
-  const weeks = [1, 2, 3, 4]
-    .map((w) => [7 * w, 7 * w + 1, 7 * w + 2])
-    .filter((ages) => nightsKnown(first, now, ages).length === ages.length)
-    .map((ages) => ages.reduce((n, a) => n + (by.get(a) ?? 0), 0));
-  if (weeks.length < 2) return null;
+  const window = (span: number) => {
+    const sum = (ages: number[]) => ages.reduce((n, a) => n + (by.get(a) ?? 0), 0);
+    const nights = (start: number) => Array.from({ length: span }, (_, i) => start + i);
+    const weeks = [1, 2, 3, 4]
+      .map((w) => nights(7 * w))
+      .filter((ages) => nightsKnown(first, now, ages).length === ages.length)
+      .map(sum);
+    return { recent: sum(nights(0)), weeks };
+  };
+  const three = window(3);
+  if (three.weeks.length < 2) return null;
+
+  /**
+   * A portal that arrives in batches: three nights cannot tell a quiet stretch
+   * from a fall when ordinary weeks already ranged from a few to many. Idealista,
+   * through Stream.Estate, brought 31, 5, 18 and 5 over the same three nights of
+   * four weeks — batches of 28, 19 and 15 between nights of 0 to 3 — and was
+   * amber on 2026-11-12 for three nights of 0 with its run done and its stock
+   * re-read. Where the quietest earlier window is under a third of the busiest,
+   * the week is judged instead: seven nights against the same seven of the
+   * weeks before. A regular portal never qualifies (SeLoger 232, 192, 251, 128;
+   * Vizzit 151, 184, 350, 229) and keeps the sharper three nights.
+   */
+  const lumpy = Math.min(...three.weeks) * 3 < Math.max(...three.weeks);
+  const seven = lumpy ? window(7) : null;
+  const { recent, weeks } = seven && seven.weeks.length >= 2 ? seven : three;
+  const span = seven && seven.weeks.length >= 2 ? 7 : 3;
+
   const usual = median(weeks)!;
-  const perNight = usual / 3;
-  const note = `last 3 nights ${fmt(recent)}, the same nights of the ${weeks.length} weeks before about ${fmt(usual)}`;
+  const perNight = usual / span;
+  const note =
+    span === 7
+      ? `arrives in batches (the same 3 nights of earlier weeks: ${three.weeks.map(fmt).join(", ")}), so judged by the week: last 7 nights ${fmt(recent)}, the same nights of the ${weeks.length} weeks before about ${fmt(usual)}`
+      : `last 3 nights ${fmt(recent)}, the same nights of the ${weeks.length} weeks before about ${fmt(usual)}`;
   if (perNight < 5) return { status: recent === 0 && perNight >= 3 ? "amber" : "green", note };
   const drop = 1 - recent / usual;
   if (recent === 0 || (perNight >= 10 && drop > 0.6)) return { status: "red", note };
@@ -363,7 +399,31 @@ function qualityChecks(input: HealthInput, totals: Map<string, PortalTotals>): C
         const bad = recent.filter(missing[col]).length;
         const baseline = base.length >= 20 ? base.filter(missing[col]).length / base.length : null;
         const v = share(bad, recent.length, baseline, what);
-        out.push(row(key, portal, v, v.status, bad / recent.length, { detail: { recent: recent.length, baseline } }));
+        if (col !== "price") {
+          out.push(row(key, portal, v, v.status, bad / recent.length, { detail: { recent: recent.length, baseline } }));
+          continue;
+        }
+        /**
+         * A price the agency withholds is not one we failed to read. On
+         * 2026-11-12 Vizzit was amber at 23 of 187 without a price against its
+         * usual 0.2 %: 19 printed "prix sur demande", 4 were a Polish agency's
+         * adverts priced in zlotys only. The parser had read every one right.
+         * A price only in another currency still counts: it is also what a
+         * page looks like when we miss the EUR line, as Green-Acres' 535 rows
+         * did for three weeks. The note keeps the two apart.
+         */
+        const unread = (h: HistoryRow) => !h.hasPrice && h.priceMissing !== "on_request";
+        const ourBad = recent.filter(unread).length;
+        const o = share(ourBad, recent.length, base.length >= 20 ? base.filter(unread).length / base.length : null, "without a price, not counting those on request");
+        const onRequest = recent.filter((h) => h.priceMissing === "on_request").length;
+        const foreign = recent.filter((h) => h.priceMissing === "foreign_currency").length;
+        const split = `${fmt(onRequest)} on request (the agency withholds it), ${fmt(foreign)} priced only in another currency, ${fmt(bad - onRequest - foreign)} unread`;
+        out.push(
+          row(key, portal, v, o.status, bad / recent.length, {
+            note: o.status !== v.status || foreign > 0 ? `${split}; without those on request: ${o.message}` : undefined,
+            detail: { recent: recent.length, baseline, onRequest, foreignCurrency: foreign },
+          }),
+        );
       }
     }
 
@@ -595,8 +655,11 @@ export function propertyBedrooms(p: FeedProperty): number | null {
   return p.bedrooms ?? bedroomsFromLabels(p.listings);
 }
 
-/** The feed's own listings as history rows, so a live property counts exactly as it is served. */
-export function historyFromFeed(properties: FeedProperty[]): HistoryRow[] {
+/**
+ * The feed's own listings as history rows, so a live property counts exactly as it is served.
+ * `priceMissing`: by listing URL, why a page gave no price — the feed itself does not say.
+ */
+export function historyFromFeed(properties: FeedProperty[], priceMissing: ReadonlyMap<string, PriceMissing> = new Map()): HistoryRow[] {
   const rows: HistoryRow[] = [];
   for (const p of properties) {
     const hasPhoto = !!p.imageUrl?.startsWith("https://") || p.imageUrls.some((u) => u.startsWith("https://"));
@@ -608,6 +671,7 @@ export function historyFromFeed(properties: FeedProperty[]): HistoryRow[] {
         propertyId: p.id,
         firstSeenAt: new Date(l.firstSeenAt),
         hasPrice: l.priceEur !== null,
+        ...(l.priceEur === null && priceMissing.has(l.url) ? { priceMissing: priceMissing.get(l.url) } : {}),
         hasArea: l.areaM2 !== null,
         hasBedrooms: l.bedrooms !== null,
         propertyHasBedrooms,

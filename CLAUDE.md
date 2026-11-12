@@ -203,7 +203,13 @@ review on the user's computer reads first (a scheduled task of the Claude app,
 it writes its diagnosis to `logs/diagnosis/<date>.md`. Our new-listings verdict compares the
 last three nights with the same three nights of up to four earlier weeks
 (`sameNightsOfWeek`): portals publish little over the weekend, and a seven-day
-median reads every Monday as a broken collector. A source whose night aborted
+median reads every Monday as a broken collector. A portal that arrives in
+batches (its quietest earlier window under a third of its busiest: Idealista
+31, 5, 18, 5) is judged by the week instead, seven nights against the same
+seven. Our missing-price verdict leaves out "prix sur demande"
+(`raw.priceOnRequest`); a price only in another currency (`raw.foreignPrice`)
+still counts, named apart in the note, because a missed EUR line looks the
+same (2026-11-12: Vizzit's 23 of 187 were 19 on request, 4 in zlotys). A source whose night aborted
 or errored after a good night is collected once more, twenty minutes after the
 night ends (`.github/workflows/retry.yml` on `workflow_run`; the 06:30 UTC cron
 is only a fallback, GitHub started it at 14:36 on 2026-11-11). Rule in

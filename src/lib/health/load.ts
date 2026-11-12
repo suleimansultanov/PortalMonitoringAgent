@@ -9,7 +9,34 @@ import { notADuplicateOfOwn, ownAgencies, snapshot, status } from "@/lib/api/v1"
 import { AGGREGATORS, carriedPortals, servedListings } from "@/lib/portals/portalOf";
 import { periodStart, V1_DEFAULT_RESERVE, V1_PLAN_ITEMS } from "@/lib/portals/streamV1";
 import { MOJIBAKE_PATTERN, type FeedProperty } from "./contract";
-import { historyFromFeed, type HealthInput, type HistoryRow } from "./portalChecks";
+import { historyFromFeed, type HealthInput, type HistoryRow, type PriceMissing } from "./portalChecks";
+
+/** Why a listing has no price, where its page said so (`PriceMissing`); null otherwise. */
+const priceMissingSql = sql<string | null>`case when ${portalListings.priceEur} is null then
+  case when ${portalListings.raw}->>'priceOnRequest' = 'true' then 'on_request'
+       when ${portalListings.raw}->'foreignPrice' is not null then 'foreign_currency' end end`;
+const PriceMissingValue = z.enum(["on_request", "foreign_currency"]).nullable();
+const priceMissingOf = (v: unknown): PriceMissing | undefined => PriceMissingValue.parse(v) ?? undefined;
+
+/**
+ * The live listings whose page said why it gave no price, by URL: the feed does
+ * not carry it per listing. About 125 rows on 2026-11-12, only those
+ * with no price and a reason, so one statement fits the ten-second limit.
+ */
+async function loadPriceMissing(scope: KeyScope): Promise<Map<string, PriceMissing>> {
+  const rows = await withDbRetry(() =>
+    db
+      .select({ url: portalListings.url, why: priceMissingSql })
+      .from(portalListings)
+      .where(and(inArray(portalListings.sourceId, scope.sourceIds), eq(portalListings.status, "active"), sql`${priceMissingSql} is not null`)),
+  );
+  const out = new Map<string, PriceMissing>();
+  for (const r of rows) {
+    const why = priceMissingOf(r.why);
+    if (why) out.set(r.url, why);
+  }
+  return out;
+}
 
 /**
  * Data health, the gathering. Only reads.
@@ -88,6 +115,7 @@ async function loadDelistedHistory(scope: KeyScope): Promise<HistoryRow[]> {
       url: portalListings.url,
       firstSeenAt: portalListings.firstSeenAt,
       priceEur: portalListings.priceEur,
+      priceMissing: priceMissingSql,
       areaM2: portalListings.areaM2,
       bedrooms: portalListings.bedrooms,
       propertyId: portalListings.propertyId,
@@ -116,10 +144,12 @@ async function loadDelistedHistory(scope: KeyScope): Promise<HistoryRow[]> {
   const byProperty = new Map<string, (HistoryRow & { source: string; via: string | null })[]>();
   for (const r of rows) {
     if (!r.propertyId) continue;
+    const priceMissing = priceMissingOf(r.priceMissing);
     const base = {
       propertyId: r.propertyId,
       firstSeenAt: r.firstSeenAt,
       hasPrice: r.priceEur !== null,
+      ...(priceMissing ? { priceMissing } : {}),
       hasArea: r.areaM2 !== null,
       hasBedrooms: r.bedrooms !== null,
       propertyHasBedrooms: r.propertyBedrooms !== null,
@@ -325,7 +355,7 @@ async function loadPrevious(clientId: string, now: Date): Promise<Pick<HealthInp
 /** `feed`: one already read, so a rule can be re-judged without downloading the market again. */
 export async function loadHealthInput(scope: KeyScope, now: Date, feed?: FeedProperty[]): Promise<HealthInput> {
   const properties_ = feed ?? (await loadFeed(scope));
-  const history = [...historyFromFeed(properties_), ...(await loadDelistedHistory(scope))];
+  const history = [...historyFromFeed(properties_, await loadPriceMissing(scope)), ...(await loadDelistedHistory(scope))];
   const activeBySource = await loadActiveBySource(scope);
   const feedStatus = await status(scope);
   const closedByAge = await loadClosedByAge(scope, now);

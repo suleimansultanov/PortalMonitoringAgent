@@ -264,3 +264,68 @@ test("new listings are judged against the same nights of earlier weeks once two 
   assert.equal(fell?.ours, "red");
 });
 
+
+test("a price the agency withholds is not a price we missed: Vizzit, 2026-11-12", () => {
+  // 187 new in three nights, 23 without a price: 19 "prix sur demande", 4 a Polish agency's adverts in zlotys only.
+  const recent = Array.from({ length: 187 }, (_, i) =>
+    history("vizzit", i % 3, i < 19 ? { hasPrice: false, priceMissing: "on_request" } : i < 23 ? { hasPrice: false, priceMissing: "foreign_currency" } : {}),
+  );
+  const base = Array.from({ length: 300 }, (_, i) => history("vizzit", 10 + (i % 20)));
+  const judge = (rows: HistoryRow[]) => find(runPortalChecks(input({ history: rows, status: reports("vizzit") })), "market.missing_price", "vizzit");
+  const r = judge([...recent, ...base]);
+  assert.equal(r?.vault, "amber", "the client's rule counts every null: 23 of 187");
+  assert.equal(r?.ours, "green", "4 of 187 once those on request are left out");
+  assert.match(r?.note ?? "", /19 on request/);
+  assert.match(r?.note ?? "", /4 priced only in another currency, 0 unread/);
+  assert.deepEqual([r?.detail.onRequest, r?.detail.foreignCurrency], [19, 4]);
+
+  // The same night, but the prices were simply not read: still flagged by ours.
+  const unread = recent.map((h) => (h.hasPrice ? h : { ...h, priceMissing: undefined }));
+  assert.equal(judge([...unread, ...base])?.ours, "amber");
+});
+
+test("a price only in another currency still counts, and is named apart", () => {
+  // Green-Acres seen from a US runner: dollars on the page, no EUR line found. The parser's fault until shown otherwise.
+  const recent = Array.from({ length: 40 }, (_, i) => history("green-acres", i % 3, i < 15 ? { hasPrice: false, priceMissing: "foreign_currency" } : {}));
+  const base = Array.from({ length: 100 }, (_, i) => history("green-acres", 10 + (i % 20)));
+  const r = find(runPortalChecks(input({ history: [...recent, ...base], status: reports("green-acres") })), "market.missing_price", "green-acres");
+  assert.equal(r?.vault, "red");
+  assert.equal(r?.ours, "red");
+  assert.match(r?.note ?? "", /15 priced only in another currency/);
+});
+
+test("the feed's history takes why a page gave no price from its URL", () => {
+  const rows = historyFromFeed(
+    [
+      property("a", { listings: [listing({ source: "vizzit", url: "https://www.vizzit.fr/a", priceEur: null })] }),
+      property("b", { listings: [listing({ source: "vizzit", url: "https://www.vizzit.fr/b", priceEur: 1_000_000 })] }),
+    ],
+    new Map([
+      ["https://www.vizzit.fr/a", "on_request"],
+      ["https://www.vizzit.fr/b", "on_request"],
+    ]),
+  );
+  assert.equal(rows[0].priceMissing, "on_request");
+  assert.equal(rows[1].priceMissing, undefined, "a listing with a price has nothing missing");
+});
+
+test("a portal that arrives in batches is judged by the week: Idealista, 2026-11-12", () => {
+  // New Idealista listings by night, tonight first (portal_listings, 35 nights to the run of 2026-11-12 03:20 UTC).
+  const nights = [0, 0, 0, 1, 1, 2, 3, 28, 3, 0, 2, 1, 0, 3, 0, 4, 1, 1, 1, 0, 3, 3, 15, 0, 10, 5, 0, 19, 1, 4, 0, 0, 1, 3, 12];
+  const judge = (ns: number[]) =>
+    find(runPortalChecks(input({ history: ns.flatMap((n, age) => Array.from({ length: n }, () => history("idealista", age))), status: reports("idealista") })), "market.new_listings", "idealista");
+  assert.equal(judge(nights)?.ours, "green", "7 in seven nights against about 29: a week between batches");
+  // A whole week of nothing is still a fall, and the note says how it was judged.
+  const week = judge([0, 0, 0, 0, 0, 0, 0, ...nights.slice(7)]);
+  assert.equal(week?.ours, "amber");
+  assert.match(week?.note ?? "", /arrives in batches \(the same 3 nights of earlier weeks: 31, 5, 18, 5\), so judged by the week: last 7 nights 0/);
+});
+
+test("a regular portal keeps the sharper three nights", () => {
+  // SeLoger's nights to 2026-11-12, the V1 stock read of 15 October (2 325) included.
+  const nights = [18, 56, 47, 14, 35, 88, 148, 82, 69, 81, 44, 58, 38, 66, 44, 65, 83, 77, 75, 69, 73, 106, 65, 80, 87, 83, 88, 2325, 58, 70, 0, 31, 36, 55, 2317];
+  const judge = (ns: number[]) =>
+    find(runPortalChecks(input({ history: ns.flatMap((n, age) => Array.from({ length: n }, () => history("seloger", age))), status: reports("seloger") })), "market.new_listings", "seloger");
+  assert.doesNotMatch(judge(nights)?.note ?? "", /batches/);
+  assert.equal(judge([0, 0, 0, ...nights.slice(3)])?.ours, "red", "three empty nights of a large portal");
+});
