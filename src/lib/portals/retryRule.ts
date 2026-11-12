@@ -19,8 +19,9 @@ import { collectWindowOf, insideCollectWindow } from "./runner/collectWindow";
  *     refusing us (JamesEdition, 403 from 16 September). Going back every
  *     morning doubles the load on a site that has said no — a person's call;
  *   - a `manual` or `backfill` run: someone was there and knows;
- *   - a portal outside the hours it asked for (LuxuryEstate, 01:00-05:00 Paris;
- *     the retry runs at 06:30 UTC);
+ *   - a portal outside the hours it asked for (LuxuryEstate, 01:00-05:00 Paris),
+ *     judged when the retry starts: twenty minutes after the night it is
+ *     usually inside them, at the 06:30 UTC fallback never;
  *   - NEVER_RETRY, below.
  *
  * Once a night, by construction: a retry that fails is the latest run and has a
@@ -28,9 +29,10 @@ import { collectWindowOf, insideCollectWindow } from "./runner/collectWindow";
  */
 
 /**
- * The nightly starts 00:00-03:30 UTC (GitHub's lateness on a 21:00 cron) and
- * the retry runs at 06:30: twenty hours reaches back past that night and not to
- * the one before it, nor to yesterday's retry.
+ * The nightly starts 00:00-03:30 UTC (GitHub's lateness on a 21:00 cron). The
+ * retry runs twenty minutes after it ends, or at the 06:30 cron that GitHub
+ * started at 14:36 on 2026-11-11: twenty hours reaches back past that night
+ * and not to the one before it, nor to yesterday's retry.
  */
 export const RETRY_LOOKBACK_HOURS = 20;
 

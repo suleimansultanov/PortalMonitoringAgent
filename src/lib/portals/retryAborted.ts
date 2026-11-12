@@ -12,8 +12,8 @@ import { pickRetries } from "./retryRule";
  *   npx tsx src/lib/portals/retryAborted.ts
  *   npx tsx src/lib/portals/retryAborted.ts --at=2026-11-10T06:30:00Z   rehearse a past morning
  *
- * `.github/workflows/retry.yml` runs it at 06:30 UTC and dispatches collect.yml
- * with `sources=<the list>`.
+ * `.github/workflows/retry.yml` runs it when the nightly ends (and at 06:30 UTC
+ * as a fallback) and dispatches collect.yml with `sources=<the list>`.
  */
 
 const runRow = z.object({

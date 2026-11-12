@@ -87,7 +87,7 @@ async function previousRun(now: Date): Promise<PreviousRow[]> {
  * `triage` says what needs a look, what is new since the run before, and how many
  * of the client's flags are explained — see triage.ts.
  */
-export async function healthLine(): Promise<{ line: string; triage: string; worst: string[] }> {
+export async function healthLine(): Promise<{ line: string; triage: string; worst: string[]; alert: boolean }> {
   const now = new Date();
   const previous = await previousRun(now);
   const results = await runHealth({ write: true, now });
@@ -98,6 +98,7 @@ export async function healthLine(): Promise<{ line: string; triage: string; wors
     line: `data health: ${ours.red} red, ${ours.amber} amber by our reading; ${vault.red} red, ${vault.amber} amber by the client's rules — \`npm run health\` lists them`,
     triage: t.line,
     worst: t.details,
+    alert: t.alert,
   };
 }
 

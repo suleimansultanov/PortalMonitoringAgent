@@ -130,3 +130,16 @@ test("a collect window that crosses midnight", () => {
   assert.equal(insideCollectWindow(w, new Date("2026-11-10T04:00:00Z")), false);
   assert.equal(insideCollectWindow({ from: 1, to: 5, tz: "Europe/Paris" }, new Date("2026-11-10T00:00:00Z")), true, "01:00 Paris in winter");
 });
+
+test("the end-of-night retry and the 06:30 fallback: whichever comes second does nothing", () => {
+  const night = [run("vizzit", "done", "2026-11-11T00:57:00Z"), run("vizzit", "aborted", "2026-11-12T02:10:00Z")];
+  const afterNight = new Date("2026-11-12T03:45:00Z");
+  assert.deepEqual(retried(pickRetries([src("vizzit")], night, afterNight)), ["vizzit"], "twenty minutes after the night");
+  const fallback = new Date("2026-11-12T14:36:00Z");
+  const retryWent = [...night, run("vizzit", "done", "2026-11-12T03:46:00Z")];
+  assert.deepEqual(pickRetries([src("vizzit")], retryWent, fallback), [], "the retry worked: nothing to say");
+  const retryFailed = [...night, run("vizzit", "aborted", "2026-11-12T03:46:00Z")];
+  const v = pickRetries([src("vizzit")], retryFailed, fallback);
+  assert.deepEqual(retried(v), []);
+  assert.match(v[0].why, /ended aborted too/);
+});

@@ -44,6 +44,16 @@ test("the summary line names the new problems first", () => {
   assert.match(details[0], /^NEW RED market\.source_run \[vizzit\]/);
 });
 
+test("a night reaches a person only when something is new, not for a problem already told", () => {
+  const fresh = triage([row("market.source_run", "vizzit", "red", "red")], [prev("market.source_run", "vizzit", "green", "green")]);
+  const told = triage([row("market.source_run", "vizzit", "red", "red")], [prev("market.source_run", "vizzit", "red", "red")]);
+  const clientOnly = triage([row("market.stale_active", "pap", "amber", "green")], [prev("market.stale_active", "pap", "green", "green")]);
+  assert.equal(triageLines(fresh).alert, true);
+  assert.equal(triageLines(told).alert, false, "still red, already told the night it turned");
+  assert.equal(triageLines(clientOnly).alert, false, "the client's rule alone is explained, not news");
+  assert.equal(triageLines(triage([row("market.source_run", "vizzit", "red", "red")], [])).alert, false, "no run before: nothing is new");
+});
+
 test("a row that cleared by disappearing is still named, not shown by its key", () => {
   // 2026-11-10: leboncoin's quarantine row was there in the night's run and absent in the evening's.
   const t = triage([], [prev("market.quarantine", "leboncoin", "amber", null)]);

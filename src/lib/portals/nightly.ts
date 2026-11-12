@@ -1042,6 +1042,8 @@ async function main(): Promise<void> {
    * (`process.exit` at the end ends the abandoned read).
    */
   let dataHealthLine = "";
+  /** What collect.yml sends a person (health-alert.txt): something new needs a look, or the check failed. */
+  let healthAlert = "";
   try {
     const health = await Promise.race([
       healthLine(),
@@ -1052,9 +1054,11 @@ async function main(): Promise<void> {
     dataHealthLine = `${health.line}\n${health.triage}${health.worst.length ? `\n${health.worst.map((w) => `  ${w}`).join("\n")}` : ""}`;
     console.log(`[nightly] ${health.triage}`);
     for (const w of health.worst) console.warn(`[nightly]   ${w}`);
+    if (health.alert) healthAlert = dataHealthLine;
   } catch (err) {
     dataHealthLine = `data health: FAILED — ${(err as Error).message}`;
     console.error(`[nightly] ${dataHealthLine}`);
+    healthAlert = dataHealthLine;
   }
 
   const finishedAt = new Date();
@@ -1067,6 +1071,11 @@ async function main(): Promise<void> {
     logDir,
   );
   await fsp.writeFile(path.join(logDir, "summary.txt"), summaryText, "utf8");
+  // Present only on a night that has to reach a person; a second run the same
+  // night removes the first one's, so a stale alert is never sent again.
+  const alertFile = path.join(logDir, "health-alert.txt");
+  if (healthAlert) await fsp.writeFile(alertFile, `${healthAlert}\n`, "utf8");
+  else await fsp.rm(alertFile, { force: true });
   await fsp.writeFile(
     path.join(logDir, "summary.json"),
     JSON.stringify(

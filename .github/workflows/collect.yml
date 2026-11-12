@@ -103,7 +103,7 @@ concurrency:
 
 # Read the repository, nothing more. The collecting job runs `npm ci` and
 # parses other people's pages; it has no business holding a token that can
-# write anywhere. The one job that writes (an issue, below) asks for that alone.
+# write anywhere. The two jobs that write (an issue each, below) ask for that alone.
 permissions:
   contents: read
 
@@ -120,6 +120,9 @@ jobs:
       # The night's summary.txt, so the failure report below can quote it.
       # Empty when the run died before writing one.
       summary: ${{ steps.summary.outputs.text }}
+      # logs/latest/health-alert.txt: the data-health lines on a night something
+      # new needs a look, or the check failed. Empty on a quiet night.
+      health_alert: ${{ steps.summary.outputs.health_alert }}
 
     steps:
       - uses: actions/checkout@v4
@@ -248,6 +251,13 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           else
             echo "No summary was written — the run died before it got that far." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f logs/latest/health-alert.txt ]; then
+            {
+              echo "health_alert<<PMA_ALERT_$GITHUB_RUN_ID"
+              printf '%s\n' "$(cat logs/latest/health-alert.txt)"
+              echo "PMA_ALERT_$GITHUB_RUN_ID"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Keep the logs
@@ -407,4 +417,63 @@ jobs:
               cat "$BODY"
             } > "$BODY.new"
             gh issue create --title "Nightly collection is failing" --label "$LABEL" --body-file "$BODY.new"
+          fi
+
+  # ── Something new in Data health has to reach a person too ────────────────
+  #
+  # A green night can still bring news: our reading of the client's Data health
+  # (src/lib/health/, triage.ts) flags a row it did not flag the night before —
+  # a portal's new listings collapsing, values refused by the client's contract.
+  # Until 2026-11-12 that line sat in the run's summary, which nobody opens on a
+  # night that went green.
+  #
+  # Told once: only what is NEW since the run before (an open problem does not
+  # mail every night), or a health check that failed outright. One open issue
+  # labelled `data-health` collects them as comments, like `nightly-failure`;
+  # close it once read. A red night may send both: they are different news.
+  report-health:
+    needs: collect
+    if: ${{ !cancelled() && needs.collect.outputs.health_alert != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open an issue, or add to the one already open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ALERT: ${{ needs.collect.outputs.health_alert }}
+        run: |
+          LABEL=data-health
+          BODY="$RUNNER_TEMP/body.md"
+          {
+            echo "Data health, reported $(date -u '+%Y-%m-%d %H:%M') UTC: something new needs a look, or the check failed."
+            echo
+            echo "- Run: $RUN_URL"
+            echo "- Every row, both verdicts: \`npm run health\`"
+            echo
+            echo '```'
+            printf '%s\n' "$ALERT"
+            echo '```'
+          } > "$BODY"
+
+          gh label create "$LABEL" --force --color D93F0B \
+            --description "Opened by collect.yml when Data health flags something new" > /dev/null
+
+          OPEN="$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body-file "$BODY"
+            echo "Added to issue #$OPEN."
+          else
+            {
+              echo "@$OWNER — Data health flags something it did not flag the night before."
+              echo "Later news is added here as comments while this issue is open. Close it once read."
+              echo
+              cat "$BODY"
+            } > "$BODY.new"
+            gh issue create --title "Data health: something new needs a look" --label "$LABEL" --body-file "$BODY.new"
           fi

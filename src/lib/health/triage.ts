@@ -63,8 +63,12 @@ export function triage(current: CheckResult[], previous: PreviousRow[]): Triage 
 
 const name = (i: TriageItem) => `${i.label}${i.source ? ` [${i.source}]` : ""}`;
 
-/** One line for the nightly summary, and the lines to print under it. */
-export function triageLines(t: Triage): { line: string; details: string[] } {
+/**
+ * One line for the nightly summary, the lines to print under it, and whether the
+ * night has to reach a person: `alert` when our reading flags something the run
+ * before did not. Only the new, so an open problem is told once, not every night.
+ */
+export function triageLines(t: Triage): { line: string; details: string[]; alert: boolean } {
   const fresh = t.needsLook.filter((i) => i.isNew);
   const line =
     `triage: ${t.needsLook.length} need${t.needsLook.length === 1 ? "s" : ""} a look` +
@@ -75,5 +79,5 @@ export function triageLines(t: Triage): { line: string; details: string[] } {
     ...t.needsLook.map((i) => `${i.isNew ? "NEW " : ""}${i.status.toUpperCase()} ${name(i)}: ${i.message}`),
     ...(t.cleared.length ? [`cleared: ${t.cleared.slice(0, 8).map(name).join("; ")}${t.cleared.length > 8 ? "; …" : ""}`] : []),
   ];
-  return { line, details };
+  return { line, details, alert: fresh.length > 0 };
 }

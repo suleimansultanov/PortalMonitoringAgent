@@ -6,27 +6,44 @@ name: Retry an aborted night
 # UTC. The abort guard did its job — no false delistings — and Vizzit stayed red
 # on the client's Data health all day, until a hand dispatch of collect.yml with
 # `sources=vizzit` at 16:32 put it right in twenty minutes. That dispatch is
-# what this does, at 06:30 UTC, for the sources src/lib/portals/retryRule.ts
-# picks: enabled, last night's scheduled run aborted or errored, the run before
-# it good. Not a portal that has failed twice running (it may be refusing us),
-# not LuxuryEstate outside its 01:00-05:00 Paris, not the client's paid V1 feed,
-# not Superimmo. The rule and its reasons are in that file; its tests are the
-# incidents.
+# what this does, for the sources src/lib/portals/retryRule.ts picks: enabled,
+# last night's scheduled run aborted or errored, the run before it good. Not a
+# portal that has failed twice running (it may be refusing us), not LuxuryEstate
+# outside its 01:00-05:00 Paris, not the client's paid V1 feed, not Superimmo.
+# The rule and its reasons are in that file; its tests are the incidents.
 #
-# 06:30 UTC: the night starts 00:00-03:30 UTC and is over by about 04:00 (runs
-# of 7-10 November). If it is still going, the dispatched run waits for it in
-# collect.yml's concurrency group; it never runs beside it.
+# WHEN: AS SOON AS THE NIGHT ENDS, NOT AT AN HOUR. Until 2026-11-12 this ran on
+# a 06:30 UTC cron, and GitHub started that cron at 14:36 on 11 November and
+# not at all by 11:30 on the 12th. A scheduled workflow is started when GitHub
+# gets round to it. The end of collect.yml is an event, and `workflow_run`
+# delivers it within a minute. The cron stays as the fallback for a night whose
+# end raised no event; whichever comes second finds the first one's run as the
+# latest and does nothing more (retryRule.ts: a good run is not retried, two
+# failures running are left).
+#
+# Twenty minutes after the night, and only then decided: a one-off at the portal
+# gets that long to pass, and the choice is made again after the wait, so the
+# hours a portal asked for are judged at the time the retry starts.
 #
 # A hand run of this workflow only prints what it would retry, unless `dispatch`
-# is ticked.
+# is ticked. `probe` proves the job's token may start a workflow, by starting
+# one print-only run of this one; it collects nothing.
 
 on:
+  workflow_run:
+    workflows: ["Nightly collection"]
+    types: [completed]
   schedule:
     - cron: "30 6 * * *"
   workflow_dispatch:
     inputs:
       dispatch:
         description: "Start collect.yml for what is picked. Unticked: only print the choice."
+        required: false
+        type: boolean
+        default: false
+      probe:
+        description: "Only prove this job may start a workflow: starts one print-only run of this one. Collects nothing."
         required: false
         type: boolean
         default: false
@@ -40,13 +57,19 @@ concurrency:
 
 jobs:
   retry:
+    # After a night collect.yml ran on its schedule. Not after a run started by
+    # hand (whoever started it is there), and not after the run this workflow
+    # dispatched itself: the end of a retry must not start a retry of it.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'schedule' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: read
       # `gh workflow run`. A workflow_dispatch is the one event the job's own
       # token may start another workflow with.
       actions: write
+      # A line on the open `nightly-failure` issue saying a retry was started.
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
@@ -59,12 +82,32 @@ jobs:
       # No browser: playwright has no install script, so this downloads only the packages.
       - run: npm ci
 
+      - name: Prove the token may start a workflow
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.probe }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run retry.yml --ref main -f dispatch=false -f probe=false
+          echo "Started a print-only run of retry.yml. Listed under this workflow, started by github-actions, it proves the morning retry can start collect.yml." | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Pick the sources
         id: pick
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EVENT: ${{ github.event_name }}
         run: |
           WHY="$RUNNER_TEMP/why.txt"
-          LIST="$(npx tsx src/lib/portals/retryAborted.ts 2> "$WHY")" || { cat "$WHY"; exit 1; }
-          cat "$WHY"
+          pick() {
+            LIST="$(npx tsx src/lib/portals/retryAborted.ts 2> "$WHY")" || { cat "$WHY"; exit 1; }
+            cat "$WHY"
+          }
+          pick
+          if [ -n "$LIST" ] && [ "$EVENT" = "workflow_run" ]; then
+            echo "Waiting 20 minutes, then choosing again."
+            sleep 1200
+            pick
+          fi
           # Source keys only: the list goes on to a command line. A bash match,
           # not grep — grep on an empty list, the usual morning, finds no line and fails.
           if [[ ! "$LIST" =~ ^[a-z0-9,-]*$ ]]; then
@@ -77,19 +120,32 @@ jobs:
             cat "$WHY"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Collect them again
-        if: ${{ steps.pick.outputs.sources != '' && (github.event_name == 'schedule' || inputs.dispatch) }}
+        if: ${{ steps.pick.outputs.sources != '' && (github.event_name != 'workflow_dispatch' || inputs.dispatch) }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SOURCES: ${{ steps.pick.outputs.sources }}
+          # When GitHub created the night being retried; empty on the cron and by hand.
+          NIGHT_CREATED: ${{ github.event.workflow_run.created_at }}
+          COLLECT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/collect.yml
         run: |
-          # Sunday's night is the full sweep (collect.yml), the one that writes
-          # delistings. Monday morning repeats it the way it was meant to run.
+          # Sunday's 21:00 UTC cron is the full sweep (collect.yml), the one that
+          # writes delistings, and the retry repeats it the way it was meant to
+          # run. GitHub creates that night between Sunday 21:00 and Monday 21:00
+          # UTC whatever its lateness, so three hours on it is Monday. Saturday's
+          # night, however late, is still Sunday three hours on.
+          BASE="${NIGHT_CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
           FULL=false
-          if [ "$(date -u +%u)" = "1" ]; then FULL=true; fi
+          if [ "$(date -u -d "@$(( $(date -u -d "$BASE" +%s) + 10800 ))" +%u)" = "1" ]; then FULL=true; fi
           gh workflow run collect.yml --ref main -f sources="$SOURCES" -f full="$FULL"
           echo "Started collect.yml: sources=$SOURCES, full=$FULL." | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # The failed night has opened (or added to) a `nightly-failure` issue;
+          # say there that a retry is on its way. A failed retry adds its own
+          # comment there through collect.yml.
+          OPEN="$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')" || OPEN=""
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body "Retry started for \`$SOURCES\` (full=$FULL): $COLLECT_URL. If it fails too, collect.yml adds its report here." || true
+          fi

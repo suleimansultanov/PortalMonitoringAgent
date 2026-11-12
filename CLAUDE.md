@@ -192,13 +192,19 @@ these apart with nothing changed on the client's side, suspect the copy.
 last one stored (`triage.ts`): *needs a look* is flagged by `ours`, marked NEW
 when the run before did not flag it; *explained* is flagged by the client's rule
 only, and its note says why; *cleared* was flagged before and is by neither now.
-That is the `triage:` line in the summary. Our new-listings verdict compares the
+That is the `triage:` line in the summary; a NEW row, or a check that failed,
+also opens (or comments on) a GitHub issue labelled `data-health` — job
+`report-health` in collect.yml, from `logs/latest/health-alert.txt` — because a
+green night's summary is read by nobody. Our new-listings verdict compares the
 last three nights with the same three nights of up to four earlier weeks
 (`sameNightsOfWeek`): portals publish little over the weekend, and a seven-day
 median reads every Monday as a broken collector. A source whose night aborted
-or errored after a good night is collected once more at 06:30 UTC
-(`.github/workflows/retry.yml`, rule in `portals/retryRule.ts`, rehearse with
-`npx tsx src/lib/portals/retryAborted.ts --at=<iso>`). It is never retried after
+or errored after a good night is collected once more, twenty minutes after the
+night ends (`.github/workflows/retry.yml` on `workflow_run`; the 06:30 UTC cron
+is only a fallback, GitHub started it at 14:36 on 2026-11-11). Rule in
+`portals/retryRule.ts`, rehearse with
+`npx tsx src/lib/portals/retryAborted.ts --at=<iso>`; a hand run with `probe`
+proves the job may dispatch, collecting nothing. It is never retried after
 two failures running, never outside the hours it asked for (LuxuryEstate), and
 never if it is V1 (billed per item) or Superimmo.
 
