@@ -195,7 +195,12 @@ only, and its note says why; *cleared* was flagged before and is by neither now.
 That is the `triage:` line in the summary; a NEW row, or a check that failed,
 also opens (or comments on) a GitHub issue labelled `data-health` — job
 `report-health` in collect.yml, from `logs/latest/health-alert.txt` — because a
-green night's summary is read by nobody. Our new-listings verdict compares the
+green night's summary is read by nobody. `npm run health:brief` (`brief.ts`)
+prints the same split from the stored runs alone, each flagged row with its last
+14 nights and the portals' runs: seconds, no feed download. It is what the daily
+review on the user's computer reads first (a scheduled task of the Claude app,
+`portal-data-health-review`, on the subscription, not the API key): read-only,
+it writes its diagnosis to `logs/diagnosis/<date>.md`. Our new-listings verdict compares the
 last three nights with the same three nights of up to four earlier weeks
 (`sameNightsOfWeek`): portals publish little over the weekend, and a seven-day
 median reads every Monday as a broken collector. A source whose night aborted

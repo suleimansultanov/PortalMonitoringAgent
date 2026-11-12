@@ -32,6 +32,7 @@
     "dedup:check": "tsx src/lib/portals/dedupCheck.ts",
     "dedup:audit": "tsx src/lib/portals/dedupAudit.ts",
     "health": "tsx src/lib/health/run.ts",
+    "health:brief": "tsx src/lib/health/brief.ts",
     "photos:check": "tsx src/lib/portals/photoCheck.ts",
     "coverage": "tsx src/lib/portals/coverage.ts",
     "report": "tsx src/lib/reports/generate.ts",
